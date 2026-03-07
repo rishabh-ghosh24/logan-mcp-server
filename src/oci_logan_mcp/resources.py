@@ -35,6 +35,25 @@ def get_resources() -> List[Dict[str, Any]]:
             "description": "Last 10 successful queries for reference.",
             "mimeType": "application/json",
         },
+        {
+            "uri": "loganalytics://tenancy-context",
+            "name": "Tenancy Context",
+            "description": (
+                "Environment-specific context including known log sources, "
+                "fields, entities, compartments, and operational notes. "
+                "Refreshed at every server start."
+            ),
+            "mimeType": "application/json",
+        },
+        {
+            "uri": "loganalytics://reference-docs",
+            "name": "Reference Documentation",
+            "description": (
+                "Links to official Oracle Log Analytics documentation "
+                "for query syntax, operators, and functions."
+            ),
+            "mimeType": "application/json",
+        },
     ]
 
 
@@ -156,6 +175,81 @@ def get_syntax_guide() -> str:
 'Severity' = 'Error' | stats count by 'Log Source', 'Host Name'
 ```
 
+### String Functions (use in eval)
+- `concat('Field1', ' ', 'Field2')` - Concatenate values
+- `substr('Field', start, length)` - Extract substring
+- `trim('Field')` - Remove whitespace
+- `upper('Field')` / `lower('Field')` - Case conversion
+- `length('Field')` - String length
+- `replace('Field', 'old', 'new')` - Replace text
+
+### Regular Expressions
+- `| where 'Field' regex '\\d+\\.\\d+\\.\\d+\\.\\d+'` - Match IP addresses
+- `| eval extracted = regex('Field', '(\\d+)ms')` - Extract patterns
+- `| where Message regex '(?i)error'` - Case-insensitive regex
+
+### Conditional Logic
+- `| eval status = if(count > 100, 'high', 'low')` - If/else
+- `| eval tier = case(count > 1000, 'critical', count > 100, 'warning', 'normal')` - Case/when
+
+### Time Functions
+- `| eval hour = formatDate('Time', 'HH')` - Extract hour
+- `| eval day = formatDate('Time', 'EEEE')` - Day of week
+- `| eval elapsed = dateDiff('End Time', 'Start Time', 'SECONDS')` - Time difference
+
+### Advanced Commands
+- `| distinct 'Field'` - Unique values
+- `| dedup 'Field1', 'Field2'` - Remove duplicates
+- `| addfields count as volume` - Add computed fields
+- `| link 'Field1', 'Field2'` - Link analysis between fields
+- `| cluster` - Auto-cluster similar log entries
+- `| classify` - Auto-classify log patterns
+- `| eventstats count by 'Field'` - Stats without collapsing rows
+- `| delta 'Field'` - Compute difference between consecutive values
+- `| lookup table='LookupTable' 'Key'` - Lookup table joins
+- `| nlp` - Natural language processing on text fields
+
 ## Reference
-Full documentation: https://docs.oracle.com/en-us/iaas/log-analytics/doc/command-reference.html
+- Command Reference: https://docs.oracle.com/en-us/iaas/log-analytics/doc/command-reference.html
+- Knowledge Content: https://docs.oracle.com/en-us/iaas/log-analytics/doc/knowledge-content-reference.html
+- Appendices: https://docs.oracle.com/en-us/iaas/log-analytics/doc/appendices.html
 """
+
+
+def get_reference_docs() -> Dict[str, Any]:
+    """Get links to official Oracle Log Analytics documentation."""
+    return {
+        "documentation": [
+            {
+                "name": "Command Reference",
+                "url": "https://docs.oracle.com/en-us/iaas/log-analytics/doc/command-reference.html",
+                "description": (
+                    "Complete reference for all query commands including stats, "
+                    "where, eval, timestats, sort, head, tail, fields, rename, "
+                    "link, cluster, classify, lookup, and more."
+                ),
+            },
+            {
+                "name": "Knowledge Content Reference",
+                "url": "https://docs.oracle.com/en-us/iaas/log-analytics/doc/knowledge-content-reference.html",
+                "description": (
+                    "Reference for built-in log sources, parsers, fields, labels, "
+                    "and entity types available in OCI Log Analytics."
+                ),
+            },
+            {
+                "name": "Appendices",
+                "url": "https://docs.oracle.com/en-us/iaas/log-analytics/doc/appendices.html",
+                "description": (
+                    "Additional reference material including query language "
+                    "operators, functions, and advanced features."
+                ),
+            },
+            {
+                "name": "Query Language Overview",
+                "url": "https://docs.oracle.com/en-us/iaas/log-analytics/doc/query-language-overview.html",
+                "description": "Introduction to the Log Analytics query language with examples.",
+            },
+        ],
+        "tip": "Use these docs when you need detailed syntax for advanced operators like eval, link, cluster, classify, or lookup.",
+    }

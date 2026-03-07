@@ -9,7 +9,10 @@ import yaml
 
 
 # Default config file location
-CONFIG_PATH = Path.home() / ".oci-la-mcp" / "config.yaml"
+CONFIG_PATH = Path.home() / ".oci-logan-mcp" / "config.yaml"
+
+# Legacy config directory (for migration)
+_LEGACY_CONFIG_DIR = Path.home() / ".oci-la-mcp"
 
 
 # --- Dataclasses ---
@@ -56,7 +59,7 @@ class LoggingConfig:
     """Logging configuration."""
 
     query_logging: bool = True
-    log_path: Path = field(default_factory=lambda: Path.home() / ".oci-la-mcp" / "logs")
+    log_path: Path = field(default_factory=lambda: Path.home() / ".oci-logan-mcp" / "logs")
     log_level: str = "INFO"
 
 
@@ -129,6 +132,9 @@ def load_config(config_path: Optional[Path] = None) -> Settings:
         Settings object with loaded configuration.
     """
     settings = Settings()
+
+    # Migrate legacy config directory if needed
+    _migrate_legacy_config_dir()
 
     # Check for config path override from environment
     if env_config_path := os.environ.get("OCI_LA_MCP_CONFIG"):
@@ -233,6 +239,20 @@ def _apply_env_overrides(settings: Settings) -> Settings:
             setattr(section_obj, key, value)
 
     return settings
+
+
+def _migrate_legacy_config_dir() -> None:
+    """Migrate from legacy ~/.oci-la-mcp/ to ~/.oci-logan-mcp/ if needed."""
+    new_dir = CONFIG_PATH.parent
+    if _LEGACY_CONFIG_DIR.exists() and not new_dir.exists():
+        import shutil
+        import logging
+
+        logger = logging.getLogger(__name__)
+        shutil.move(str(_LEGACY_CONFIG_DIR), str(new_dir))
+        logger.info(
+            f"Migrated config directory from {_LEGACY_CONFIG_DIR} to {new_dir}"
+        )
 
 
 def save_config(settings: Settings, config_path: Optional[Path] = None) -> None:

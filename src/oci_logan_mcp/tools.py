@@ -402,4 +402,111 @@ def get_tools() -> List[Dict[str, Any]]:
                 },
             },
         },
+        # Memory & Context Tools
+        {
+            "name": "save_learned_query",
+            "description": (
+                "Save a working query for future reference. Call this after a query "
+                "succeeds and proves useful. The query will be persisted across sessions "
+                "and available as a template in future conversations."
+            ),
+            "inputSchema": {
+                "type": "object",
+                "properties": {
+                    "name": {
+                        "type": "string",
+                        "description": "Short descriptive name for the query",
+                    },
+                    "query": {
+                        "type": "string",
+                        "description": "The exact query text that worked",
+                    },
+                    "description": {
+                        "type": "string",
+                        "description": "What this query does and when to use it",
+                    },
+                    "category": {
+                        "type": "string",
+                        "description": "Category for the query",
+                        "enum": ["security", "errors", "performance", "network", "audit", "general"],
+                    },
+                    "tags": {
+                        "type": "array",
+                        "items": {"type": "string"},
+                        "description": "Optional tags for searchability",
+                    },
+                },
+                "required": ["name", "query", "description"],
+            },
+        },
+        {
+            "name": "list_learned_queries",
+            "description": (
+                "List all previously saved learned queries. These are queries that "
+                "were saved from successful executions in past sessions. Filter by "
+                "category or tag."
+            ),
+            "inputSchema": {
+                "type": "object",
+                "properties": {
+                    "category": {
+                        "type": "string",
+                        "description": "Filter by category",
+                        "enum": ["security", "errors", "performance", "network", "audit", "general", "all"],
+                    },
+                    "tag": {
+                        "type": "string",
+                        "description": "Filter by tag",
+                    },
+                },
+            },
+        },
+        {
+            "name": "update_tenancy_context",
+            "description": (
+                "Update the persistent tenancy context with discovered information. "
+                "Use this to save environment-specific notes, confirmed field names, "
+                "or quirks that should be remembered across sessions."
+            ),
+            "inputSchema": {
+                "type": "object",
+                "properties": {
+                    "notes": {
+                        "type": "array",
+                        "items": {"type": "string"},
+                        "description": "Environment-specific notes or quirks to remember",
+                    },
+                    "confirmed_fields": {
+                        "type": "array",
+                        "items": {
+                            "type": "object",
+                            "properties": {
+                                "name": {"type": "string"},
+                                "data_type": {"type": "string"},
+                                "known_values": {
+                                    "type": "array",
+                                    "items": {"type": "string"},
+                                },
+                            },
+                            "required": ["name"],
+                        },
+                        "description": "Fields confirmed to work in this environment",
+                    },
+                },
+            },
+        },
+        {
+            "name": "delete_learned_query",
+            "description": "Delete a previously saved learned query by name.",
+            "inputSchema": {
+                "type": "object",
+                "properties": {
+                    "name": {
+                        "type": "string",
+                        "description": "Name of the learned query to delete",
+                    },
+                },
+                "required": ["name"],
+            },
+        },
     ]

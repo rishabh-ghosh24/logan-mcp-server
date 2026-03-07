@@ -20,6 +20,7 @@ from .wizard import run_setup_wizard
 from .client import OCILogAnalyticsClient
 from .cache import CacheManager
 from .query_logger import QueryLogger
+from .context_manager import ContextManager
 from .tools import get_tools
 from .resources import get_resources
 from .handlers import MCPHandlers
@@ -47,6 +48,7 @@ class OCILogAnalyticsMCPServer:
         self.oci_client = None
         self.cache = None
         self.query_logger = None
+        self.context_manager = None
         self.handlers = None
 
         self._setup_handlers()
@@ -151,6 +153,9 @@ class OCILogAnalyticsMCPServer:
             logger.warning("Server will start but OCI operations will fail")
             self.oci_client = None
 
+        # Initialize context manager
+        self.context_manager = ContextManager(self.settings)
+
         # Initialize handlers
         if self.oci_client:
             self.handlers = MCPHandlers(
@@ -158,7 +163,17 @@ class OCILogAnalyticsMCPServer:
                 oci_client=self.oci_client,
                 cache=self.cache,
                 query_logger=self.query_logger,
+                context_manager=self.context_manager,
             )
+
+            # Refresh schema data from OCI at startup (always fresh)
+            try:
+                counts = await self.context_manager.refresh_schema(
+                    self.oci_client, self.settings
+                )
+                logger.info(f"Schema refresh at startup: {counts}")
+            except Exception as e:
+                logger.warning(f"Schema refresh failed at startup: {e}")
 
         logger.info("OCI Log Analytics MCP Server initialized")
 

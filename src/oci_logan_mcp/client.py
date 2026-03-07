@@ -13,8 +13,8 @@ from .config import Settings
 
 logger = logging.getLogger(__name__)
 
-# Debug file logging (writes to ~/.oci-la-mcp/debug.log)
-DEBUG_LOG_PATH = Path.home() / ".oci-la-mcp" / "debug.log"
+# Debug file logging (writes to ~/.oci-logan-mcp/debug.log)
+DEBUG_LOG_PATH = Path.home() / ".oci-logan-mcp" / "debug.log"
 
 
 def _debug(msg: str):

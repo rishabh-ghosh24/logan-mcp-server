@@ -13,8 +13,9 @@ from .export import ExportService
 from .client import OCILogAnalyticsClient
 from .cache import CacheManager
 from .query_logger import QueryLogger
+from .context_manager import ContextManager
 from .config import Settings
-from .resources import get_query_templates, get_syntax_guide
+from .resources import get_query_templates, get_syntax_guide, get_reference_docs
 
 logger = logging.getLogger(__name__)
 
@@ -28,12 +29,14 @@ class MCPHandlers:
         oci_client: OCILogAnalyticsClient,
         cache: CacheManager,
         query_logger: QueryLogger,
+        context_manager: ContextManager,
     ):
         """Initialize MCP handlers."""
         self.settings = settings
         self.oci_client = oci_client
         self.cache = cache
         self.query_logger = query_logger
+        self.context_manager = context_manager
 
         # Initialize services
         self.schema_manager = SchemaManager(oci_client, cache)
@@ -75,6 +78,11 @@ class MCPHandlers:
             "find_compartment": self._find_compartment,
             "get_query_examples": self._get_query_examples,
             "get_log_summary": self._get_log_summary,
+            # Memory & context
+            "save_learned_query": self._save_learned_query,
+            "list_learned_queries": self._list_learned_queries,
+            "update_tenancy_context": self._update_tenancy_context,
+            "delete_learned_query": self._delete_learned_query,
         }
 
         handler = handlers.get(name)
@@ -93,11 +101,20 @@ class MCPHandlers:
         if uri == "loganalytics://schema":
             return await self.schema_manager.get_full_schema()
         elif uri == "loganalytics://query-templates":
-            return get_query_templates()
+            builtin = get_query_templates()
+            return {
+                "templates": self.context_manager.get_all_templates(
+                    builtin.get("templates", [])
+                )
+            }
         elif uri == "loganalytics://syntax-guide":
             return get_syntax_guide()
         elif uri == "loganalytics://recent-queries":
             return self.query_logger.get_recent_queries(limit=10)
+        elif uri == "loganalytics://tenancy-context":
+            return self.context_manager.get_tenancy_context()
+        elif uri == "loganalytics://reference-docs":
+            return get_reference_docs()
         else:
             raise ValueError(f"Unknown resource: {uri}")
 
@@ -108,6 +125,8 @@ class MCPHandlers:
         sources = await self.schema_manager.get_log_sources(
             compartment_id=args.get("compartment_id")
         )
+        # Auto-capture to tenancy context
+        self.context_manager.update_log_sources(sources)
         return [{"type": "text", "text": json.dumps(sources, indent=2)}]
 
     async def _list_fields(self, args: Dict) -> List[Dict]:
@@ -123,6 +142,8 @@ class MCPHandlers:
             }
             for f in fields
         ]
+        # Auto-capture to tenancy context
+        self.context_manager.update_confirmed_fields(field_dicts)
         return [{"type": "text", "text": json.dumps(field_dicts, indent=2)}]
 
     async def _list_entities(self, args: Dict) -> List[Dict]:
@@ -202,6 +223,8 @@ class MCPHandlers:
             include_subcompartments=include_subs,
             compartment_id=compartment_id,
         )
+        # Track usage of learned queries
+        self.context_manager.record_query_usage(args["query"])
         return [{"type": "text", "text": json.dumps(result, indent=2, default=str)}]
 
     async def _run_saved_search(self, args: Dict) -> List[Dict]:
@@ -320,6 +343,8 @@ class MCPHandlers:
     async def _list_compartments(self, args: Dict) -> List[Dict]:
         """List compartments."""
         compartments = await self.oci_client.list_compartments()
+        # Auto-capture to tenancy context
+        self.context_manager.update_compartments(compartments)
         return [{"type": "text", "text": json.dumps(compartments, indent=2)}]
 
     async def _test_connection(self, args: Dict) -> List[Dict]:
@@ -644,3 +669,64 @@ class MCPHandlers:
         else:
             top_source = sources[0]['source'] if sources else "N/A"
             return f"Top log source is '{top_source}'. Use list_log_sources to see all available sources."
+
+    # Memory & context tools
+
+    async def _save_learned_query(self, args: Dict) -> List[Dict]:
+        """Save a working query for future reference."""
+        saved = self.context_manager.save_learned_query(
+            name=args["name"],
+            query=args["query"],
+            description=args["description"],
+            category=args.get("category", "general"),
+            tags=args.get("tags"),
+        )
+        return [{"type": "text", "text": json.dumps({
+            "status": "saved",
+            "query": saved,
+            "message": f"Query '{args['name']}' saved. It will be available in future sessions.",
+        }, indent=2, default=str)}]
+
+    async def _list_learned_queries(self, args: Dict) -> List[Dict]:
+        """List previously saved learned queries."""
+        queries = self.context_manager.list_learned_queries(
+            category=args.get("category"),
+            tag=args.get("tag"),
+        )
+        return [{"type": "text", "text": json.dumps({
+            "count": len(queries),
+            "queries": queries,
+        }, indent=2, default=str)}]
+
+    async def _update_tenancy_context(self, args: Dict) -> List[Dict]:
+        """Update persistent tenancy context."""
+        updated = []
+
+        if notes := args.get("notes"):
+            for note in notes:
+                self.context_manager.add_note(note)
+            updated.append(f"Added {len(notes)} note(s)")
+
+        if fields := args.get("confirmed_fields"):
+            count = self.context_manager.update_confirmed_fields(fields)
+            updated.append(f"Updated fields ({count} new)")
+
+        return [{"type": "text", "text": json.dumps({
+            "status": "updated",
+            "changes": updated,
+            "message": "Tenancy context updated. Changes persist across sessions.",
+        }, indent=2)}]
+
+    async def _delete_learned_query(self, args: Dict) -> List[Dict]:
+        """Delete a learned query by name."""
+        deleted = self.context_manager.delete_learned_query(args["name"])
+        if deleted:
+            return [{"type": "text", "text": json.dumps({
+                "status": "deleted",
+                "message": f"Query '{args['name']}' deleted.",
+            }, indent=2)}]
+        else:
+            return [{"type": "text", "text": json.dumps({
+                "status": "not_found",
+                "message": f"No learned query named '{args['name']}' found.",
+            }, indent=2)}]

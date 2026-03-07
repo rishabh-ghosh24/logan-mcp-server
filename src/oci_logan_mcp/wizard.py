@@ -70,7 +70,7 @@ def run_setup_wizard() -> Settings:
 
     if _confirm("\n  Save this configuration?"):
         save_config(settings)
-        print(f"\nConfiguration saved to ~/.oci-la-mcp/config.yaml")
+        print(f"\nConfiguration saved to ~/.oci-logan-mcp/config.yaml")
         print("MCP Server is ready!\n")
     else:
         print("\nConfiguration not saved. You can run the wizard again later.\n")
