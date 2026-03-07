@@ -12,14 +12,14 @@ echo "================================================"
 echo " OCI Log Analytics MCP Server - OEL 9 Setup"
 echo "================================================"
 
-# Check Python version
+# Check Python version (3.10+ required)
 PYTHON_CMD=""
-for cmd in python3.11 python3.10 python3.9 python3; do
+for cmd in python3.11 python3.12 python3.10 python3; do
     if command -v "$cmd" &>/dev/null; then
         version=$("$cmd" --version 2>&1 | awk '{print $2}')
         major=$(echo "$version" | cut -d. -f1)
         minor=$(echo "$version" | cut -d. -f2)
-        if [ "$major" -ge 3 ] && [ "$minor" -ge 9 ]; then
+        if [ "$major" -ge 3 ] && [ "$minor" -ge 10 ]; then
             PYTHON_CMD="$cmd"
             break
         fi
@@ -27,7 +27,7 @@ for cmd in python3.11 python3.10 python3.9 python3; do
 done
 
 if [ -z "$PYTHON_CMD" ]; then
-    echo "Python 3.9+ is required. Installing..."
+    echo "Python 3.10+ is required. Installing Python 3.11..."
     sudo dnf install -y python3.11 python3.11-pip
     PYTHON_CMD="python3.11"
 fi

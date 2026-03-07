@@ -32,8 +32,10 @@ An MCP (Model Context Protocol) server that connects AI assistants to Oracle Clo
 git clone https://github.com/rishabh-ghosh24/logan-mcp-server.git
 cd logan-mcp-server
 
-python3 -m venv venv
+# Use Python 3.11 (or any 3.10+)
+python3.11 -m venv venv
 source venv/bin/activate
+pip install --upgrade pip
 pip install -e .
 ```
 
