@@ -10,10 +10,6 @@ authors = [
 ]
 keywords = ["oci", "oracle", "log-analytics", "mcp", "observability", "monitoring"]
 
-[project.urls]
-Homepage = "https://github.com/rishabh-ghosh24/logan-mcp-server"
-Repository = "https://github.com/rishabh-ghosh24/logan-mcp-server"
-Issues = "https://github.com/rishabh-ghosh24/logan-mcp-server/issues"
 classifiers = [
     "Development Status :: 4 - Beta",
     "Intended Audience :: Developers",
@@ -27,6 +23,11 @@ classifiers = [
     "Topic :: System :: Monitoring",
     "Topic :: System :: Logging",
 ]
+
+[project.urls]
+Homepage = "https://github.com/rishabh-ghosh24/logan-mcp-server"
+Repository = "https://github.com/rishabh-ghosh24/logan-mcp-server"
+Issues = "https://github.com/rishabh-ghosh24/logan-mcp-server/issues"
 
 dependencies = [
     "mcp>=1.0.0",
