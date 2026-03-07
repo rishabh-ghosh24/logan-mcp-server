@@ -250,6 +250,34 @@ def get_reference_docs() -> Dict[str, Any]:
                 "url": "https://docs.oracle.com/en-us/iaas/log-analytics/doc/query-language-overview.html",
                 "description": "Introduction to the Log Analytics query language with examples.",
             },
+            {
+                "name": "Log Analytics Home",
+                "url": "https://docs.oracle.com/en-us/iaas/log-analytics/home.htm",
+                "description": (
+                    "Log Analytics documentation home page. Start here for "
+                    "concepts, getting started guides, and feature overviews."
+                ),
+            },
+            {
+                "name": "REST API Reference",
+                "url": "https://docs.oracle.com/en-us/iaas/api/#/en/logan-api-spec/20200601/",
+                "description": (
+                    "Complete REST API reference for Log Analytics. Covers all "
+                    "API endpoints, request/response schemas, and error codes."
+                ),
+            },
+            {
+                "name": "OCI CLI — Log Analytics Commands",
+                "url": "https://docs.oracle.com/en-us/iaas/tools/oci-cli/latest/oci_cli_docs/cmdref/log-analytics.html",
+                "description": (
+                    "OCI CLI command reference for log-analytics. Useful for "
+                    "understanding available operations and parameter names."
+                ),
+            },
         ],
-        "tip": "Use these docs when you need detailed syntax for advanced operators like eval, link, cluster, classify, or lookup.",
+        "tip": (
+            "Use these docs when you need detailed syntax for advanced operators, "
+            "API parameter names, or to verify correct field names and operations. "
+            "Read the reference-docs resource on demand — do not preload."
+        ),
     }
