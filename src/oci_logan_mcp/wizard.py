@@ -193,20 +193,50 @@ def _get_oci_clients(settings: Settings) -> Tuple[Any, Any]:
 
 
 def _fetch_namespace(settings: Settings) -> Optional[str]:
-    """Try to fetch Log Analytics namespace from OCI."""
+    """Try to fetch Log Analytics namespace from OCI.
+
+    Uses the Log Analytics API (get_namespace) to retrieve the actual
+    namespace, which may differ from the tenancy name.
+    """
     try:
+        import oci
+
         print("  Fetching namespace from OCI...")
-        identity_client, config = _get_oci_clients(settings)
-        if identity_client is None:
+
+        if settings.oci.auth_type == "config_file":
+            config = oci.config.from_file(
+                file_location=str(settings.oci.config_path),
+                profile_name=settings.oci.profile,
+            )
+            la_client = oci.log_analytics.LogAnalyticsClient(config)
+            tenancy_id = config.get("tenancy")
+        elif settings.oci.auth_type == "instance_principal":
+            signer = oci.auth.signers.InstancePrincipalsSecurityTokenSigner()
+            config = {"region": signer.region}
+            la_client = oci.log_analytics.LogAnalyticsClient(
+                config=config, signer=signer
+            )
+            tenancy_id = getattr(signer, "tenancy_id", None)
+        elif settings.oci.auth_type == "resource_principal":
+            signer = oci.auth.signers.get_resource_principals_signer()
+            config = {"region": signer.region}
+            la_client = oci.log_analytics.LogAnalyticsClient(
+                config=config, signer=signer
+            )
+            tenancy_id = getattr(signer, "tenancy_id", None)
+        else:
             return None
 
-        tenancy_id = config.get("tenancy")
         if not tenancy_id:
-            print("  Could not determine tenancy ID.")
+            print("  Could not determine tenancy ID for namespace lookup.")
             return None
 
-        tenancy = identity_client.get_tenancy(tenancy_id).data
-        return tenancy.name.lower().replace(" ", "")
+        # list_namespaces returns the actual LA namespace for this tenancy
+        response = la_client.list_namespaces(compartment_id=tenancy_id)
+        if response.data and hasattr(response.data, "items") and response.data.items:
+            return response.data.items[0].namespace_name
+
+        return None
 
     except Exception as e:
         print(f"  Could not fetch namespace: {e}")
