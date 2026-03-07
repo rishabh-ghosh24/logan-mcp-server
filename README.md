@@ -4,10 +4,13 @@ An MCP (Model Context Protocol) server that connects AI assistants to Oracle Clo
 
 ## Features
 
-- **20 MCP Tools**: Query execution, schema exploration, visualization, export, configuration management
+- **24 MCP Tools**: Query execution, schema exploration, visualization, export, configuration, and memory management
+- **6 MCP Resources**: Schema, query templates, syntax guide, recent queries, tenancy context, and reference docs
+- **Cross-Session Memory**: Save and reuse successful queries across sessions with persistent learned query storage
+- **Tenancy Context**: Auto-discovers and caches log sources, fields, entities, parsers, labels, and compartments at startup
 - **Cross-Compartment Queries**: Query across your entire OCI tenancy with `scope=tenancy`
 - **Intelligent Validation**: Query syntax checking with fuzzy field name suggestions
-- **Visualization**: Generate pie, bar, line, area, table, and tile charts from query results
+- **Visualization**: Generate pie, bar, line, area, table, tile, and treemap charts from query results
 - **Export**: Export results to CSV or JSON format
 - **Caching**: In-memory caching with TTL for improved performance
 - **Rate Limiting**: Automatic rate limiting with exponential backoff for OCI API calls
@@ -141,6 +144,10 @@ chmod +x scripts/setup_oel9.sh
 | `find_compartment` | Search compartments by name |
 | `get_query_examples` | Get example queries by category |
 | `get_log_summary` | Get log volume summary |
+| `save_learned_query` | Save a working query for future sessions |
+| `list_learned_queries` | List previously saved learned queries |
+| `delete_learned_query` | Delete a saved learned query |
+| `update_tenancy_context` | Save environment-specific notes and confirmed fields |
 
 ## Running Tests
 
@@ -171,6 +178,7 @@ logan-mcp-server/
 │   ├── tools.py             # MCP tool definitions
 │   ├── handlers.py          # MCP request handlers
 │   ├── resources.py         # MCP resource providers
+│   ├── context_manager.py   # Persistent context and learned query storage
 │   ├── query_engine.py      # Query execution service
 │   ├── schema_manager.py    # Schema exploration service
 │   ├── validator.py         # Query validation
@@ -182,6 +190,7 @@ logan-mcp-server/
 │   └── templates/
 │       └── query_templates.yaml
 ├── tests/
+│   └── test_context_manager.py
 ├── scripts/
 │   ├── oci-initial-setup.sh  # Full VM bootstrap (Python, OCI CLI, Docker, Java)
 │   ├── setup_oel9.sh         # Logan MCP server setup (venv + pip install)
