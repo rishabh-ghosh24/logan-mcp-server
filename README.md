@@ -200,6 +200,56 @@ Supported authentication methods:
 - **instance_principal**: For OCI compute instances with dynamic group policies
 - **resource_principal**: For OCI Functions and other managed services
 
+### Instance Principal Setup
+
+For OCI VM deployments, instance principal is the recommended auth method (no config files to manage).
+
+#### 1. Get your compute instance OCID
+
+SSH into the VM and run:
+
+```bash
+curl -s -H "Authorization: Bearer Oracle" \
+  http://169.254.169.254/opc/v2/instance/ | jq -r '.id'
+```
+
+#### 2. Create a Dynamic Group
+
+In the OCI Console, create a dynamic group (e.g., `logan-mcp-dg`) with the matching rule:
+
+```
+ANY {instance.id = '<your-compute-instance-OCID>'}
+```
+
+#### 3. Add IAM Policies (tenancy level)
+
+```
+Allow dynamic-group logan-mcp-dg to use loganalytics-features-family in tenancy
+Allow dynamic-group logan-mcp-dg to use loganalytics-resources-family in tenancy
+Allow dynamic-group logan-mcp-dg to manage management-dashboard-family in tenancy
+Allow dynamic-group logan-mcp-dg to read compartments in tenancy
+Allow dynamic-group logan-mcp-dg to manage management-agents in tenancy
+Allow dynamic-group logan-mcp-dg to manage management-agent-install-keys in tenancy
+Allow dynamic-group logan-mcp-dg to read metrics in tenancy
+Allow dynamic-group logan-mcp-dg to read users in tenancy
+Allow dynamic-group logan-mcp-dg to {BUCKET_UPDATE, BUCKET_READ} in tenancy
+Allow service loganalytics to read loganalytics-features-family in tenancy
+```
+
+#### 4. Verify
+
+```bash
+# Confirm the instance can reach the metadata service and is in the right region
+curl -s -H "Authorization: Bearer Oracle" \
+  http://169.254.169.254/opc/v2/instance/ | jq -r '.canonicalRegionName'
+```
+
+Then set the auth type when running the MCP server:
+
+```bash
+export OCI_LA_AUTH_TYPE=instance_principal
+```
+
 ## License
 
 MIT
