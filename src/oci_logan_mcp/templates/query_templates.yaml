@@ -1,0 +1,150 @@
+# OCI Log Analytics Query Templates
+# Common query patterns for natural language interaction
+
+templates:
+  # Error Analysis
+  - name: errors_last_hour
+    description: Find all errors in the last hour
+    query: "'Error' or 'Critical' | timestats count by 'Log Source'"
+    category: errors
+    time_range: last_1_hour
+
+  - name: error_count_by_host
+    description: Count errors grouped by host
+    query: "'Severity' = 'Error' | stats count by 'Host Name' | sort -count"
+    category: errors
+
+  - name: error_details
+    description: Get detailed error messages
+    query: "'Severity' = 'Error' | fields 'Time', 'Host Name', 'Log Source', 'Message' | head 100"
+    category: errors
+
+  # Top N Analysis
+  - name: top_n_by_field
+    description: Get top N records by a field
+    query: "* | stats count by '{field}' | sort -count | head {n}"
+    category: aggregation
+    parameters:
+      - field
+      - n
+
+  - name: top_hosts_by_volume
+    description: Top 10 hosts by log volume
+    query: "* | stats count by 'Host Name' | sort -count | head 10"
+    category: aggregation
+
+  - name: top_sources_by_volume
+    description: Top log sources by volume
+    query: "* | stats count by 'Log Source' | sort -count | head 10"
+    category: aggregation
+
+  # Time-based Analysis
+  - name: trend_over_time
+    description: Show log count trend over time
+    query: "* | timestats count span=1hour"
+    category: trends
+
+  - name: error_trend
+    description: Error count trend over time
+    query: "'Severity' = 'Error' | timestats count span=1hour"
+    category: trends
+
+  - name: hourly_distribution
+    description: Hourly log distribution
+    query: "* | timestats count span=1hour by 'Log Source'"
+    category: trends
+
+  # Search Patterns
+  - name: search_keyword
+    description: Search for a keyword in logs
+    query: "'{keyword}' | fields 'Log Source', 'Entity', 'Message', 'Time'"
+    category: search
+    parameters:
+      - keyword
+
+  - name: search_in_source
+    description: Search within a specific log source
+    query: "'Log Source' = '{source}' and '{keyword}' | fields 'Time', 'Message' | head 100"
+    category: search
+    parameters:
+      - source
+      - keyword
+
+  # Filtering
+  - name: filter_by_severity
+    description: Filter logs by severity level
+    query: "'Severity' = '{level}' | stats count by 'Host Name'"
+    category: filtering
+    parameters:
+      - level
+
+  - name: filter_by_host
+    description: Filter logs from a specific host
+    query: "'Host Name' = '{host}' | fields 'Time', 'Log Source', 'Severity', 'Message' | head 100"
+    category: filtering
+    parameters:
+      - host
+
+  - name: filter_by_source
+    description: Filter by log source
+    query: "'Log Source' = '{source}' | fields 'Time', 'Host Name', 'Message' | head 100"
+    category: filtering
+    parameters:
+      - source
+
+  # Recent Logs
+  - name: recent_logs
+    description: Get most recent logs
+    query: "* | fields 'Time', 'Log Source', 'Message' | sort -'Time' | head 100"
+    category: recent
+
+  - name: recent_errors
+    description: Most recent errors
+    query: "'Severity' in ('Error', 'Critical') | fields 'Time', 'Host Name', 'Log Source', 'Message' | sort -'Time' | head 50"
+    category: recent
+
+  # Aggregations
+  - name: count_by_severity
+    description: Count logs by severity level
+    query: "* | stats count by 'Severity' | sort -count"
+    category: aggregation
+
+  - name: count_by_source_and_severity
+    description: Count by source and severity
+    query: "* | stats count by 'Log Source', 'Severity'"
+    category: aggregation
+
+  # Performance Analysis
+  - name: slow_operations
+    description: Find slow operations (if duration field exists)
+    query: "'Duration' > 1000 | stats avg('Duration'), max('Duration') by 'Operation'"
+    category: performance
+
+categories:
+  errors:
+    description: Error analysis and troubleshooting
+    icon: "!"
+
+  aggregation:
+    description: Statistical aggregations and top N analysis
+    icon: "#"
+
+  trends:
+    description: Time-based trend analysis
+    icon: "~"
+
+  search:
+    description: Keyword and pattern searching
+    icon: "?"
+
+  filtering:
+    description: Filtering by specific criteria
+    icon: "="
+
+  recent:
+    description: Recent log entries
+    icon: ">"
+
+  performance:
+    description: Performance analysis
+    icon: "*"
