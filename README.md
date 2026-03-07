@@ -17,7 +17,9 @@ An MCP (Model Context Protocol) server that connects AI assistants to Oracle Clo
 
 - Python 3.10+
 - OCI account with Log Analytics enabled
-- OCI CLI configured (`~/.oci/config`) or instance principal authentication
+- OCI authentication (choose one):
+  - **Config file**: `~/.oci/config` for local/laptop use
+  - **Instance Principal**: No config file needed — attach Dynamic Group + IAM policy to compute instance (recommended for OCI VM deployments)
 
 ## Quick Start
 
@@ -79,17 +81,35 @@ For running on an OCI VM with instance principal auth:
       "args": [
         "-i", "~/.ssh/your-key",
         "opc@your-vm-ip",
-        "cd /path/to/logan-mcp-server && source venv/bin/activate && python -m oci_logan_mcp"
+        "/path/to/logan-mcp-server/venv/bin/python -m oci_logan_mcp"
       ]
     }
   }
 }
 ```
 
-## OEL 9 VM Setup
+## OCI VM Setup
+
+### Fresh VM (no dependencies installed)
+
+For a brand new Oracle Linux 9 VM that needs Python, OCI CLI, Docker, and Java:
 
 ```bash
-# On the OCI VM
+curl -fsSL https://raw.githubusercontent.com/rishabh-ghosh24/logan-mcp-server/main/scripts/oci-initial-setup.sh | bash
+```
+
+Or clone first and run locally:
+
+```bash
+git clone https://github.com/rishabh-ghosh24/logan-mcp-server.git
+cd logan-mcp-server
+chmod +x scripts/oci-initial-setup.sh
+./scripts/oci-initial-setup.sh
+```
+
+### Existing VM (Python 3.10+ already available)
+
+```bash
 git clone https://github.com/rishabh-ghosh24/logan-mcp-server.git
 cd logan-mcp-server
 chmod +x scripts/setup_oel9.sh
@@ -163,7 +183,8 @@ logan-mcp-server/
 │       └── query_templates.yaml
 ├── tests/
 ├── scripts/
-│   ├── setup_oel9.sh
+│   ├── oci-initial-setup.sh  # Full VM bootstrap (Python, OCI CLI, Docker, Java)
+│   ├── setup_oel9.sh         # Logan MCP server setup (venv + pip install)
 │   ├── run.sh
 │   └── update.sh
 ├── run_tests.py             # Integration test suite
