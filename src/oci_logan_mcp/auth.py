@@ -55,6 +55,9 @@ def _get_instance_principal_signer() -> Tuple[dict, Any]:
     """
     signer = oci.auth.signers.InstancePrincipalsSecurityTokenSigner()
     oci_config = {"region": signer.region}
+    # Include tenancy ID if available (needed for list_compartments, etc.)
+    if hasattr(signer, "tenancy_id") and signer.tenancy_id:
+        oci_config["tenancy"] = signer.tenancy_id
     return oci_config, signer
 
 
@@ -79,8 +82,14 @@ def validate_credentials(config: OCIConfig) -> bool:
     """
     try:
         oci_config, signer = get_signer(config)
+        tenancy_id = oci_config.get("tenancy")
+        if not tenancy_id and hasattr(signer, "tenancy_id"):
+            tenancy_id = signer.tenancy_id
+        if not tenancy_id:
+            # Can't validate without tenancy ID, but signer creation succeeded
+            return True
         identity_client = oci.identity.IdentityClient(config=oci_config, signer=signer)
-        identity_client.get_tenancy(oci_config["tenancy"])
+        identity_client.get_tenancy(tenancy_id)
         return True
     except Exception:
         return False

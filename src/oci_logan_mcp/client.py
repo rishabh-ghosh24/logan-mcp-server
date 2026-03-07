@@ -51,6 +51,7 @@ class OCILogAnalyticsClient:
         )
 
         self._rate_limiter = RateLimiter()
+        self._auth_type = settings.oci.auth_type
 
         # Runtime context (can be changed)
         self._namespace = settings.log_analytics.namespace
@@ -261,10 +262,11 @@ class OCILogAnalyticsClient:
         """List fields, optionally filtered by source."""
         await self._rate_limiter.acquire()
 
-        response = self._la_client.list_fields(
-            namespace_name=self._namespace,
-            compartment_id=self._compartment_id,
-        )
+        kwargs = {"namespace_name": self._namespace}
+        if source_name:
+            kwargs["source_name"] = source_name
+
+        response = self._la_client.list_fields(**kwargs)
 
         fields = response.data.items
         self._rate_limiter.reset()
@@ -290,7 +292,7 @@ class OCILogAnalyticsClient:
         if entity_type:
             kwargs["entity_type_name"] = [entity_type]
 
-        response = self._la_client.list_entities(**kwargs)
+        response = self._la_client.list_log_analytics_entities(**kwargs)
         self._rate_limiter.reset()
 
         return [
@@ -309,7 +311,6 @@ class OCILogAnalyticsClient:
 
         response = self._la_client.list_parsers(
             namespace_name=self._namespace,
-            compartment_id=self._compartment_id,
         )
         self._rate_limiter.reset()
 
@@ -329,7 +330,6 @@ class OCILogAnalyticsClient:
 
         response = self._la_client.list_labels(
             namespace_name=self._namespace,
-            compartment_id=self._compartment_id,
         )
         self._rate_limiter.reset()
 
@@ -396,6 +396,15 @@ class OCILogAnalyticsClient:
         await self._rate_limiter.acquire()
 
         tenancy_id = self._config.get("tenancy")
+        if not tenancy_id:
+            # For instance/resource principal, try getting tenancy from signer
+            if hasattr(self._signer, "tenancy_id"):
+                tenancy_id = self._signer.tenancy_id
+            else:
+                self._rate_limiter.reset()
+                logger.warning("Cannot list compartments: tenancy ID not available")
+                return []
+
         response = self._identity_client.list_compartments(
             compartment_id=tenancy_id,
             compartment_id_in_subtree=True,

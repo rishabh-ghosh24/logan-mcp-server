@@ -2,7 +2,7 @@
 
 import sys
 from pathlib import Path
-from typing import List, Optional
+from typing import List, Optional, Tuple, Any
 
 from .config import Settings, save_config
 
@@ -19,25 +19,29 @@ def run_setup_wizard() -> Settings:
 
     settings = Settings()
 
-    # Step 1: OCI Config
-    print("Step 1/5: OCI Configuration")
-    settings.oci.config_path = _prompt_path(
-        "  Path to OCI config file", default=Path.home() / ".oci" / "config"
-    )
-    settings.oci.profile = _prompt("  Profile name", default="DEFAULT")
-
-    # Step 2: Auth Type
-    print("\nStep 2/5: Authentication Type")
+    # Step 1: Auth Type (ask first — determines what else is needed)
+    print("Step 1/4: Authentication Type")
     print("  Select authentication method:")
-    print("  1. Config file (local development)")
-    print("  2. Instance Principal (OCI VM)")
+    print("  1. Instance Principal (OCI VM — recommended for VM deployments)")
+    print("  2. Config file (local development with ~/.oci/config)")
     print("  3. Resource Principal (OCI Functions)")
-    auth_options = ["config_file", "instance_principal", "resource_principal"]
+    auth_options = ["instance_principal", "config_file", "resource_principal"]
     auth_choice = _prompt_choice("  Choice", options=auth_options, default=0)
     settings.oci.auth_type = auth_options[auth_choice]
 
+    # Step 2: OCI Config (only for config_file auth)
+    if settings.oci.auth_type == "config_file":
+        print("\nStep 2/4: OCI Configuration")
+        settings.oci.config_path = _prompt_path(
+            "  Path to OCI config file", default=Path.home() / ".oci" / "config"
+        )
+        settings.oci.profile = _prompt("  Profile name", default="DEFAULT")
+    else:
+        print("\nStep 2/4: OCI Configuration")
+        print(f"  Using {settings.oci.auth_type} — no config file needed.")
+
     # Step 3: Namespace (try to fetch from OCI)
-    print("\nStep 3/5: Log Analytics Namespace")
+    print("\nStep 3/4: Log Analytics Namespace")
     namespace = _fetch_namespace(settings)
     if namespace:
         if _confirm(f"  Found namespace: {namespace}. Use this?"):
@@ -48,27 +52,34 @@ def run_setup_wizard() -> Settings:
         settings.log_analytics.namespace = _prompt("  Enter namespace")
 
     # Step 4: Compartment (try to fetch from OCI)
-    print("\nStep 4/5: Default Compartment")
+    print("\nStep 4/4: Default Compartment")
     compartments = _fetch_compartments(settings)
     if compartments:
         print("  Available compartments:")
         for i, (name, ocid) in enumerate(compartments, 1):
-            print(f"  {i}. {name}")
-        selected = _prompt_choice("  Select default compartment", options=compartments, default=0)
+            short_ocid = ocid[:40] + "..." if len(ocid) > 40 else ocid
+            print(f"  {i}. {name} ({short_ocid})")
+        print(f"  Or enter a compartment OCID directly.")
+        selected = _prompt_choice(
+            "  Select default compartment", options=compartments, default=0
+        )
         settings.log_analytics.default_compartment_id = compartments[selected][1]
     else:
         settings.log_analytics.default_compartment_id = _prompt("  Enter compartment OCID")
 
-    # Step 5: Confirm
-    print("\nStep 5/5: Confirm Configuration")
-    print(f"  Namespace: {settings.log_analytics.namespace}")
+    # Confirm
+    print("\nConfirm Configuration")
+    print(f"  Auth type:    {settings.oci.auth_type}")
+    if settings.oci.auth_type == "config_file":
+        print(f"  Config file:  {settings.oci.config_path}")
+        print(f"  Profile:      {settings.oci.profile}")
+    print(f"  Namespace:    {settings.log_analytics.namespace}")
     compartment_display = settings.log_analytics.default_compartment_id
     if len(compartment_display) > 50:
         compartment_display = compartment_display[:50] + "..."
-    print(f"  Compartment: {compartment_display}")
-    print(f"  Auth: {settings.oci.auth_type} (profile: {settings.oci.profile})")
+    print(f"  Compartment:  {compartment_display}")
 
-    if _confirm("\n  Save this configuration?"):
+    if _confirm("\nSave this configuration?"):
         save_config(settings)
         print(f"\nConfiguration saved to ~/.oci-logan-mcp/config.yaml")
         print("MCP Server is ready!\n")
@@ -137,25 +148,66 @@ def _confirm(message: str, default: bool = True) -> bool:
         sys.exit(1)
 
 
-def _fetch_namespace(settings: Settings) -> Optional[str]:
-    """Try to fetch Log Analytics namespace from OCI."""
+def _get_oci_clients(settings: Settings) -> Tuple[Any, Any]:
+    """Create OCI clients using the selected auth type.
+
+    Returns:
+        Tuple of (identity_client, config_dict) or (None, None) on failure.
+    """
     try:
         import oci
 
-        print("  Fetching namespace from OCI...")
+        if settings.oci.auth_type == "config_file":
+            config = oci.config.from_file(
+                file_location=str(settings.oci.config_path),
+                profile_name=settings.oci.profile,
+            )
+            identity_client = oci.identity.IdentityClient(config)
+            return identity_client, config
 
-        config = oci.config.from_file(
-            file_location=str(settings.oci.config_path), profile_name=settings.oci.profile
-        )
+        elif settings.oci.auth_type == "instance_principal":
+            signer = oci.auth.signers.InstancePrincipalsSecurityTokenSigner()
+            config = {"region": signer.region}
+            # Try to get tenancy ID from signer
+            if hasattr(signer, "tenancy_id"):
+                config["tenancy"] = signer.tenancy_id
+            identity_client = oci.identity.IdentityClient(
+                config=config, signer=signer
+            )
+            return identity_client, config
 
-        identity_client = oci.identity.IdentityClient(config)
-        tenancy = identity_client.get_tenancy(config["tenancy"]).data
-
-        return tenancy.name.lower().replace(" ", "")
+        elif settings.oci.auth_type == "resource_principal":
+            signer = oci.auth.signers.get_resource_principals_signer()
+            config = {"region": signer.region}
+            identity_client = oci.identity.IdentityClient(
+                config=config, signer=signer
+            )
+            return identity_client, config
 
     except ImportError:
-        print("  OCI SDK not installed. Please enter namespace manually.")
-        return None
+        print("  OCI SDK not installed.")
+    except Exception as e:
+        print(f"  Could not create OCI client: {e}")
+
+    return None, None
+
+
+def _fetch_namespace(settings: Settings) -> Optional[str]:
+    """Try to fetch Log Analytics namespace from OCI."""
+    try:
+        print("  Fetching namespace from OCI...")
+        identity_client, config = _get_oci_clients(settings)
+        if identity_client is None:
+            return None
+
+        tenancy_id = config.get("tenancy")
+        if not tenancy_id:
+            print("  Could not determine tenancy ID.")
+            return None
+
+        tenancy = identity_client.get_tenancy(tenancy_id).data
+        return tenancy.name.lower().replace(" ", "")
+
     except Exception as e:
         print(f"  Could not fetch namespace: {e}")
         return None
@@ -164,20 +216,20 @@ def _fetch_namespace(settings: Settings) -> Optional[str]:
 def _fetch_compartments(settings: Settings) -> List[tuple]:
     """Try to fetch compartments from OCI."""
     try:
-        import oci
-
         print("  Fetching compartments from OCI...")
+        identity_client, config = _get_oci_clients(settings)
+        if identity_client is None:
+            return []
 
-        config = oci.config.from_file(
-            file_location=str(settings.oci.config_path), profile_name=settings.oci.profile
-        )
+        tenancy_id = config.get("tenancy")
+        if not tenancy_id:
+            print("  Could not determine tenancy ID. Enter compartment OCID manually.")
+            return []
 
-        identity_client = oci.identity.IdentityClient(config)
-
-        compartments = [(f"root ({config['tenancy'][:20]}...)", config["tenancy"])]
+        compartments = [(f"root ({tenancy_id[:30]}...)", tenancy_id)]
 
         response = identity_client.list_compartments(
-            compartment_id=config["tenancy"],
+            compartment_id=tenancy_id,
             compartment_id_in_subtree=True,
             access_level="ACCESSIBLE",
             lifecycle_state="ACTIVE",
@@ -188,9 +240,6 @@ def _fetch_compartments(settings: Settings) -> List[tuple]:
 
         return compartments[:20]
 
-    except ImportError:
-        print("  OCI SDK not installed. Please enter compartment OCID manually.")
-        return []
     except Exception as e:
         print(f"  Could not fetch compartments: {e}")
         return []
