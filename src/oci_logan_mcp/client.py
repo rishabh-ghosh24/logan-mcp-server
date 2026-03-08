@@ -160,6 +160,7 @@ class OCILogAnalyticsClient:
             response = self._la_client.query(
                 namespace_name=self._namespace,
                 query_details=query_details,
+                limit=max_results,
             )
             self._rate_limiter.reset()
             return self._parse_query_response(response.data)
