@@ -131,7 +131,7 @@ def get_tools() -> List[Dict[str, Any]]:
                     },
                     "include_subcompartments": {
                         "type": "boolean",
-                        "description": "If true, include logs from all sub-compartments of the current compartment. Default: false",
+                        "description": "If true, include logs from all sub-compartments of the current compartment. Default: true",
                     },
                     "compartment_id": {
                         "type": "string",

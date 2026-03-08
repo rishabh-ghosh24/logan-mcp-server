@@ -194,7 +194,7 @@ class MCPHandlers:
         """Resolve scope parameter to compartment_id and include_subcompartments."""
         scope = args.get("scope", "default")
         compartment_id = args.get("compartment_id")
-        include_subs = args.get("include_subcompartments", False)
+        include_subs = args.get("include_subcompartments", True)
 
         if isinstance(include_subs, str):
             include_subs = include_subs.lower() in ("true", "yes", "1")
@@ -255,7 +255,7 @@ class MCPHandlers:
         """Run batch queries."""
         results = await self.query_engine.execute_batch(
             args["queries"],
-            include_subcompartments=args.get("include_subcompartments", False),
+            include_subcompartments=args.get("include_subcompartments", True),
             compartment_id=args.get("compartment_id"),
         )
         return [{"type": "text", "text": json.dumps(results, indent=2, default=str)}]
