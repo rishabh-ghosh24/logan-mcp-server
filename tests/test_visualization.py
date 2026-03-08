@@ -393,11 +393,13 @@ class TestVisualizationEngine:
 
     def test_to_dataframe_normalizes_row_lengths(self, engine, mismatched_column_data):
         """Rows shorter/longer than columns should be padded/trimmed."""
+        import pandas as pd
+
         df = engine._to_dataframe(mismatched_column_data)
         assert len(df) == 3
         assert len(df.columns) == 3
-        # Short row should have None in third column
-        assert df.iloc[0, 2] is None
+        # Short row should have NaN in third column (pandas pads with NaN, not None)
+        assert pd.isna(df.iloc[0, 2])
         # Long row should be trimmed
         assert df.iloc[1].tolist() == ["y", 2, 3]
 
@@ -452,7 +454,9 @@ class TestVisualizationEngine:
 
         series = pd.Series(["2024-01-01T10:00:00Z", "2024-01-01T11:00:00Z"])
         result = engine._parse_datetime_column(series)
-        assert result.dtype == "datetime64[ns, UTC]"
+        # pandas 2.x uses microsecond resolution (us), older uses nanosecond (ns)
+        assert "datetime64" in str(result.dtype)
+        assert "UTC" in str(result.dtype)
 
     # ---------------------------------------------------------------
     # Count Axis Formatting
