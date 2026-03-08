@@ -250,7 +250,7 @@ class VisualizationEngine:
 
     def _generate_pie(self, df: pd.DataFrame, title: Optional[str], options: Dict) -> str:
         """Generate pie chart."""
-        fig, ax = plt.subplots()
+        fig, ax = plt.subplots(figsize=(14, 7))
 
         label_col = df.columns[0]
         value_col = df.columns[1] if len(df.columns) > 1 else df.columns[0]
@@ -266,15 +266,27 @@ class VisualizationEngine:
         else:
             labels = df[label_col].tolist()
 
+        total = values.sum()
+
+        def autopct_func(pct):
+            return f"{pct:.1f}%" if pct >= 5 else ""
+
         colors = LA_COLORS[: len(values)]
-        ax.pie(
+        wedges, texts, autotexts = ax.pie(
             values,
-            labels=labels,
-            autopct="%1.1f%%",
+            labels=None,
+            autopct=autopct_func,
             startangle=90,
             colors=colors,
+            pctdistance=0.75,
         )
+
+        # Legend with label + percentage on the right side
+        legend_labels = [f"{l} ({v / total * 100:.1f}%)" for l, v in zip(labels, values)]
+        ax.legend(wedges, legend_labels, loc="center left", bbox_to_anchor=(1, 0.5), fontsize=9)
+
         ax.set_title(title or f"Distribution by {label_col}")
+        fig.tight_layout()
 
         return self._fig_to_base64(fig)
 
