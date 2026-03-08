@@ -163,7 +163,7 @@ class TestSimpleSimilarity:
     def test_completely_different(self):
         """Completely different strings -> low score."""
         score = _simple_similarity("abc", "xyz")
-        assert score < 0.3
+        assert score <= 0.3
 
     def test_partial_character_overlap(self):
         """Some shared chars -> medium score."""

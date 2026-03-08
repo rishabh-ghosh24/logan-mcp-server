@@ -114,8 +114,12 @@ class TestLogQuery:
     def test_log_written_to_file_when_enabled(self, logger_enabled, tmp_path):
         """Log file gets content when enabled."""
         _log_sample(logger_enabled)
-        log_file = tmp_path / "logs" / "queries.log"
-        assert log_file.exists()
+        # Flush the file handler to ensure content is written
+        for handler in logger_enabled._file_logger.handlers:
+            handler.flush()
+        log_dir = tmp_path / "logs"
+        log_file = log_dir / "queries.log"
+        assert log_file.exists(), f"Log file not found. Dir contents: {list(log_dir.iterdir()) if log_dir.exists() else 'dir missing'}"
         content = log_file.read_text()
         assert "SUCCESS" in content
 
