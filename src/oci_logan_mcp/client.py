@@ -6,6 +6,7 @@ from datetime import datetime
 from pathlib import Path
 
 import oci
+from oci.pagination import list_call_get_all_results
 
 from .auth import get_signer
 from .rate_limiter import RateLimiter
@@ -163,7 +164,29 @@ class OCILogAnalyticsClient:
                 limit=max_results,
             )
             self._rate_limiter.reset()
-            return self._parse_query_response(response.data)
+
+            # Parse first page of results
+            result = self._parse_query_response(response.data)
+
+            # Fetch additional pages if available
+            while response.has_next_page and len(result["rows"]) < max_results:
+                await self._rate_limiter.acquire()
+                response = self._la_client.query(
+                    namespace_name=self._namespace,
+                    query_details=query_details,
+                    limit=max_results,
+                    page=response.next_page,
+                )
+                self._rate_limiter.reset()
+                page_result = self._parse_query_response(response.data)
+                result["rows"].extend(page_result["rows"])
+
+            # Trim to max_results and update count
+            if len(result["rows"]) > max_results:
+                result["rows"] = result["rows"][:max_results]
+            result["total_count"] = len(result["rows"])
+
+            return result
         except oci.exceptions.ServiceError as e:
             if e.status == 429:
                 await self._rate_limiter.handle_rate_limit()
@@ -208,27 +231,16 @@ class OCILogAnalyticsClient:
         }
 
     async def list_log_sources(self, compartment_id: Optional[str] = None) -> List[Dict[str, Any]]:
-        """List all log sources."""
+        """List all log sources (auto-paginates across all pages)."""
         await self._rate_limiter.acquire()
 
         compartment = compartment_id or self._compartment_id
 
-        sources = []
-        response = self._la_client.list_sources(
+        response = list_call_get_all_results(
+            self._la_client.list_sources,
             namespace_name=self._namespace,
             compartment_id=compartment,
         )
-        sources.extend(response.data.items)
-
-        while response.has_next_page:
-            await self._rate_limiter.acquire()
-            response = self._la_client.list_sources(
-                namespace_name=self._namespace,
-                compartment_id=compartment,
-                page=response.next_page,
-            )
-            sources.extend(response.data.items)
-
         self._rate_limiter.reset()
 
         return [
@@ -239,7 +251,7 @@ class OCILogAnalyticsClient:
                 "entity_types": self._serialize_entity_types(getattr(s, "entity_types", None)),
                 "is_system": getattr(s, "is_system", False),
             }
-            for s in sources
+            for s in response.data.items
         ]
 
     def _serialize_entity_types(self, entity_types: Any) -> List[str]:
@@ -260,16 +272,17 @@ class OCILogAnalyticsClient:
         return result
 
     async def list_fields(self, source_name: Optional[str] = None) -> List[Dict[str, Any]]:
-        """List fields, optionally filtered by source."""
+        """List fields, optionally filtered by source (auto-paginates)."""
         await self._rate_limiter.acquire()
 
         kwargs = {"namespace_name": self._namespace}
         if source_name:
             kwargs["source_name"] = source_name
 
-        response = self._la_client.list_fields(**kwargs)
-
-        fields = response.data.items
+        response = list_call_get_all_results(
+            self._la_client.list_fields,
+            **kwargs,
+        )
         self._rate_limiter.reset()
 
         return [
@@ -279,11 +292,11 @@ class OCILogAnalyticsClient:
                 "data_type": getattr(f, "data_type", "STRING"),
                 "description": getattr(f, "description", ""),
             }
-            for f in fields
+            for f in response.data.items
         ]
 
     async def list_entities(self, entity_type: Optional[str] = None) -> List[Dict[str, Any]]:
-        """List monitored entities."""
+        """List monitored entities (auto-paginates across all pages)."""
         await self._rate_limiter.acquire()
 
         kwargs = {
@@ -293,7 +306,10 @@ class OCILogAnalyticsClient:
         if entity_type:
             kwargs["entity_type_name"] = [entity_type]
 
-        response = self._la_client.list_log_analytics_entities(**kwargs)
+        response = list_call_get_all_results(
+            self._la_client.list_log_analytics_entities,
+            **kwargs,
+        )
         self._rate_limiter.reset()
 
         return [
@@ -307,10 +323,11 @@ class OCILogAnalyticsClient:
         ]
 
     async def list_parsers(self) -> List[Dict[str, Any]]:
-        """List available parsers."""
+        """List available parsers (auto-paginates across all pages)."""
         await self._rate_limiter.acquire()
 
-        response = self._la_client.list_parsers(
+        response = list_call_get_all_results(
+            self._la_client.list_parsers,
             namespace_name=self._namespace,
         )
         self._rate_limiter.reset()
@@ -326,10 +343,11 @@ class OCILogAnalyticsClient:
         ]
 
     async def list_labels(self) -> List[Dict[str, Any]]:
-        """List label definitions."""
+        """List label definitions (auto-paginates across all pages)."""
         await self._rate_limiter.acquire()
 
-        response = self._la_client.list_labels(
+        response = list_call_get_all_results(
+            self._la_client.list_labels,
             namespace_name=self._namespace,
         )
         self._rate_limiter.reset()
@@ -345,16 +363,12 @@ class OCILogAnalyticsClient:
         ]
 
     async def list_saved_searches(self) -> List[Dict[str, Any]]:
-        """List saved searches."""
+        """List saved searches (auto-paginates across all pages)."""
         await self._rate_limiter.acquire()
 
-        response = self._la_client.list_log_analytics_em_bridges(
-            namespace_name=self._namespace,
-            compartment_id=self._compartment_id,
-        )
-
         try:
-            response = self._la_client.list_scheduled_tasks(
+            response = list_call_get_all_results(
+                self._la_client.list_scheduled_tasks,
                 namespace_name=self._namespace,
                 compartment_id=self._compartment_id,
                 task_type="SAVED_SEARCH",
@@ -406,7 +420,8 @@ class OCILogAnalyticsClient:
                 logger.warning("Cannot list compartments: tenancy ID not available")
                 return []
 
-        response = self._identity_client.list_compartments(
+        response = list_call_get_all_results(
+            self._identity_client.list_compartments,
             compartment_id=tenancy_id,
             compartment_id_in_subtree=True,
             access_level="ACCESSIBLE",
@@ -424,10 +439,11 @@ class OCILogAnalyticsClient:
         ]
 
     async def list_log_groups(self) -> List[Dict[str, Any]]:
-        """List log groups."""
+        """List log groups (auto-paginates across all pages)."""
         await self._rate_limiter.acquire()
 
-        response = self._la_client.list_log_analytics_log_groups(
+        response = list_call_get_all_results(
+            self._la_client.list_log_analytics_log_groups,
             namespace_name=self._namespace,
             compartment_id=self._compartment_id,
         )

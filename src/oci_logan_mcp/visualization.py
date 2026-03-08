@@ -15,6 +15,7 @@ import matplotlib.dates as mdates
 import matplotlib.ticker as ticker
 import pandas as pd
 import numpy as np
+import seaborn as sns
 
 logger = logging.getLogger(__name__)
 
@@ -43,13 +44,14 @@ class ChartType(Enum):
 
     PIE = "pie"
     BAR = "bar"
+    VERTICAL_BAR = "vertical_bar"
     LINE = "line"
     AREA = "area"
     TABLE = "table"
     TILE = "tile"
-    BUBBLE = "bubble"
     TREEMAP = "treemap"
-    GEO_MAP = "geo_map"
+    HEATMAP = "heatmap"
+    HISTOGRAM = "histogram"
 
 
 class VisualizationEngine:
@@ -86,11 +88,14 @@ class VisualizationEngine:
         chart_generators = {
             ChartType.PIE: self._generate_pie,
             ChartType.BAR: self._generate_bar,
+            ChartType.VERTICAL_BAR: self._generate_vertical_bar,
             ChartType.LINE: self._generate_line,
             ChartType.AREA: self._generate_area,
             ChartType.TABLE: self._generate_table,
             ChartType.TILE: self._generate_tile,
             ChartType.TREEMAP: self._generate_treemap,
+            ChartType.HEATMAP: self._generate_heatmap,
+            ChartType.HISTOGRAM: self._generate_histogram,
         }
 
         generator = chart_generators.get(chart_type)
@@ -544,6 +549,163 @@ class VisualizationEngine:
         ax.set_title(title or f"Distribution by {label_col}")
         ax.axis("off")
 
+        return self._fig_to_base64(fig)
+
+    def _generate_vertical_bar(self, df: pd.DataFrame, title: Optional[str], options: Dict) -> str:
+        """Generate vertical bar chart.
+
+        Standard vertical bar chart (LA Explorer's default "Bar" type).
+        Supports stacked bars when data has 3+ columns.
+        """
+        fig, ax = plt.subplots()
+
+        label_col = df.columns[0]
+        value_cols = [c for c in df.columns[1:] if c != label_col]
+
+        if not value_cols:
+            value_cols = [label_col]
+
+        labels = df[label_col].astype(str)
+
+        if len(value_cols) > 1:
+            # Stacked vertical bar chart
+            bottom = np.zeros(len(labels))
+            for i, col in enumerate(value_cols):
+                values = pd.to_numeric(df[col], errors="coerce").fillna(0)
+                color = LA_COLORS[i % len(LA_COLORS)]
+                ax.bar(labels, values, bottom=bottom, label=col, color=color)
+                bottom += values.values
+
+            ax.legend(
+                loc="upper right",
+                fontsize=9,
+                framealpha=0.9,
+            )
+        else:
+            # Simple vertical bar chart
+            values = pd.to_numeric(df[value_cols[0]], errors="coerce").fillna(0)
+            colors = LA_COLORS[: len(labels)]
+            ax.bar(labels, values, color=colors)
+
+        ax.set_xlabel(label_col)
+        ax.set_ylabel(value_cols[0] if len(value_cols) == 1 else "Count")
+        ax.set_title(title or f"{'|'.join(value_cols)} by {label_col}")
+        self._format_count_axis(ax, axis="y")
+
+        # Rotate labels if many categories
+        if len(labels) > 6:
+            plt.xticks(rotation=45, ha="right")
+
+        plt.tight_layout()
+        return self._fig_to_base64(fig)
+
+    def _generate_heatmap(self, df: pd.DataFrame, title: Optional[str], options: Dict) -> str:
+        """Generate heatmap visualization.
+
+        Creates a color-coded matrix for time x category patterns.
+        Best for queries like: timestats count by 'Log Source' span=1h
+        """
+        fig, ax = plt.subplots(figsize=(14, 8))
+
+        x_col = df.columns[0]
+        value_cols = list(df.columns[1:])
+
+        if len(value_cols) >= 2:
+            # Multi-column data: first col = rows, remaining cols = value series
+            # Create a pivot-like matrix
+            row_labels = df[x_col].astype(str)
+            matrix_data = df[value_cols].apply(pd.to_numeric, errors="coerce").fillna(0)
+            matrix_data.index = row_labels
+
+            sns.heatmap(
+                matrix_data,
+                annot=len(matrix_data) <= 15 and len(value_cols) <= 10,
+                fmt=".0f",
+                cmap="YlOrRd",
+                linewidths=0.5,
+                linecolor="white",
+                ax=ax,
+                cbar_kws={"label": "Count"},
+            )
+            ax.set_ylabel(x_col)
+        else:
+            # Single value column — try to detect datetime for a time-based heatmap
+            # Fall back to showing single-column as a 1D heatmap
+            values = pd.to_numeric(df[value_cols[0]], errors="coerce").fillna(0)
+            row_labels = df[x_col].astype(str)
+
+            matrix = values.values.reshape(1, -1)
+            sns.heatmap(
+                pd.DataFrame(matrix, columns=row_labels, index=[value_cols[0]]),
+                annot=len(row_labels) <= 20,
+                fmt=".0f",
+                cmap="YlOrRd",
+                linewidths=0.5,
+                linecolor="white",
+                ax=ax,
+                cbar_kws={"label": "Count"},
+            )
+
+        ax.set_title(title or "Heatmap")
+        plt.tight_layout()
+        return self._fig_to_base64(fig)
+
+    def _generate_histogram(self, df: pd.DataFrame, title: Optional[str], options: Dict) -> str:
+        """Generate histogram for distribution of numeric values.
+
+        Useful for queries like: * | stats count by 'Response Time'
+        Shows the distribution pattern of the data.
+        """
+        fig, ax = plt.subplots()
+
+        # Use the last numeric column as the value column
+        value_col = None
+        for col in reversed(df.columns):
+            numeric = pd.to_numeric(df[col], errors="coerce")
+            if numeric.notna().sum() > 0:
+                value_col = col
+                break
+
+        if value_col is None:
+            value_col = df.columns[-1]
+
+        values = pd.to_numeric(df[value_col], errors="coerce").dropna()
+
+        if values.empty:
+            return self._generate_empty_chart(title)["image_base64"]
+
+        # Auto-select number of bins
+        n = len(values)
+        if n <= 10:
+            bins = n
+        elif n <= 50:
+            bins = 15
+        else:
+            bins = min(50, int(np.sqrt(n)))
+
+        ax.hist(
+            values,
+            bins=bins,
+            color=LA_COLORS[0],
+            edgecolor="white",
+            alpha=0.85,
+        )
+
+        # Add mean line
+        mean_val = values.mean()
+        ax.axvline(
+            mean_val, color=LA_COLORS[3], linestyle="--",
+            linewidth=2, label=f"Mean: {mean_val:,.1f}",
+        )
+
+        ax.set_xlabel(value_col)
+        ax.set_ylabel("Frequency")
+        ax.set_title(title or f"Distribution of {value_col}")
+        ax.legend(loc="upper right", fontsize=9)
+        self._format_count_axis(ax, axis="y")
+        ax.grid(True, alpha=0.3, axis="y")
+
+        plt.tight_layout()
         return self._fig_to_base64(fig)
 
     def _fig_to_base64(self, fig) -> str:
