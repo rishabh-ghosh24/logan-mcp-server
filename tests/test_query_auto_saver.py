@@ -153,12 +153,15 @@ class TestNameGeneration:
         assert len(name) <= 60
 
     def test_unique_name_avoids_collision(self, auto_saver, mock_context_manager):
-        mock_context_manager.list_learned_queries.return_value = [
-            {"name": "linux_secure_count_by_entity"}
-        ]
+        # First, find out what name the auto-saver generates for this query
         q = "'Log Source' = 'Linux Secure Logs' | stats count by 'Entity'"
+        base_name, _, _ = auto_saver._generate_metadata(q)
+        # Now set up a collision with that exact name
+        mock_context_manager.list_learned_queries.return_value = [
+            {"name": base_name}
+        ]
         name, desc, cat = auto_saver._generate_metadata(q)
-        assert name != "linux_secure_count_by_entity"
+        assert name != base_name
         assert "_v2" in name
 
 
