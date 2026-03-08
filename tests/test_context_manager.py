@@ -216,8 +216,9 @@ class TestTenancyContext:
             {"name": "Linux Secure Logs", "display_name": "Linux Secure Logs"},
             {"name": "VCN Flow Logs", "display_name": "VCN Flow Logs"},
         ]
-        new_count = ctx.update_log_sources(sources)
-        assert new_count == 2
+        summary = ctx.update_log_sources(sources)
+        assert "2 total" in summary
+        assert "2 new" in summary
 
         context = ctx.get_tenancy_context()
         assert len(context["log_sources"]) == 2
@@ -226,8 +227,8 @@ class TestTenancyContext:
         """Updating same sources doesn't duplicate."""
         sources = [{"name": "Source1"}]
         ctx.update_log_sources(sources)
-        new_count = ctx.update_log_sources(sources)
-        assert new_count == 0
+        summary = ctx.update_log_sources(sources)
+        assert "0 new" in summary
 
     def test_update_compartments(self, ctx):
         """Update compartments."""
@@ -235,8 +236,9 @@ class TestTenancyContext:
             {"id": "ocid1.comp.1", "name": "Prod"},
             {"id": "ocid1.comp.2", "name": "Dev"},
         ]
-        new_count = ctx.update_compartments(compartments)
-        assert new_count == 2
+        summary = ctx.update_compartments(compartments)
+        assert "2 total" in summary
+        assert "2 new" in summary
 
     def test_add_and_remove_notes(self, ctx):
         """Add and remove notes."""

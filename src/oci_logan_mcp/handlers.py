@@ -708,8 +708,8 @@ class MCPHandlers:
             updated.append(f"Added {len(notes)} note(s)")
 
         if fields := args.get("confirmed_fields"):
-            count = self.context_manager.update_confirmed_fields(fields)
-            updated.append(f"Updated fields ({count} new)")
+            summary = self.context_manager.update_confirmed_fields(fields)
+            updated.append(f"Updated fields: {summary}")
 
         return [{"type": "text", "text": json.dumps({
             "status": "updated",
