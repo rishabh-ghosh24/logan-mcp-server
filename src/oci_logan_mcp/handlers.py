@@ -14,6 +14,7 @@ from .client import OCILogAnalyticsClient
 from .cache import CacheManager
 from .query_logger import QueryLogger
 from .context_manager import ContextManager
+from .query_auto_saver import QueryAutoSaver
 from .config import Settings
 from .resources import get_query_templates, get_syntax_guide, get_reference_docs
 
@@ -45,6 +46,7 @@ class MCPHandlers:
         self.visualization = VisualizationEngine()
         self.saved_search = SavedSearchService(oci_client, cache)
         self.export_service = ExportService()
+        self.auto_saver = QueryAutoSaver(context_manager)
 
     async def handle_tool_call(
         self, name: str, arguments: Dict[str, Any]
@@ -223,8 +225,8 @@ class MCPHandlers:
             include_subcompartments=include_subs,
             compartment_id=compartment_id,
         )
-        # Track usage of learned queries
-        self.context_manager.record_query_usage(args["query"])
+        # Auto-save interesting queries / bump usage for existing ones
+        self.auto_saver.process_successful_query(args["query"], result)
         return [{"type": "text", "text": json.dumps(result, indent=2, default=str)}]
 
     async def _run_saved_search(self, args: Dict) -> List[Dict]:
@@ -258,6 +260,10 @@ class MCPHandlers:
             include_subcompartments=args.get("include_subcompartments", True),
             compartment_id=args.get("compartment_id"),
         )
+        # Auto-save interesting queries from batch results
+        for q_spec, r in zip(args["queries"], results):
+            if isinstance(r, dict) and "error" not in r:
+                self.auto_saver.process_successful_query(q_spec["query"], r)
         return [{"type": "text", "text": json.dumps(results, indent=2, default=str)}]
 
     async def _visualize(self, args: Dict) -> List[Dict]:
@@ -277,6 +283,9 @@ class MCPHandlers:
         row_count = len(data.get("rows", []))
         col_count = len(data.get("columns", []))
         logger.info(f"Visualize: Query returned {row_count} rows, {col_count} columns")
+
+        # Auto-save interesting queries
+        self.auto_saver.process_successful_query(args["query"], query_result)
 
         chart_type = ChartType(args["chart_type"])
         viz_result = self.visualization.generate(
@@ -310,6 +319,9 @@ class MCPHandlers:
             include_subcompartments=include_subs,
             compartment_id=compartment_id,
         )
+
+        # Auto-save interesting queries
+        self.auto_saver.process_successful_query(args["query"], result)
 
         exported = self.export_service.export(
             data=result["data"], format=args["format"]

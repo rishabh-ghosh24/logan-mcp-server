@@ -181,17 +181,36 @@ class OCILogAnalyticsMCPServer:
         """Run the MCP server.
 
         Starts the server and handles stdio communication
-        with MCP clients.
+        with MCP clients.  A background keepalive task prevents
+        idle-timeout disconnections from the client.
         """
         await self.initialize()
 
         logger.info("Starting MCP server on stdio...")
         async with stdio_server() as (read_stream, write_stream):
-            await self.server.run(
-                read_stream,
-                write_stream,
-                self.server.create_initialization_options(),
-            )
+            keepalive_task = asyncio.create_task(self._keepalive_loop())
+            try:
+                await self.server.run(
+                    read_stream,
+                    write_stream,
+                    self.server.create_initialization_options(),
+                )
+            finally:
+                keepalive_task.cancel()
+                try:
+                    await keepalive_task
+                except asyncio.CancelledError:
+                    pass
+
+    async def _keepalive_loop(self, interval: int = 30) -> None:
+        """Periodic keepalive to prevent idle-timeout disconnections.
+
+        Keeps the asyncio event loop active so the STDIO transport
+        does not appear idle to the client process manager.
+        """
+        while True:
+            await asyncio.sleep(interval)
+            logger.debug("keepalive ping")
 
 
 def main() -> None:
@@ -201,6 +220,11 @@ def main() -> None:
         asyncio.run(server.run())
     except KeyboardInterrupt:
         logger.info("Server shutdown requested")
+        sys.exit(0)
+    except (EOFError, BrokenPipeError, ConnectionError):
+        # Client disconnected — clean exit so process managers
+        # can distinguish a disconnect (code 0) from a crash (code 1).
+        logger.info("Client disconnected")
         sys.exit(0)
     except Exception as e:
         logger.exception(f"Server error: {e}")

@@ -409,15 +409,19 @@ class ContextManager:
             return True
         return False
 
-    def record_query_usage(self, query: str) -> None:
-        """Bump use_count and last_used for a matching learned query."""
+    def record_query_usage(self, query: str) -> bool:
+        """Bump use_count and last_used for a matching learned query.
+
+        Returns True if a matching query was found and updated, False otherwise.
+        """
         normalized = query.strip()
         for existing in self._learned_queries:
             if existing["query"].strip() == normalized:
                 existing["use_count"] = existing.get("use_count", 0) + 1
                 existing["last_used"] = datetime.utcnow().isoformat()
                 self._save_learned_queries()
-                return
+                return True
+        return False
 
     # ----------------------------------------------------------------
     # Template Merging
