@@ -269,7 +269,7 @@ class VisualizationEngine:
         total = values.sum()
 
         def autopct_func(pct):
-            return f"{pct:.1f}%" if pct >= 5 else ""
+            return f"{pct:.1f}%" if pct >= 2 else ""
 
         colors = LA_COLORS[: len(values)]
         wedges, texts, autotexts = ax.pie(
