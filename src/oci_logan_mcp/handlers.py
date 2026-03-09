@@ -15,7 +15,7 @@ from .cache import CacheManager
 from .query_logger import QueryLogger
 from .context_manager import ContextManager
 from .query_auto_saver import QueryAutoSaver
-from .config import Settings
+from .config import Settings, save_config
 from .resources import get_query_templates, get_syntax_guide, get_reference_docs
 
 logger = logging.getLogger(__name__)
@@ -329,11 +329,20 @@ class MCPHandlers:
         return [{"type": "text", "text": exported}]
 
     async def _set_compartment(self, args: Dict) -> List[Dict]:
-        """Set compartment context."""
-        self.oci_client.compartment_id = args["compartment_id"]
+        """Set compartment context and persist to config."""
+        new_id = args["compartment_id"]
+        self.oci_client.compartment_id = new_id
+        self.settings.log_analytics.default_compartment_id = new_id
         self.cache.clear()
+
+        try:
+            save_config(self.settings)
+            logger.info(f"Persisted default compartment to config: {new_id}")
+        except Exception as e:
+            logger.warning(f"Failed to persist compartment to config: {e}")
+
         return [
-            {"type": "text", "text": f"Compartment set to: {args['compartment_id']}"}
+            {"type": "text", "text": f"Compartment set to: {new_id}"}
         ]
 
     async def _set_namespace(self, args: Dict) -> List[Dict]:
@@ -654,7 +663,7 @@ class MCPHandlers:
 
             summary = {
                 "time_range": time_range,
-                "scope": "tenancy" if include_subs else "default_compartment",
+                "scope": "tenancy" if args.get("scope") == "tenancy" else "default",
                 "compartment_id": result.get("metadata", {}).get("compartment_id", "unknown"),
                 "total_logs": total_logs,
                 "sources_with_data": len(sources_with_data),

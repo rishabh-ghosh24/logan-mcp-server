@@ -95,7 +95,7 @@ class OCILogAnalyticsClient:
         time_start: str,
         time_end: str,
         max_results: Optional[int] = None,
-        include_subcompartments: bool = False,
+        include_subcompartments: bool = True,
         compartment_id: Optional[str] = None,
     ) -> Dict[str, Any]:
         """Execute a Log Analytics query.

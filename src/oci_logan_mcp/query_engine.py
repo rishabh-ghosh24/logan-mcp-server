@@ -31,7 +31,7 @@ class QueryEngine:
         time_end: Optional[str] = None,
         time_range: Optional[str] = None,
         max_results: Optional[int] = None,
-        include_subcompartments: bool = False,
+        include_subcompartments: bool = True,
         use_cache: bool = True,
         compartment_id: Optional[str] = None,
     ) -> Dict[str, Any]:
@@ -114,7 +114,7 @@ class QueryEngine:
     async def execute_batch(
         self,
         queries: List[Dict[str, Any]],
-        include_subcompartments: bool = False,
+        include_subcompartments: bool = True,
         compartment_id: Optional[str] = None,
     ) -> List[Dict[str, Any]]:
         """Execute multiple queries concurrently."""
@@ -145,7 +145,7 @@ class QueryEngine:
         query: str,
         start: datetime,
         end: datetime,
-        include_subcompartments: bool = False,
+        include_subcompartments: bool = True,
         compartment_id: Optional[str] = None,
     ) -> str:
         """Generate cache key for a query."""
