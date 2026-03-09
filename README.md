@@ -63,8 +63,7 @@ Add to your Claude Desktop MCP config (`~/Library/Application Support/Claude/cla
 {
   "mcpServers": {
     "oci-log-analytics": {
-      "command": "/path/to/logan-mcp-server/venv/bin/python",
-      "args": ["-m", "oci_logan_mcp"],
+      "command": "/path/to/logan-mcp-server/venv/bin/oci-logan-mcp",
       "env": {
         "OCI_LA_NAMESPACE": "your-namespace",
         "OCI_LA_COMPARTMENT": "ocid1.compartment.oc1..xxxxx"
@@ -85,13 +84,16 @@ For running on an OCI VM with instance principal auth:
       "command": "ssh",
       "args": [
         "-i", "~/.ssh/your-key",
+        "-o", "StrictHostKeyChecking=no",
         "opc@your-vm-ip",
-        "/path/to/logan-mcp-server/venv/bin/python -m oci_logan_mcp"
+        "cd /path/to/logan-mcp-server && source venv/bin/activate && oci-logan-mcp"
       ]
     }
   }
 }
 ```
+
+> **Note:** Use the `oci-logan-mcp` console script entry point instead of `python -m oci_logan_mcp`. The latter may not work correctly with editable installs (`pip install -e .`) using hatchling's `src/` layout.
 
 ## OCI VM Setup
 

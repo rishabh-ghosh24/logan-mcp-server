@@ -58,13 +58,19 @@ def get_resources() -> List[Dict[str, Any]]:
 
 
 def get_query_templates() -> Dict[str, Any]:
-    """Get query templates."""
+    """Get query templates.
+
+    These are generic, battle-tested query patterns validated against
+    real OCI Log Analytics environments.  They ship with the server
+    so any LLM/IDE gets working examples out-of-the-box.
+    """
     return {
         "templates": [
+            # --- Basic patterns ---
             {
                 "name": "errors_last_hour",
                 "description": "Find all errors in the last hour",
-                "query": "'Error' or 'Critical' | timestats count by 'Log Source'",
+                "query": "'Error' or 'Critical' | timestats span = 1hour count by 'Log Source'",
             },
             {
                 "name": "top_n_by_field",
@@ -73,8 +79,8 @@ def get_query_templates() -> Dict[str, Any]:
             },
             {
                 "name": "trend_over_time",
-                "description": "Show trend over time",
-                "query": "* | timestats count span=1hour",
+                "description": "Show trend over time (for line/area charts)",
+                "query": "* | timestats span = 1hour count",
             },
             {
                 "name": "search_keyword",
@@ -100,6 +106,41 @@ def get_query_templates() -> Dict[str, Any]:
                 "name": "log_volume_by_source",
                 "description": "Log volume by source",
                 "query": "* | stats count by 'Log Source' | sort -count",
+            },
+            # --- Proven patterns from real-world testing ---
+            {
+                "name": "top_sources_with_alias",
+                "description": "Top N log sources by volume with aliased count (bar/table chart)",
+                "query": (
+                    "'Log Source' != null | stats count as 'Log Count' "
+                    "by 'Log Source' | sort -'Log Count' | head 20"
+                ),
+            },
+            {
+                "name": "volume_trend_by_source",
+                "description": "Log volume over time per source (line/area chart)",
+                "query": (
+                    "'Log Source' != null | timestats span = 1hour "
+                    "count as 'Log Count' by 'Log Source'"
+                ),
+            },
+            {
+                "name": "audit_status_breakdown",
+                "description": "OCI Audit logs by HTTP status code (security overview)",
+                "query": "'Log Source' = 'OCI Audit Logs' | stats count by 'Status' | sort -Count",
+            },
+            {
+                "name": "total_log_volume_kpi",
+                "description": "Total log count as single KPI number (tile chart)",
+                "query": "'Log Source' != null | stats count as 'Total Logs'",
+            },
+            {
+                "name": "source_entity_heatmap",
+                "description": "Log sources vs entities cross-reference (heatmap chart)",
+                "query": (
+                    "'Log Source' != null | stats count as 'Log Count' "
+                    "by 'Log Source', 'Entity' | sort -'Log Count' | head 50"
+                ),
             },
         ]
     }
@@ -130,9 +171,11 @@ def get_syntax_guide() -> str:
 - `| stats min('Field'), max('Field')` - Min/max values
 
 ### Time-based Aggregation
-- `| timestats count span=1hour` - Count per hour
-- `| timestats count span=1day` - Count per day
-- `| timestats avg('Field') span=15min` - Average per 15 minutes
+**IMPORTANT**: Use spaces around `=` in span clause.
+- `| timestats span = 1hour count` - Count per hour
+- `| timestats span = 1day count` - Count per day
+- `| timestats span = 15min avg('Field')` - Average per 15 minutes
+- `| timestats span = 1hour count by 'Log Source'` - Per hour per source
 
 ### Sorting and Limiting
 - `| sort -count` - Sort descending
@@ -162,7 +205,7 @@ def get_syntax_guide() -> str:
 
 ### Time Trend
 ```
-* | timestats count span=1hour
+* | timestats span = 1hour count
 ```
 
 ### Top N
@@ -208,6 +251,27 @@ def get_syntax_guide() -> str:
 - `| delta 'Field'` - Compute difference between consecutive values
 - `| lookup table='LookupTable' 'Key'` - Lookup table joins
 - `| nlp` - Natural language processing on text fields
+
+## Important Syntax Notes (Lessons Learned)
+- **TIMESTATS span**: MUST use spaces around `=` sign
+  - Correct:  `timestats span = 1hour count`
+  - WRONG:    `timestats count span=1hour`
+- **Sort descending**: Use `-` prefix on field name → `sort -'Field Name'`
+- **Alias with quotes**: `count as 'My Alias'` (single quotes for aliases with spaces)
+- **Log Source filter**: `'Log Source' = 'Exact Name'` or `'Log Source' != null` for all
+- **Scope**: Use `tenancy` scope for org-wide queries across all compartments
+- **String matching**: `where Message contains 'text'` or `where Message like '%pattern%'`
+- **Field names**: Always quote multi-word field names: `'Log Source'`, `'Host Name'`
+
+## Chart Type Recommendations
+Choose the right chart type for your query pattern:
+- **Pie chart**: `stats count by 'Field' | head 10` — limit to 10 slices for readability
+- **Bar / Vertical bar**: `stats count by 'Field' | sort -count | head 10-20`
+- **Line / Area**: `timestats span = 1hour count by 'Field'` — time series trends
+- **Table**: Any `stats` query — clean tabular display of results
+- **Tile**: Single aggregate → `stats count as 'Label'` — big KPI number
+- **Heatmap**: Two group-by dimensions → `stats count by 'Field1', 'Field2'`
+- **Histogram**: Numeric value distribution → `stats count by 'Field' | head 20`
 
 ## Reference
 - Command Reference: https://docs.oracle.com/en-us/iaas/log-analytics/doc/command-reference.html

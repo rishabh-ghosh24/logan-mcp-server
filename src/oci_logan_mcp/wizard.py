@@ -60,10 +60,10 @@ def run_setup_wizard() -> Settings:
             short_ocid = ocid[:40] + "..." if len(ocid) > 40 else ocid
             print(f"  {i}. {name} ({short_ocid})")
         print(f"  Or enter a compartment OCID directly.")
-        selected = _prompt_choice(
-            "  Select default compartment", options=compartments, default=0
+        selected = _prompt_compartment(
+            "  Select compartment (number or OCID)", compartments, default=0
         )
-        settings.log_analytics.default_compartment_id = compartments[selected][1]
+        settings.log_analytics.default_compartment_id = selected
     else:
         settings.log_analytics.default_compartment_id = _prompt("  Enter compartment OCID")
 
@@ -128,6 +128,40 @@ def _prompt_choice(message: str, options: list, default: int = 0) -> int:
     except ValueError:
         print(f"  Invalid input. Using default: {default_display}")
         return default
+    except (EOFError, KeyboardInterrupt):
+        print("\nSetup cancelled.")
+        sys.exit(1)
+
+
+def _prompt_compartment(message: str, compartments: list, default: int = 0) -> str:
+    """Prompt user to select a compartment by number or enter an OCID directly.
+
+    Returns the selected compartment OCID string.
+    """
+    default_display = default + 1
+    prompt_text = f"{message} [{default_display}]: "
+
+    try:
+        value = input(prompt_text).strip()
+        if not value:
+            return compartments[default][1]
+
+        # Check if user entered a raw OCID
+        if value.startswith("ocid1."):
+            return value
+
+        # Try to parse as a number (list selection)
+        try:
+            choice = int(value) - 1
+            if 0 <= choice < len(compartments):
+                return compartments[choice][1]
+            print(f"  Invalid choice. Using default: {default_display}")
+            return compartments[default][1]
+        except ValueError:
+            # Not a number and not an OCID — use default
+            print(f"  Invalid input. Using default: {default_display}")
+            return compartments[default][1]
+
     except (EOFError, KeyboardInterrupt):
         print("\nSetup cancelled.")
         sys.exit(1)

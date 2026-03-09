@@ -31,6 +31,7 @@ dependencies = [
     "pillow>=10.0.0",
     "rapidfuzz>=3.0.0",
     "seaborn>=0.13.0",
+    "squarify>=0.4.3",
 ]
 
 [project.urls]

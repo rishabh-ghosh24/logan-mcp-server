@@ -212,7 +212,7 @@ def get_tools() -> List[Dict[str, Any]]:
                     "chart_type": {
                         "type": "string",
                         "description": "Type of chart to generate",
-                        "enum": ["pie", "bar", "line", "area", "table", "tile", "treemap"],
+                        "enum": ["pie", "bar", "vertical_bar", "line", "area", "table", "tile", "treemap", "heatmap", "histogram"],
                     },
                     "title": {
                         "type": "string",
@@ -233,7 +233,7 @@ def get_tools() -> List[Dict[str, Any]]:
                     },
                     "include_subcompartments": {
                         "type": "boolean",
-                        "description": "If true, include logs from all sub-compartments. Default: false",
+                        "description": "If true, include logs from all sub-compartments of the current compartment. Default: true",
                     },
                     "compartment_id": {
                         "type": "string",
@@ -279,7 +279,7 @@ def get_tools() -> List[Dict[str, Any]]:
                     },
                     "include_subcompartments": {
                         "type": "boolean",
-                        "description": "If true, include logs from all sub-compartments. Default: false",
+                        "description": "If true, include logs from all sub-compartments of the current compartment. Default: true",
                     },
                     "compartment_id": {
                         "type": "string",
