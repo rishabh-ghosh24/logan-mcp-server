@@ -14,6 +14,17 @@ from .config import Settings
 
 logger = logging.getLogger(__name__)
 
+
+def _get_items(response_data):
+    """Extract items from paginated response data.
+
+    list_call_get_all_results returns response.data as a flat list,
+    while single-page responses have response.data.items.
+    """
+    if isinstance(response_data, list):
+        return response_data
+    return response_data.items
+
 # Debug file logging (writes to ~/.oci-logan-mcp/debug.log)
 DEBUG_LOG_PATH = Path.home() / ".oci-logan-mcp" / "debug.log"
 
@@ -251,7 +262,7 @@ class OCILogAnalyticsClient:
                 "entity_types": self._serialize_entity_types(getattr(s, "entity_types", None)),
                 "is_system": getattr(s, "is_system", False),
             }
-            for s in response.data.items
+            for s in _get_items(response.data)
         ]
 
     def _serialize_entity_types(self, entity_types: Any) -> List[str]:
@@ -292,7 +303,7 @@ class OCILogAnalyticsClient:
                 "data_type": getattr(f, "data_type", "STRING"),
                 "description": getattr(f, "description", ""),
             }
-            for f in response.data.items
+            for f in _get_items(response.data)
         ]
 
     async def list_entities(self, entity_type: Optional[str] = None) -> List[Dict[str, Any]]:
@@ -319,7 +330,7 @@ class OCILogAnalyticsClient:
                 "management_agent_id": getattr(e, "management_agent_id", None),
                 "lifecycle_state": getattr(e, "lifecycle_state", ""),
             }
-            for e in response.data.items
+            for e in _get_items(response.data)
         ]
 
     async def list_parsers(self) -> List[Dict[str, Any]]:
@@ -339,7 +350,7 @@ class OCILogAnalyticsClient:
                 "description": getattr(p, "description", ""),
                 "is_system": getattr(p, "is_system", False),
             }
-            for p in response.data.items
+            for p in _get_items(response.data)
         ]
 
     async def list_labels(self) -> List[Dict[str, Any]]:
@@ -359,7 +370,7 @@ class OCILogAnalyticsClient:
                 "description": getattr(label, "description", ""),
                 "priority": getattr(label, "priority", ""),
             }
-            for label in response.data.items
+            for label in _get_items(response.data)
         ]
 
     async def list_saved_searches(self) -> List[Dict[str, Any]]:
@@ -382,7 +393,7 @@ class OCILogAnalyticsClient:
                     "task_type": getattr(s, "task_type", ""),
                     "lifecycle_state": getattr(s, "lifecycle_state", ""),
                 }
-                for s in response.data.items
+                for s in _get_items(response.data)
             ]
         except Exception:
             self._rate_limiter.reset()
@@ -456,7 +467,7 @@ class OCILogAnalyticsClient:
                 "description": getattr(g, "description", ""),
                 "compartment_id": g.compartment_id,
             }
-            for g in response.data.items
+            for g in _get_items(response.data)
         ]
 
     async def get_namespace(self) -> str:
