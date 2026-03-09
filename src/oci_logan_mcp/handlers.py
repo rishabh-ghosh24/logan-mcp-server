@@ -227,7 +227,78 @@ class MCPHandlers:
         )
         # Auto-save interesting queries / bump usage for existing ones
         self.auto_saver.process_successful_query(args["query"], result)
+
+        # Use compact formatter for cluster queries
+        if self._is_cluster_query(args["query"]):
+            formatted = self._format_cluster_result(result)
+            return [{"type": "text", "text": json.dumps(formatted, indent=2, default=str)}]
+
         return [{"type": "text", "text": json.dumps(result, indent=2, default=str)}]
+
+    @staticmethod
+    def _is_cluster_query(query: str) -> bool:
+        """Check if query is a cluster command."""
+        # Match "| cluster" as a pipe command, ignoring case
+        import re
+        return bool(re.search(r'\|\s*cluster\b', query, re.IGNORECASE))
+
+    @staticmethod
+    def _format_cluster_result(result: Dict) -> Dict:
+        """Format cluster results into a compact summary with all real numbers.
+
+        Strips verbose fields (Trend arrays, long samples) while preserving
+        every cluster row and all numeric data.
+        """
+        data = result.get("data", {})
+        rows = data.get("rows", [])
+        columns = data.get("columns", [])
+        metadata = result.get("metadata", {})
+
+        # Build column index map
+        col_idx = {col["name"]: i for i, col in enumerate(columns)}
+
+        def _get(row, name, default=None):
+            idx = col_idx.get(name)
+            if idx is not None and idx < len(row):
+                return row[idx]
+            return default
+
+        def _clean_sample(sample: str, max_len: int = 80) -> str:
+            """Strip cluster template markup and truncate."""
+            if not sample:
+                return ""
+            import re
+            # Remove <#v ...>...</#v> markup, keep inner text
+            cleaned = re.sub(r'<#v[^>]*>', '', sample)
+            cleaned = cleaned.replace('</#v>', '')
+            cleaned = ' '.join(cleaned.split())  # normalize whitespace
+            if len(cleaned) > max_len:
+                cleaned = cleaned[:max_len] + "..."
+            return cleaned
+
+        clusters = []
+        for row in rows:
+            cluster = {
+                "id": _get(row, "ID"),
+                "count": _get(row, "Count"),
+                "log_source": _get(row, "Log Source"),
+                "sample": _clean_sample(_get(row, "Cluster Sample", "")),
+                "potential_issue": _get(row, "Potential Issue"),
+                "problem_priority": _get(row, "Problem Priority"),
+            }
+            clusters.append(cluster)
+
+        # Sort by count descending
+        clusters.sort(key=lambda c: c.get("count") or 0, reverse=True)
+
+        total_logs = sum(c.get("count") or 0 for c in clusters)
+
+        return {
+            "total_clusters": len(clusters),
+            "total_log_records": total_logs,
+            "metadata": metadata,
+            "clusters": clusters,
+        }
 
     async def _run_saved_search(self, args: Dict) -> List[Dict]:
         """Run a saved search."""
