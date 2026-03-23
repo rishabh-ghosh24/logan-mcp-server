@@ -44,7 +44,7 @@ pip install -e .
 Run the interactive setup wizard:
 
 ```bash
-oci-logan-mcp
+oci-logan-mcp --setup
 ```
 
 Or set environment variables:
