@@ -1,81 +1,70 @@
 # OCI Log Analytics MCP Server
 
-An MCP (Model Context Protocol) server that connects AI assistants to Oracle Cloud Infrastructure (OCI) Log Analytics. Query, visualize, and export log data through natural language conversations.
-
-## Features
-
-- **24 MCP Tools**: Query execution, schema exploration, visualization, export, configuration, and memory management
-- **6 MCP Resources**: Schema, query templates, syntax guide, recent queries, tenancy context, and reference docs
-- **Cross-Session Memory**: Save and reuse successful queries across sessions with persistent learned query storage
-- **Tenancy Context**: Auto-discovers and caches log sources, fields, entities, parsers, labels, and compartments at startup
-- **Cross-Compartment Queries**: Query across your entire OCI tenancy with `scope=tenancy`
-- **Intelligent Validation**: Query syntax checking with fuzzy field name suggestions
-- **Visualization**: Generate pie, bar, line, area, table, tile, and treemap charts from query results
-- **Export**: Export results to CSV or JSON format
-- **Caching**: In-memory caching with TTL for improved performance
-- **Rate Limiting**: Automatic rate limiting with exponential backoff for OCI API calls
-- **Query Audit Logging**: All queries logged with rotating file handler
-
-## Prerequisites
-
-- Python 3.10+
-- OCI account with Log Analytics enabled
-- OCI authentication (choose one):
-  - **Config file**: `~/.oci/config` for local/laptop use
-  - **Instance Principal**: No config file needed — attach Dynamic Group + IAM policy to compute instance (recommended for OCI VM deployments)
+An MCP server that connects AI assistants (Claude, Codex, etc.) to OCI Log Analytics. Query, visualize, and export log data through natural language.
 
 ## Quick Start
 
-### 1. Clone and install
+### 1. Install
 
 ```bash
 git clone https://github.com/rishabh-ghosh24/logan-mcp-server.git
 cd logan-mcp-server
-
-# Use Python 3.11 (or any 3.10+)
-python3.11 -m venv venv
+python3 -m venv venv
 source venv/bin/activate
-pip install --upgrade pip
 pip install -e .
 ```
 
 ### 2. Configure
 
-Run the interactive setup wizard:
+Choose your authentication method, then run the setup wizard:
 
 ```bash
+# For local/laptop use (reads ~/.oci/config)
+export OCI_LA_AUTH_TYPE=config_file
+
+# For OCI VMs (no config file needed — uses IAM policies)
+export OCI_LA_AUTH_TYPE=instance_principal
+
+# Run the interactive setup wizard
 oci-logan-mcp --setup
 ```
 
-Or set environment variables:
+Or set environment variables directly:
 
 ```bash
 export OCI_LA_NAMESPACE=your-namespace
 export OCI_LA_COMPARTMENT=ocid1.compartment.oc1..xxxxx
-export OCI_LA_AUTH_TYPE=config_file  # or instance_principal
 ```
 
-### 3. Connect to Claude Desktop
+### 3. Connect your AI assistant
 
-Add to your Claude Desktop MCP config (`~/Library/Application Support/Claude/claude_desktop_config.json`):
+Add to your MCP client configuration:
+
+**Claude Desktop** (`~/Library/Application Support/Claude/claude_desktop_config.json`):
 
 ```json
 {
   "mcpServers": {
     "oci-log-analytics": {
-      "command": "/path/to/logan-mcp-server/venv/bin/oci-logan-mcp",
-      "env": {
-        "OCI_LA_NAMESPACE": "your-namespace",
-        "OCI_LA_COMPARTMENT": "ocid1.compartment.oc1..xxxxx"
-      }
+      "command": "/path/to/logan-mcp-server/venv/bin/oci-logan-mcp"
     }
   }
 }
 ```
 
-### Remote VM Deployment (SSH Tunnel)
+**Claude Code** (`~/.claude.json` or project settings):
 
-For running on an OCI VM with instance principal auth:
+```json
+{
+  "mcpServers": {
+    "oci-log-analytics": {
+      "command": "/path/to/logan-mcp-server/venv/bin/oci-logan-mcp"
+    }
+  }
+}
+```
+
+**Remote VM via SSH** (for instance principal auth on OCI VMs):
 
 ```json
 {
@@ -93,148 +82,56 @@ For running on an OCI VM with instance principal auth:
 }
 ```
 
-> **Note:** Use the `oci-logan-mcp` console script entry point instead of `python -m oci_logan_mcp`. The latter may not work correctly with editable installs (`pip install -e .`) using hatchling's `src/` layout.
+> **Note:** Always use the `oci-logan-mcp` entry point, not `python -m oci_logan_mcp`.
 
-## OCI VM Setup
+## What You Can Do
 
-### Fresh VM (no dependencies installed)
+| Capability | Tools | Examples |
+|---|---|---|
+| **Query logs** | `run_query`, `run_batch_queries`, `run_saved_search` | Search logs, run multiple queries in parallel, execute saved searches |
+| **Explore schema** | `list_log_sources`, `list_fields`, `list_entities`, `list_parsers`, `list_labels` | Discover what log data is available |
+| **Visualize** | `visualize` | Generate pie, bar, line, area, table, tile, treemap, heatmap, histogram charts |
+| **Export** | `export_results` | Export query results to CSV or JSON |
+| **Manage scope** | `set_compartment`, `set_namespace`, `find_compartment`, `list_compartments` | Switch compartments, query across tenancy |
+| **Validate** | `validate_query`, `get_query_examples` | Check syntax, get example queries by category |
+| **Remember** | `save_learned_query`, `list_learned_queries`, `update_tenancy_context` | Save working queries for reuse across sessions |
+| **Monitor** | `test_connection`, `get_current_context`, `get_log_summary` | Check connectivity, see current config, view log volume |
 
-For a brand new Oracle Linux 9 VM that needs Python, OCI CLI, Docker, and Java:
+## Deploying on an OCI VM
+
+### Fresh VM (Oracle Linux 9)
 
 ```bash
+# Full bootstrap: installs Python, OCI CLI, Docker, Java, and the MCP server
 curl -fsSL https://raw.githubusercontent.com/rishabh-ghosh24/logan-mcp-server/main/scripts/oci-initial-setup.sh | bash
 ```
 
-Or clone first and run locally:
+### Existing VM (Python 3.10+ available)
 
 ```bash
 git clone https://github.com/rishabh-ghosh24/logan-mcp-server.git
 cd logan-mcp-server
-chmod +x scripts/oci-initial-setup.sh
-./scripts/oci-initial-setup.sh
-```
-
-### Existing VM (Python 3.10+ already available)
-
-```bash
-git clone https://github.com/rishabh-ghosh24/logan-mcp-server.git
-cd logan-mcp-server
-chmod +x scripts/setup_oel9.sh
 ./scripts/setup_oel9.sh
 ```
 
-## Available Tools
+### Setting Up Instance Principal Auth
 
-| Tool | Description |
-|------|-------------|
-| `run_query` | Execute Log Analytics queries |
-| `run_batch_queries` | Execute multiple queries concurrently |
-| `run_saved_search` | Execute a saved search by name or ID |
-| `validate_query` | Validate query syntax before execution |
-| `visualize` | Generate charts from query results |
-| `export_results` | Export results to CSV or JSON |
-| `list_log_sources` | List available log sources |
-| `list_fields` | List queryable fields |
-| `list_entities` | List monitored entities |
-| `list_parsers` | List available log parsers |
-| `list_labels` | List log classification labels |
-| `list_saved_searches` | List saved searches |
-| `list_log_groups` | List log groups |
-| `list_compartments` | List OCI compartments |
-| `get_current_context` | Show current configuration |
-| `set_compartment` | Change target compartment |
-| `set_namespace` | Change Log Analytics namespace |
-| `test_connection` | Test OCI connectivity |
-| `find_compartment` | Search compartments by name |
-| `get_query_examples` | Get example queries by category |
-| `get_log_summary` | Get log volume summary |
-| `save_learned_query` | Save a working query for future sessions |
-| `list_learned_queries` | List previously saved learned queries |
-| `delete_learned_query` | Delete a saved learned query |
-| `update_tenancy_context` | Save environment-specific notes and confirmed fields |
+Instance principal is the recommended auth method for OCI VMs — no config files to manage.
 
-## Running Tests
-
-```bash
-# Unit tests
-pip install -e ".[dev]"
-pytest tests/ -v
-
-# Integration tests (requires OCI access)
-python run_tests.py
-```
-
-## Project Structure
-
-```
-logan-mcp-server/
-├── src/oci_logan_mcp/
-│   ├── __init__.py          # Package init
-│   ├── __main__.py          # python -m entry point
-│   ├── server.py            # MCP server setup and lifecycle
-│   ├── config.py            # Configuration dataclasses and loading
-│   ├── wizard.py            # Interactive setup wizard
-│   ├── auth.py              # OCI authentication handlers
-│   ├── client.py            # OCI Log Analytics API client
-│   ├── cache.py             # In-memory caching
-│   ├── rate_limiter.py      # API rate limiting
-│   ├── query_logger.py      # Query audit logging
-│   ├── tools.py             # MCP tool definitions
-│   ├── handlers.py          # MCP request handlers
-│   ├── resources.py         # MCP resource providers
-│   ├── context_manager.py   # Persistent context and learned query storage
-│   ├── query_engine.py      # Query execution service
-│   ├── schema_manager.py    # Schema exploration service
-│   ├── validator.py         # Query validation
-│   ├── saved_search.py      # Saved search management
-│   ├── export.py            # CSV/JSON export
-│   ├── visualization.py     # Chart generation
-│   ├── time_parser.py       # Time range parsing
-│   ├── fuzzy_match.py       # Fuzzy string matching
-│   └── templates/
-│       └── query_templates.yaml
-├── tests/
-│   └── test_context_manager.py
-├── scripts/
-│   ├── oci-initial-setup.sh  # Full VM bootstrap (Python, OCI CLI, Docker, Java)
-│   ├── setup_oel9.sh         # Logan MCP server setup (venv + pip install)
-│   ├── run.sh
-│   └── update.sh
-├── run_tests.py             # Integration test suite
-├── pyproject.toml
-└── .env.example
-```
-
-## Authentication
-
-Supported authentication methods:
-
-- **config_file** (default): Uses `~/.oci/config`
-- **instance_principal**: For OCI compute instances with dynamic group policies
-- **resource_principal**: For OCI Functions and other managed services
-
-### Instance Principal Setup
-
-For OCI VM deployments, instance principal is the recommended auth method (no config files to manage).
-
-#### 1. Get your compute instance OCID
-
-SSH into the VM and run:
+**Step 1:** Get your compute instance OCID:
 
 ```bash
 curl -s -H "Authorization: Bearer Oracle" \
   http://169.254.169.254/opc/v2/instance/ | jq -r '.id'
 ```
 
-#### 2. Create a Dynamic Group
-
-In the OCI Console, create a dynamic group (e.g., `logan-mcp-dg`) with the matching rule:
+**Step 2:** Create a Dynamic Group (e.g., `logan-mcp-dg`) in the OCI Console:
 
 ```
 ANY {instance.id = '<your-compute-instance-OCID>'}
 ```
 
-#### 3. Add IAM Policies (tenancy level)
+**Step 3:** Add IAM Policies at the tenancy level:
 
 ```
 Allow dynamic-group logan-mcp-dg to use loganalytics-features-family in tenancy
@@ -249,19 +146,34 @@ Allow dynamic-group logan-mcp-dg to {BUCKET_UPDATE, BUCKET_READ} in tenancy
 Allow service loganalytics to read loganalytics-features-family in tenancy
 ```
 
-#### 4. Verify
-
-```bash
-# Confirm the instance can reach the metadata service and is in the right region
-curl -s -H "Authorization: Bearer Oracle" \
-  http://169.254.169.254/opc/v2/instance/ | jq -r '.canonicalRegionName'
-```
-
-Then set the auth type when running the MCP server:
+**Step 4:** Configure and run:
 
 ```bash
 export OCI_LA_AUTH_TYPE=instance_principal
+oci-logan-mcp --setup
 ```
+
+## Development
+
+### Running Tests
+
+```bash
+pip install -e ".[dev]"
+
+# Unit tests
+pytest tests/ -v
+
+# Integration tests (requires OCI access)
+python run_tests.py
+```
+
+### Authentication Methods
+
+| Method | Use Case | Config |
+|---|---|---|
+| `config_file` | Local/laptop development | Reads `~/.oci/config` |
+| `instance_principal` | OCI compute instances | IAM policies via Dynamic Group |
+| `resource_principal` | OCI Functions, managed services | Automatic via service |
 
 ## License
 
