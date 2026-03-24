@@ -2,6 +2,7 @@
 """Thread-safe and process-safe file locking with atomic YAML I/O."""
 from __future__ import annotations
 
+import os
 import tempfile
 import threading
 from contextlib import contextmanager
@@ -54,6 +55,8 @@ def atomic_yaml_write(path: Path, data: Any) -> None:
         delete=False, prefix=f".{path.stem}.", suffix=".tmp",
     ) as handle:
         yaml.dump(data, handle, default_flow_style=False, sort_keys=False)
+        handle.flush()
+        os.fsync(handle.fileno())
         temp_path = Path(handle.name)
     temp_path.replace(path)
 
