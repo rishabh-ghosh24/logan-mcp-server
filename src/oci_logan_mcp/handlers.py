@@ -2,7 +2,7 @@
 
 import json
 import logging
-from typing import Any, Dict, List
+from typing import Any, Dict, List, Optional
 
 from .query_engine import QueryEngine
 from .schema_manager import SchemaManager
@@ -14,6 +14,8 @@ from .client import OCILogAnalyticsClient
 from .cache import CacheManager
 from .query_logger import QueryLogger
 from .context_manager import ContextManager
+from .user_store import UserStore
+from .preferences import PreferenceStore
 from .query_auto_saver import QueryAutoSaver
 from .config import Settings, save_config
 from .resources import get_query_templates, get_syntax_guide, get_reference_docs
@@ -31,6 +33,8 @@ class MCPHandlers:
         cache: CacheManager,
         query_logger: QueryLogger,
         context_manager: ContextManager,
+        user_store: Optional[UserStore] = None,
+        preference_store: Optional[PreferenceStore] = None,
     ):
         """Initialize MCP handlers."""
         self.settings = settings
@@ -38,6 +42,8 @@ class MCPHandlers:
         self.cache = cache
         self.query_logger = query_logger
         self.context_manager = context_manager
+        self.user_store = user_store
+        self.preference_store = preference_store
 
         # Initialize services
         self.schema_manager = SchemaManager(oci_client, cache)
@@ -46,7 +52,7 @@ class MCPHandlers:
         self.visualization = VisualizationEngine()
         self.saved_search = SavedSearchService(oci_client, cache)
         self.export_service = ExportService()
-        self.auto_saver = QueryAutoSaver(context_manager)
+        self.auto_saver = QueryAutoSaver(context_manager, user_store=user_store)
 
     async def handle_tool_call(
         self, name: str, arguments: Dict[str, Any]
@@ -85,6 +91,9 @@ class MCPHandlers:
             "list_learned_queries": self._list_learned_queries,
             "update_tenancy_context": self._update_tenancy_context,
             "delete_learned_query": self._delete_learned_query,
+            # Preferences
+            "get_preferences": self._get_preferences,
+            "remember_preference": self._remember_preference,
         }
 
         handler = handlers.get(name)
@@ -216,17 +225,44 @@ class MCPHandlers:
 
         logger.info(f"run_query: include_subcompartments={include_subs}, compartment_id={compartment_id}, args={args}")
 
-        result = await self.query_engine.execute(
-            query=args["query"],
-            time_range=args.get("time_range"),
-            time_start=args.get("time_start"),
-            time_end=args.get("time_end"),
-            max_results=args.get("max_results"),
-            include_subcompartments=include_subs,
-            compartment_id=compartment_id,
-        )
+        try:
+            result = await self.query_engine.execute(
+                query=args["query"],
+                time_range=args.get("time_range"),
+                time_start=args.get("time_start"),
+                time_end=args.get("time_end"),
+                max_results=args.get("max_results"),
+                include_subcompartments=include_subs,
+                compartment_id=compartment_id,
+            )
+        except Exception:
+            # Track failure before re-raising
+            if self.user_store:
+                try:
+                    self.user_store.record_failure(args["query"])
+                except Exception:
+                    pass
+            raise
+
         # Auto-save interesting queries / bump usage for existing ones
         self.auto_saver.process_successful_query(args["query"], result)
+
+        # Track success and preferences
+        if self.user_store:
+            try:
+                self.user_store.record_success(args["query"])
+            except Exception:
+                pass
+        if self.preference_store:
+            try:
+                source = self.auto_saver._extract_source(args["query"])
+                groupby = self.auto_saver._extract_groupby(args["query"])
+                if source and groupby:
+                    self.preference_store.track_field_usage(source, groupby)
+                if source and args.get("time_range"):
+                    self.preference_store.track_time_range(source, args["time_range"])
+            except Exception:
+                pass
 
         # Use compact formatter for cluster queries
         if self._is_cluster_query(args["query"]):
@@ -766,13 +802,22 @@ class MCPHandlers:
 
     async def _save_learned_query(self, args: Dict) -> List[Dict]:
         """Save a working query for future reference."""
-        saved = self.context_manager.save_learned_query(
-            name=args["name"],
-            query=args["query"],
-            description=args["description"],
-            category=args.get("category", "general"),
-            tags=args.get("tags"),
-        )
+        if self.user_store:
+            saved = self.user_store.save_query(
+                name=args["name"],
+                query=args["query"],
+                description=args["description"],
+                category=args.get("category", "general"),
+                tags=args.get("tags"),
+            )
+        else:
+            saved = self.context_manager.save_learned_query(
+                name=args["name"],
+                query=args["query"],
+                description=args["description"],
+                category=args.get("category", "general"),
+                tags=args.get("tags"),
+            )
         return [{"type": "text", "text": json.dumps({
             "status": "saved",
             "query": saved,
@@ -781,10 +826,16 @@ class MCPHandlers:
 
     async def _list_learned_queries(self, args: Dict) -> List[Dict]:
         """List previously saved learned queries."""
-        queries = self.context_manager.list_learned_queries(
-            category=args.get("category"),
-            tag=args.get("tag"),
-        )
+        if self.user_store:
+            queries = self.user_store.list_merged_queries(
+                category=args.get("category"),
+                tag=args.get("tag"),
+            )
+        else:
+            queries = self.context_manager.list_learned_queries(
+                category=args.get("category"),
+                tag=args.get("tag"),
+            )
         return [{"type": "text", "text": json.dumps({
             "count": len(queries),
             "queries": queries,
@@ -811,7 +862,10 @@ class MCPHandlers:
 
     async def _delete_learned_query(self, args: Dict) -> List[Dict]:
         """Delete a learned query by name."""
-        deleted = self.context_manager.delete_learned_query(args["name"])
+        if self.user_store:
+            deleted = self.user_store.delete_query(args["name"])
+        else:
+            deleted = self.context_manager.delete_learned_query(args["name"])
         if deleted:
             return [{"type": "text", "text": json.dumps({
                 "status": "deleted",
@@ -822,3 +876,38 @@ class MCPHandlers:
                 "status": "not_found",
                 "message": f"No learned query named '{args['name']}' found.",
             }, indent=2)}]
+
+    async def _get_preferences(self, args: Dict) -> List[Dict]:
+        """Get learned user preferences."""
+        if not self.preference_store:
+            return [{"type": "text", "text": json.dumps({
+                "error": "Preference store not available"
+            }, indent=2)}]
+
+        result: Dict[str, Any] = {}
+        log_source = args.get("log_source")
+
+        if log_source:
+            result["log_source"] = log_source
+            result["common_fields"] = self.preference_store.get_common_fields(log_source)
+            result["suggested_time_range"] = self.preference_store.suggest_time_range(log_source)
+        else:
+            result["preferences"] = self.preference_store.list_all()
+
+        return [{"type": "text", "text": json.dumps(result, indent=2, default=str)}]
+
+    async def _remember_preference(self, args: Dict) -> List[Dict]:
+        """Save a disambiguation preference."""
+        if not self.preference_store:
+            return [{"type": "text", "text": json.dumps({
+                "error": "Preference store not available"
+            }, indent=2)}]
+
+        self.preference_store.remember(
+            intent_key=args["intent_key"],
+            resolved_value=args["resolved_value"],
+        )
+        return [{"type": "text", "text": json.dumps({
+            "status": "saved",
+            "message": f"Preference '{args['intent_key']}' saved. Will be used in future sessions.",
+        }, indent=2)}]

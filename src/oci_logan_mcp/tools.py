@@ -509,4 +509,42 @@ def get_tools() -> List[Dict[str, Any]]:
                 "required": ["name"],
             },
         },
+        # Preference Tools
+        {
+            "name": "get_preferences",
+            "description": (
+                "Get learned user preferences including common fields per log source "
+                "and suggested time ranges."
+            ),
+            "inputSchema": {
+                "type": "object",
+                "properties": {
+                    "log_source": {
+                        "type": "string",
+                        "description": "Log source name to get preferences for",
+                    },
+                },
+            },
+        },
+        {
+            "name": "remember_preference",
+            "description": (
+                "Save a disambiguation preference (e.g., 'when I say PostgreSQL errors, "
+                "I mean Log Source = OCI PostgreSQL Service Logs')."
+            ),
+            "inputSchema": {
+                "type": "object",
+                "properties": {
+                    "intent_key": {
+                        "type": "string",
+                        "description": "The intent phrase (e.g., 'postgresql_errors')",
+                    },
+                    "resolved_value": {
+                        "type": "string",
+                        "description": "The resolved filter or value",
+                    },
+                },
+                "required": ["intent_key", "resolved_value"],
+            },
+        },
     ]

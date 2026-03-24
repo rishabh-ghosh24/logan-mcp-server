@@ -15,11 +15,13 @@ from mcp.types import (
     ImageContent,
 )
 
-from .config import load_config, config_exists
+from .config import load_config, config_exists, CONFIG_PATH
 from .client import OCILogAnalyticsClient
 from .cache import CacheManager
 from .query_logger import QueryLogger
 from .context_manager import ContextManager
+from .user_store import UserStore
+from .preferences import PreferenceStore
 from .tools import get_tools
 from .resources import get_resources
 from .handlers import MCPHandlers
@@ -51,6 +53,8 @@ class OCILogAnalyticsMCPServer:
         self.cache = None
         self.query_logger = None
         self.context_manager = None
+        self.user_store = None
+        self.preference_store = None
         self.handlers = None
 
         self._setup_handlers()
@@ -157,6 +161,14 @@ class OCILogAnalyticsMCPServer:
         # Initialize context manager
         self.context_manager = ContextManager(self.settings)
 
+        # Initialize per-user stores
+        base_dir = CONFIG_PATH.parent  # ~/.oci-logan-mcp
+        self.user_store = UserStore(base_dir=base_dir)
+        self.preference_store = PreferenceStore(
+            user_dir=base_dir / "users" / self.user_store.user_id
+        )
+        logger.info(f"User identity: {self.user_store.user_id}")
+
         # Initialize handlers
         if self.oci_client:
             self.handlers = MCPHandlers(
@@ -165,6 +177,8 @@ class OCILogAnalyticsMCPServer:
                 cache=self.cache,
                 query_logger=self.query_logger,
                 context_manager=self.context_manager,
+                user_store=self.user_store,
+                preference_store=self.preference_store,
             )
 
         logger.info("OCI Log Analytics MCP Server initialized")

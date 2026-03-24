@@ -6,6 +6,8 @@ from unittest.mock import MagicMock, AsyncMock, patch
 
 from oci_logan_mcp.handlers import MCPHandlers
 from oci_logan_mcp.config import Settings
+from oci_logan_mcp.user_store import UserStore
+from oci_logan_mcp.preferences import PreferenceStore
 
 
 # ---------------------------------------------------------------------------
@@ -84,7 +86,22 @@ def mock_context_manager():
 
 
 @pytest.fixture
-def handlers(settings, mock_oci_client, mock_cache, mock_query_logger, mock_context_manager):
+def mock_user_store(tmp_path):
+    """Create a real UserStore backed by a temp directory."""
+    return UserStore(base_dir=tmp_path, user_id="testuser")
+
+
+@pytest.fixture
+def mock_preference_store(tmp_path):
+    """Create a real PreferenceStore backed by a temp directory."""
+    user_dir = tmp_path / "users" / "testuser"
+    user_dir.mkdir(parents=True, exist_ok=True)
+    return PreferenceStore(user_dir=user_dir)
+
+
+@pytest.fixture
+def handlers(settings, mock_oci_client, mock_cache, mock_query_logger, mock_context_manager,
+             mock_user_store, mock_preference_store):
     """Create MCPHandlers with all mocked dependencies."""
     return MCPHandlers(
         settings=settings,
@@ -92,6 +109,8 @@ def handlers(settings, mock_oci_client, mock_cache, mock_query_logger, mock_cont
         cache=mock_cache,
         query_logger=mock_query_logger,
         context_manager=mock_context_manager,
+        user_store=mock_user_store,
+        preference_store=mock_preference_store,
     )
 
 
@@ -122,6 +141,7 @@ class TestToolRouting:
             "find_compartment", "get_query_examples", "get_log_summary",
             "save_learned_query", "list_learned_queries",
             "update_tenancy_context", "delete_learned_query",
+            "get_preferences", "remember_preference",
         ]
         # Invoke handle_tool_call to initialize the handlers dict
         # (handlers dict is built inside handle_tool_call)
@@ -317,7 +337,7 @@ class TestMemoryHandlers:
     """Test learned query and context handlers."""
 
     @pytest.mark.asyncio
-    async def test_save_learned_query(self, handlers, mock_context_manager):
+    async def test_save_learned_query(self, handlers, mock_user_store):
         """Should save query and return success."""
         result = await handlers._save_learned_query({
             "name": "error_count",
@@ -325,32 +345,36 @@ class TestMemoryHandlers:
             "description": "Count errors",
         })
 
-        mock_context_manager.save_learned_query.assert_called_once()
         data = json.loads(result[0]["text"])
         assert data["status"] == "saved"
+        # Verify it was saved via user_store
+        queries = mock_user_store.list_queries()
+        assert len(queries) == 1
+        assert queries[0]["name"] == "error_count"
 
     @pytest.mark.asyncio
-    async def test_list_learned_queries(self, handlers, mock_context_manager):
+    async def test_list_learned_queries(self, handlers, mock_user_store):
         """Should return list of learned queries."""
-        mock_context_manager.list_learned_queries.return_value = [
-            {"name": "q1", "query": "* | head 10"},
-        ]
+        mock_user_store.save_query(
+            name="q1", query="* | head 10", description="test", category="general"
+        )
         result = await handlers._list_learned_queries({"category": "all"})
         data = json.loads(result[0]["text"])
         assert data["count"] == 1
 
     @pytest.mark.asyncio
-    async def test_delete_learned_query_found(self, handlers, mock_context_manager):
+    async def test_delete_learned_query_found(self, handlers, mock_user_store):
         """Should delete and return success status."""
-        mock_context_manager.delete_learned_query.return_value = True
+        mock_user_store.save_query(
+            name="q1", query="test", description="test", category="general"
+        )
         result = await handlers._delete_learned_query({"name": "q1"})
         data = json.loads(result[0]["text"])
         assert data["status"] == "deleted"
 
     @pytest.mark.asyncio
-    async def test_delete_learned_query_not_found(self, handlers, mock_context_manager):
+    async def test_delete_learned_query_not_found(self, handlers, mock_user_store):
         """Should return not_found when query doesn't exist."""
-        mock_context_manager.delete_learned_query.return_value = False
         result = await handlers._delete_learned_query({"name": "nonexistent"})
         data = json.loads(result[0]["text"])
         assert data["status"] == "not_found"
