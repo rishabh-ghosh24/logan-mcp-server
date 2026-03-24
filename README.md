@@ -1,6 +1,6 @@
 # OCI Log Analytics MCP Server
 
-An MCP server that connects AI assistants (Claude, Codex, etc.) to OCI Log Analytics. Query, visualize, and export log data through natural language.
+An MCP server that connects AI assistants (Claude, Codex, etc.) to [OCI Log Analytics](https://www.oracle.com/cloud/log-analytics/). Query, visualize, and export log data through natural language.
 
 ## Quick Start
 
@@ -16,18 +16,23 @@ pip install -e .
 
 ### 2. Configure
 
-Choose your authentication method, then run the setup wizard:
+**Choose your auth method:**
+
+| Method | When to use | Setup |
+|---|---|---|
+| `instance_principal` | Running on an OCI VM (recommended) | [Instance principal setup](#instance-principal-setup) |
+| `config_file` | Running on your laptop | Uses `~/.oci/config` — [OCI CLI setup guide](https://docs.oracle.com/en-us/iaas/Content/API/SDKDocs/cliinstall.htm) |
+| `resource_principal` | Running inside OCI Functions | Automatic, no config needed |
 
 ```bash
-# For local/laptop use (reads ~/.oci/config)
-export OCI_LA_AUTH_TYPE=config_file
-
-# For OCI VMs (no config file needed — uses IAM policies)
-export OCI_LA_AUTH_TYPE=instance_principal
+# Set your auth method
+export OCI_LA_AUTH_TYPE=instance_principal   # or config_file
 
 # Run the interactive setup wizard
 oci-logan-mcp --setup
 ```
+
+The wizard will prompt for your Log Analytics namespace and default compartment.
 
 Or set environment variables directly:
 
@@ -38,21 +43,11 @@ export OCI_LA_COMPARTMENT=ocid1.compartment.oc1..xxxxx
 
 ### 3. Connect your AI assistant
 
-Add to your MCP client configuration:
+> **Important:** Always use the `oci-logan-mcp` entry point, not `python -m oci_logan_mcp`.
 
-**Claude Desktop** (`~/Library/Application Support/Claude/claude_desktop_config.json`):
+#### Local (server runs on same machine)
 
-```json
-{
-  "mcpServers": {
-    "oci-log-analytics": {
-      "command": "/path/to/logan-mcp-server/venv/bin/oci-logan-mcp"
-    }
-  }
-}
-```
-
-**Claude Code** (`~/.claude.json` or project settings):
+Works with Claude Desktop, Claude Code, or any MCP client:
 
 ```json
 {
@@ -64,7 +59,13 @@ Add to your MCP client configuration:
 }
 ```
 
-**Remote VM via SSH** (for instance principal auth on OCI VMs):
+**Where to put this:**
+- **Claude Desktop:** `~/Library/Application Support/Claude/claude_desktop_config.json` (macOS) or `%APPDATA%\Claude\claude_desktop_config.json` (Windows)
+- **Claude Code:** `~/.claude.json` or project `.mcp.json`
+
+#### Remote VM via SSH
+
+For running on an OCI VM with instance principal auth. This config goes in your **local** MCP client:
 
 ```json
 {
@@ -82,7 +83,23 @@ Add to your MCP client configuration:
 }
 ```
 
-> **Note:** Always use the `oci-logan-mcp` entry point, not `python -m oci_logan_mcp`.
+#### Codex CLI
+
+Add to `~/.codex/config.toml`:
+
+```toml
+[mcp_servers.oci-log-analytics]
+command = "ssh"
+args = ["-i", "~/.ssh/your-key", "-o", "StrictHostKeyChecking=no", "opc@your-vm-ip", "cd /path/to/logan-mcp-server && source venv/bin/activate && oci-logan-mcp"]
+```
+
+#### Codex App
+
+In the Codex app, go to MCP settings and add a new server:
+- **Command:** `ssh`
+- **Arguments:** `-i`, `~/.ssh/your-key`, `-o`, `StrictHostKeyChecking=no`, `opc@your-vm-ip`, `cd /path/to/logan-mcp-server && source venv/bin/activate && oci-logan-mcp`
+
+> **Windows users:** Windows OpenSSH doesn't handle MCP's stdio transport correctly. Use PuTTY's `plink.exe` instead. See [Windows setup guide](docs/windows-setup.md).
 
 ## What You Can Do
 
@@ -102,9 +119,10 @@ Add to your MCP client configuration:
 ### Fresh VM (Oracle Linux 9)
 
 ```bash
-# Full bootstrap: installs Python, OCI CLI, Docker, Java, and the MCP server
 curl -fsSL https://raw.githubusercontent.com/rishabh-ghosh24/logan-mcp-server/main/scripts/oci-initial-setup.sh | bash
 ```
+
+This installs Python, OCI CLI, and the MCP server in one step.
 
 ### Existing VM (Python 3.10+ available)
 
@@ -114,7 +132,7 @@ cd logan-mcp-server
 ./scripts/setup_oel9.sh
 ```
 
-### Setting Up Instance Principal Auth
+### Instance Principal Setup
 
 Instance principal is the recommended auth method for OCI VMs — no config files to manage.
 
@@ -131,20 +149,23 @@ curl -s -H "Authorization: Bearer Oracle" \
 ANY {instance.id = '<your-compute-instance-OCID>'}
 ```
 
-**Step 3:** Add IAM Policies at the tenancy level:
+**Step 3:** Add IAM policies at the tenancy level:
 
 ```
 Allow dynamic-group logan-mcp-dg to use loganalytics-features-family in tenancy
 Allow dynamic-group logan-mcp-dg to use loganalytics-resources-family in tenancy
 Allow dynamic-group logan-mcp-dg to manage management-dashboard-family in tenancy
 Allow dynamic-group logan-mcp-dg to read compartments in tenancy
-Allow dynamic-group logan-mcp-dg to manage management-agents in tenancy
-Allow dynamic-group logan-mcp-dg to manage management-agent-install-keys in tenancy
+Allow dynamic-group logan-mcp-dg to manage alarms in tenancy
 Allow dynamic-group logan-mcp-dg to read metrics in tenancy
-Allow dynamic-group logan-mcp-dg to read users in tenancy
-Allow dynamic-group logan-mcp-dg to {BUCKET_UPDATE, BUCKET_READ} in tenancy
-Allow service loganalytics to read loganalytics-features-family in tenancy
+Allow dynamic-group logan-mcp-dg to manage ons-topics in tenancy
+Allow dynamic-group logan-mcp-dg to use streams in tenancy
 ```
+
+> **New tenancy?** If Log Analytics is not yet enabled, an administrator must first add this one-time tenancy-level policy:
+> ```
+> Allow service loganalytics to read loganalytics-features-family in tenancy
+> ```
 
 **Step 4:** Configure and run:
 
@@ -166,14 +187,6 @@ pytest tests/ -v
 # Integration tests (requires OCI access)
 python run_tests.py
 ```
-
-### Authentication Methods
-
-| Method | Use Case | Config |
-|---|---|---|
-| `config_file` | Local/laptop development | Reads `~/.oci/config` |
-| `instance_principal` | OCI compute instances | IAM policies via Dynamic Group |
-| `resource_principal` | OCI Functions, managed services | Automatic via service |
 
 ## License
 
