@@ -52,7 +52,8 @@ Works with Claude Desktop, Claude Code, or any MCP client:
 {
   "mcpServers": {
     "oci-log-analytics": {
-      "command": "/path/to/logan-mcp-server/venv/bin/oci-logan-mcp"
+      "command": "/path/to/logan-mcp-server/venv/bin/oci-logan-mcp",
+      "args": ["--user", "firstname.lastname"]
     }
   }
 }
@@ -75,7 +76,7 @@ For running on an OCI VM with instance principal auth. This config goes in your 
         "-i", "~/.ssh/your-key",
         "-o", "StrictHostKeyChecking=no",
         "opc@your-vm-ip",
-        "cd /path/to/logan-mcp-server && source venv/bin/activate && oci-logan-mcp"
+        "cd /path/to/logan-mcp-server && source venv/bin/activate && oci-logan-mcp --user firstname.lastname"
       ]
     }
   }
