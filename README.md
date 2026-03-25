@@ -90,7 +90,7 @@ Add to `~/.codex/config.toml`:
 ```toml
 [mcp_servers.oci-log-analytics]
 command = "ssh"
-args = ["-i", "~/.ssh/your-key", "-o", "StrictHostKeyChecking=no", "opc@your-vm-ip", "cd /path/to/logan-mcp-server && source venv/bin/activate && oci-logan-mcp"]
+args = ["-i", "~/.ssh/your-key", "-o", "StrictHostKeyChecking=no", "opc@your-vm-ip", "cd /path/to/logan-mcp-server && source venv/bin/activate && oci-logan-mcp --user firstname.lastname"]
 ```
 
 #### Codex App

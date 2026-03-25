@@ -54,7 +54,7 @@ Type `y` when prompted to accept the host key. You should see `hello` printed ba
         "-load", "logan-mcp",
         "-batch",
         "-T",
-        "cd /home/opc/logan-mcp-server && source venv/bin/activate && oci-logan-mcp"
+        "cd /home/opc/logan-mcp-server && source venv/bin/activate && oci-logan-mcp --user firstname.lastname"
       ]
     }
   }
