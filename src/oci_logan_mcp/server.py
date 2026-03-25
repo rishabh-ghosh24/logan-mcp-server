@@ -3,6 +3,7 @@
 import asyncio
 import json
 import logging
+import os
 import sys
 from typing import Any, Sequence
 
@@ -35,6 +36,13 @@ logger = logging.getLogger(__name__)
 
 # Timeout for background schema refresh (seconds)
 SCHEMA_REFRESH_TIMEOUT = 60
+
+# Startup schema refresh is disabled by default because refresh_schema()
+# currently uses synchronous OCI SDK calls that can block the event loop before
+# the MCP initialize request is answered.
+ENABLE_STARTUP_SCHEMA_REFRESH = os.getenv(
+    "OCI_LA_STARTUP_SCHEMA_REFRESH", "false"
+).lower() in {"1", "true", "yes", "on"}
 
 
 class OCILogAnalyticsMCPServer:
@@ -221,8 +229,12 @@ class OCILogAnalyticsMCPServer:
         logger.info("Starting MCP server on stdio...")
         async with stdio_server() as (read_stream, write_stream):
             schema_task = None
-            if self.oci_client:
+            if self.oci_client and ENABLE_STARTUP_SCHEMA_REFRESH:
                 schema_task = asyncio.create_task(self._refresh_schema_background())
+            elif self.oci_client:
+                logger.info(
+                    "Skipping startup schema refresh to keep MCP initialization responsive"
+                )
             keepalive_task = asyncio.create_task(self._keepalive_loop())
             try:
                 await self.server.run(

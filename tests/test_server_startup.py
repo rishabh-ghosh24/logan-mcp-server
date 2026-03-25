@@ -183,6 +183,70 @@ class TestRunStartupOrder:
         assert call_order.index('initialize_core') < call_order.index('stdio_opened')
         assert call_order.index('stdio_opened') < call_order.index('schema_refresh')
 
+    @pytest.mark.asyncio
+    async def test_run_skips_schema_refresh_by_default(self, server):
+        """run() should skip startup schema refresh unless explicitly enabled."""
+        async def mock_initialize_core():
+            server.oci_client = MagicMock()
+
+        server.initialize_core = mock_initialize_core
+        server._refresh_schema_background = AsyncMock()
+        server.server = MagicMock()
+        server.server.run = AsyncMock()
+        server.server.create_initialization_options = MagicMock()
+        server._keepalive_loop = AsyncMock()
+
+        with patch('oci_logan_mcp.server.ENABLE_STARTUP_SCHEMA_REFRESH', False), \
+             patch('oci_logan_mcp.server.stdio_server') as mock_stdio:
+            mock_read = MagicMock()
+            mock_write = MagicMock()
+
+            async def mock_aenter(*args):
+                return (mock_read, mock_write)
+
+            cm = MagicMock()
+            cm.__aenter__ = mock_aenter
+            cm.__aexit__ = AsyncMock(return_value=False)
+            mock_stdio.return_value = cm
+
+            await server.run()
+
+        server._refresh_schema_background.assert_not_called()
+
+    @pytest.mark.asyncio
+    async def test_run_starts_schema_refresh_when_enabled(self, server):
+        """run() should start schema refresh when the startup flag is enabled."""
+        async def mock_initialize_core():
+            server.oci_client = MagicMock()
+
+        server.initialize_core = mock_initialize_core
+        server._refresh_schema_background = AsyncMock()
+        server.server = MagicMock()
+
+        async def mock_server_run(*args, **kwargs):
+            await asyncio.sleep(0.01)
+
+        server.server.run = mock_server_run
+        server.server.create_initialization_options = MagicMock()
+        server._keepalive_loop = AsyncMock()
+
+        with patch('oci_logan_mcp.server.ENABLE_STARTUP_SCHEMA_REFRESH', True), \
+             patch('oci_logan_mcp.server.stdio_server') as mock_stdio:
+            mock_read = MagicMock()
+            mock_write = MagicMock()
+
+            async def mock_aenter(*args):
+                return (mock_read, mock_write)
+
+            cm = MagicMock()
+            cm.__aenter__ = mock_aenter
+            cm.__aexit__ = AsyncMock(return_value=False)
+            mock_stdio.return_value = cm
+
+            await server.run()
+
+        server._refresh_schema_background.assert_awaited_once()
+
 
 class TestSetupCLIFlag:
     """Tests for --setup CLI flag."""
