@@ -1,6 +1,6 @@
 # OCI Log Analytics MCP Server
 
-An MCP server that connects AI assistants (Claude, Codex, etc.) to [OCI Log Analytics](https://www.oracle.com/cloud/log-analytics/). Query, visualize, and export log data through natural language.
+An MCP server that connects AI assistants (Claude, Codex, etc.) to [OCI Log Analytics](https://docs.oracle.com/en-us/iaas/log-analytics/home.htm). Query, visualize, and export log data through natural language.
 
 ## Quick Start
 
@@ -125,21 +125,41 @@ The server learns from usage and improves over time. Each user gets isolated sto
 
 ### User identity
 
-Pass `--user <name>` when starting the server, or set the `LOGAN_USER` environment variable. Defaults to the system `$USER`.
+Each MCP connection identifies itself with a username. The server automatically creates a storage directory for new users on first connection — no manual setup needed.
 
-In your MCP client SSH config, add the flag:
+The username is resolved in this order:
+1. `--user <name>` flag (highest priority)
+2. `LOGAN_USER` environment variable
+3. System `$USER` (default fallback)
+
+**Example:** In your MCP client SSH config, append `--user <name>` to the remote command:
 
 ```
 cd /path/to/logan-mcp-server && source venv/bin/activate && oci-logan-mcp --user alice
 ```
+
+For Codex CLI (`~/.codex/config.toml`):
+
+```toml
+[mcp_servers.oci-log-analytics]
+command = "ssh"
+args = ["-i", "~/.ssh/your-key", "-o", "StrictHostKeyChecking=no", "opc@your-vm-ip", "cd /path/to/logan-mcp-server && source venv/bin/activate && oci-logan-mcp --user alice"]
+```
+
+Each user's queries and preferences are stored under `~/.oci-logan-mcp/users/<username>/`. When a second user connects with a different name, they get their own isolated storage.
 
 ### Promoting shared templates
 
 Queries are promoted based on interest score and success rate — not use count. A complex query (interest score >= 4) that works is valuable even if used once.
 
 ```bash
-# Run the promotion script (as admin)
+# Run once manually
 python scripts/promote_queries.py /path/to/.oci-logan-mcp
+
+# Or set up a cron job to run every 2 hours
+crontab -e
+# Add this line:
+0 */2 * * * cd /path/to/logan-mcp-server && venv/bin/python scripts/promote_queries.py /home/opc/.oci-logan-mcp >> /var/log/logan-promote.log 2>&1
 ```
 
 Sensitive data (OCIDs, IPs, emails, secrets) is automatically redacted before promotion.
@@ -159,7 +179,7 @@ This installs Python, OCI CLI, and the MCP server in one step.
 ```bash
 git clone https://github.com/rishabh-ghosh24/logan-mcp-server.git
 cd logan-mcp-server
-./scripts/setup_oel9.sh
+./scripts/setup_oel9.sh   # Installs Python, pip, creates venv, and installs the MCP server
 ```
 
 ### Instance Principal Setup

@@ -1,6 +1,13 @@
 #!/bin/bash
 # Setup script for OCI Log Analytics MCP Server on Oracle Enterprise Linux 9.
-# Run this on a fresh OEL 9 VM with OCI instance principal configured.
+#
+# What this script does:
+#   1. Checks for Python 3.10+ (installs Python 3.11 via dnf if missing)
+#   2. Creates a Python virtual environment (venv/)
+#   3. Installs pip and all required dependencies
+#   4. Installs the oci-logan-mcp server package
+#
+# Prerequisites: git (to clone the repo), OCI instance principal configured
 #
 # Usage:
 #   chmod +x scripts/setup_oel9.sh
