@@ -111,7 +111,7 @@ In the Codex app, go to **MCP settings → Connect to a custom MCP** and fill in
 
 Click **Save**, then start a new Codex session to connect.
 
-> **Windows users:** Windows OpenSSH doesn't handle MCP's stdio transport correctly. Use PuTTY's `plink.exe` instead. See [Windows setup guide](docs/windows-setup.md).
+> **Windows users:** Try the standard SSH config above first. If the server connects but immediately disconnects, Windows OpenSSH may not be handling stdio correctly. In that case, use PuTTY's `plink.exe` instead — see the [Windows setup guide](docs/windows-setup.md).
 
 ## What You Can Do
 
