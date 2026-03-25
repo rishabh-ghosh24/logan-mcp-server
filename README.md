@@ -94,9 +94,21 @@ args = ["-i", "~/.ssh/your-key", "-o", "StrictHostKeyChecking=no", "opc@your-vm-
 
 #### Codex App
 
-In the Codex app, go to MCP settings and add a new server:
-- **Command:** `ssh`
-- **Arguments:** `-i`, `~/.ssh/your-key`, `-o`, `StrictHostKeyChecking=no`, `opc@your-vm-ip`, `cd /path/to/logan-mcp-server && source venv/bin/activate && oci-logan-mcp`
+In the Codex app, go to **MCP settings → Connect to a custom MCP** and fill in:
+
+| Field | Value |
+|---|---|
+| **Name** | `oci-log-analytics` |
+| **Type** | `STDIO` |
+| **Command to launch** | `ssh` |
+| **Argument 1** | `-i` |
+| **Argument 2** | `/path/to/.ssh/your-key` |
+| **Argument 3** | `-o` |
+| **Argument 4** | `StrictHostKeyChecking=no` |
+| **Argument 5** | `opc@your-vm-ip` |
+| **Argument 6** | `cd /home/opc/logan-mcp-server && source venv/bin/activate && oci-logan-mcp --user firstname.lastname` |
+
+Click **Save**, then start a new Codex session to connect.
 
 > **Windows users:** Windows OpenSSH doesn't handle MCP's stdio transport correctly. Use PuTTY's `plink.exe` instead. See [Windows setup guide](docs/windows-setup.md).
 
@@ -127,15 +139,17 @@ The server learns from usage and improves over time. Each user gets isolated sto
 
 Each MCP connection identifies itself with a username. The server automatically creates a storage directory for new users on first connection — no manual setup needed.
 
+**Use `firstname.lastname` format** to avoid conflicts (e.g., `--user david.smith` not `--user david`).
+
 The username is resolved in this order:
 1. `--user <name>` flag (highest priority)
 2. `LOGAN_USER` environment variable
-3. System `$USER` (default fallback)
+3. System `$USER` (default fallback — usually `opc` on shared VMs, so always set `--user` explicitly)
 
-**Example:** In your MCP client SSH config, append `--user <name>` to the remote command:
+**Example:** In your MCP client SSH config, append `--user firstname.lastname` to the remote command:
 
 ```
-cd /path/to/logan-mcp-server && source venv/bin/activate && oci-logan-mcp --user alice
+cd /path/to/logan-mcp-server && source venv/bin/activate && oci-logan-mcp --user david.smith
 ```
 
 For Codex CLI (`~/.codex/config.toml`):
@@ -143,7 +157,7 @@ For Codex CLI (`~/.codex/config.toml`):
 ```toml
 [mcp_servers.oci-log-analytics]
 command = "ssh"
-args = ["-i", "~/.ssh/your-key", "-o", "StrictHostKeyChecking=no", "opc@your-vm-ip", "cd /path/to/logan-mcp-server && source venv/bin/activate && oci-logan-mcp --user alice"]
+args = ["-i", "~/.ssh/your-key", "-o", "StrictHostKeyChecking=no", "opc@your-vm-ip", "cd /path/to/logan-mcp-server && source venv/bin/activate && oci-logan-mcp --user david.smith"]
 ```
 
 Each user's queries and preferences are stored under `~/.oci-logan-mcp/users/<username>/`. When a second user connects with a different name, they get their own isolated storage.
