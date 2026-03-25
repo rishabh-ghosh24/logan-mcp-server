@@ -76,15 +76,16 @@ Close and reopen Claude Desktop (or Codex). The server should now connect and st
 
 ## Troubleshooting
 
-| Symptom | Fix |
-|---|---|
-| "Cannot confirm a host key in batch mode" | Run Step 3 again and type `y` |
-| "Cannot answer interactive prompts in batch mode" | Redo Step 2 — ensure username and key are set and saved |
-| "Unable to use key file" | Redo Step 1 — key must be in `.ppk` format |
-| Asks for "login as:" | Set Auto-login username in PuTTY > Connection > Data, re-save session |
-| "Software caused connection abort" after idle | Set keepalive to 30 in PuTTY > Connection, re-save session |
-| Server connects then disconnects | SSH in manually and verify the remote command works |
-| "Network error" or timeout | Ensure port 22 is open in OCI security list |
+| Symptom | Cause | Fix |
+|---|---|---|
+| "Cannot confirm a host key in batch mode" | Host key not cached for the saved session | Run Step 3 again: `plink -load logan-mcp "echo hello"` and type `y` |
+| "Cannot answer interactive prompts in batch mode" | Missing username or key in saved session | Redo Step 2 — ensure Auto-login username and key path are set and saved |
+| "Unable to use key file" | Key not in PPK format | Redo Step 1 with PuTTYgen |
+| Asks for "login as:" | Auto-login username not set in saved session | Go to PuTTY > Connection > Data > set `opc` > re-save the session |
+| "Software caused connection abort" after idle | Keepalive not configured | Go to PuTTY > Connection > set keepalive to 30 > re-save the session |
+| Server connects then immediately disconnects | Wrong remote path or venv issue | SSH in manually and verify: `cd /home/opc/logan-mcp-server && source venv/bin/activate && oci-logan-mcp` |
+| "Network error" or timeout | Firewall/security list blocking SSH | Ensure port 22 is open to your IP in the OCI security list |
+| `plink: unknown option "-keepalive"` | Keepalive cannot be set via command line | Set it in the PuTTY saved session GUI instead (Step 2) |
 
 ## SSH Key Permissions (for manual testing)
 

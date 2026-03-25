@@ -22,7 +22,6 @@ pip install -e .
 |---|---|---|
 | `instance_principal` | Running on an OCI VM (recommended) | [Instance principal setup](#instance-principal-setup) |
 | `config_file` | Running on your laptop | Uses `~/.oci/config` — [OCI CLI setup guide](https://docs.oracle.com/en-us/iaas/Content/API/SDKDocs/cliinstall.htm) |
-| `resource_principal` | Running inside OCI Functions | Automatic, no config needed |
 
 ```bash
 # Set your auth method
@@ -111,8 +110,39 @@ In the Codex app, go to MCP settings and add a new server:
 | **Export** | `export_results` | Export query results to CSV or JSON |
 | **Manage scope** | `set_compartment`, `set_namespace`, `find_compartment`, `list_compartments` | Switch compartments, query across tenancy |
 | **Validate** | `validate_query`, `get_query_examples` | Check syntax, get example queries by category |
-| **Remember** | `save_learned_query`, `list_learned_queries`, `update_tenancy_context` | Save working queries for reuse across sessions |
+| **Remember** | `save_learned_query`, `list_learned_queries`, `get_preferences`, `remember_preference` | Save queries, learn field preferences and time ranges per log source |
 | **Monitor** | `test_connection`, `get_current_context`, `get_log_summary` | Check connectivity, see current config, view log volume |
+
+## Multi-User Learning
+
+The server learns from usage and improves over time. Each user gets isolated storage, and the best queries are promoted to benefit everyone.
+
+### How it works
+
+- **Per-user query storage** — Each user's saved queries and preferences are stored separately (`--user` flag or `LOGAN_USER` env var)
+- **Auto-learning** — The server tracks which fields you use with each log source (field affinity), your preferred time ranges, and disambiguation choices
+- **Shared templates** — An admin runs the promotion script to promote high-quality queries to a shared library available to all users
+
+### User identity
+
+Pass `--user <name>` when starting the server, or set the `LOGAN_USER` environment variable. Defaults to the system `$USER`.
+
+In your MCP client SSH config, add the flag:
+
+```
+cd /path/to/logan-mcp-server && source venv/bin/activate && oci-logan-mcp --user alice
+```
+
+### Promoting shared templates
+
+Queries are promoted based on interest score and success rate — not use count. A complex query (interest score >= 4) that works is valuable even if used once.
+
+```bash
+# Run the promotion script (as admin)
+python scripts/promote_queries.py /path/to/.oci-logan-mcp
+```
+
+Sensitive data (OCIDs, IPs, emails, secrets) is automatically redacted before promotion.
 
 ## Deploying on an OCI VM
 
