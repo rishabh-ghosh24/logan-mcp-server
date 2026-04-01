@@ -75,6 +75,8 @@ For running on an OCI VM with instance principal auth. This config goes in your 
       "args": [
         "-i", "~/.ssh/your-key",
         "-o", "StrictHostKeyChecking=no",
+        "-o", "ServerAliveInterval=60",
+        "-o", "ServerAliveCountMax=3",
         "opc@your-vm-ip",
         "cd /path/to/logan-mcp-server && source venv/bin/activate && oci-logan-mcp --user firstname.lastname"
       ]
@@ -83,6 +85,8 @@ For running on an OCI VM with instance principal auth. This config goes in your 
 }
 ```
 
+> **SSH keepalive:** The `ServerAliveInterval=60` and `ServerAliveCountMax=3` options send a keepalive packet every 60 seconds and disconnect after 3 missed responses. Without these, idle SSH connections can be silently dropped by firewalls or NAT gateways, causing the MCP server to disconnect unexpectedly.
+
 #### Codex CLI
 
 Add to `~/.codex/config.toml`:
@@ -90,7 +94,7 @@ Add to `~/.codex/config.toml`:
 ```toml
 [mcp_servers.oci-log-analytics]
 command = "ssh"
-args = ["-i", "~/.ssh/your-key", "-o", "StrictHostKeyChecking=no", "opc@your-vm-ip", "cd /path/to/logan-mcp-server && source venv/bin/activate && oci-logan-mcp --user firstname.lastname"]
+args = ["-i", "~/.ssh/your-key", "-o", "StrictHostKeyChecking=no", "-o", "ServerAliveInterval=60", "-o", "ServerAliveCountMax=3", "opc@your-vm-ip", "cd /path/to/logan-mcp-server && source venv/bin/activate && oci-logan-mcp --user firstname.lastname"]
 ```
 
 #### Codex App
@@ -106,8 +110,12 @@ In the Codex app, go to **MCP settings → Connect to a custom MCP** and fill in
 | **Argument 2** | `/path/to/.ssh/your-key` |
 | **Argument 3** | `-o` |
 | **Argument 4** | `StrictHostKeyChecking=no` |
-| **Argument 5** | `opc@your-vm-ip` |
-| **Argument 6** | `cd /home/opc/logan-mcp-server && source venv/bin/activate && oci-logan-mcp --user firstname.lastname` |
+| **Argument 5** | `-o` |
+| **Argument 6** | `ServerAliveInterval=60` |
+| **Argument 7** | `-o` |
+| **Argument 8** | `ServerAliveCountMax=3` |
+| **Argument 9** | `opc@your-vm-ip` |
+| **Argument 10** | `cd /home/opc/logan-mcp-server && source venv/bin/activate && oci-logan-mcp --user firstname.lastname` |
 
 Click **Save**, then start a new Codex session to connect.
 
@@ -158,7 +166,7 @@ For Codex CLI (`~/.codex/config.toml`):
 ```toml
 [mcp_servers.oci-log-analytics]
 command = "ssh"
-args = ["-i", "~/.ssh/your-key", "-o", "StrictHostKeyChecking=no", "opc@your-vm-ip", "cd /path/to/logan-mcp-server && source venv/bin/activate && oci-logan-mcp --user david.smith"]
+args = ["-i", "~/.ssh/your-key", "-o", "StrictHostKeyChecking=no", "-o", "ServerAliveInterval=60", "-o", "ServerAliveCountMax=3", "opc@your-vm-ip", "cd /path/to/logan-mcp-server && source venv/bin/activate && oci-logan-mcp --user david.smith"]
 ```
 
 Each user's queries and preferences are stored under `~/.oci-logan-mcp/users/<username>/`. When a second user connects with a different name, they get their own isolated storage.
