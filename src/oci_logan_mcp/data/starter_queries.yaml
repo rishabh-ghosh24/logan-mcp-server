@@ -2,7 +2,7 @@
 #
 # These are shipped with the package so fresh installs get useful examples
 # immediately via get_query_examples. Maintainers can refresh this file
-# from promoted VM learnings using scripts/export_starter_queries.py.
+# by reviewing promoted VM learnings in shared/promoted_queries.yaml.
 #
 # Rules:
 #   - Only sanitized, tenant-agnostic queries (no OCIDs, IPs, secrets)

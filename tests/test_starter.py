@@ -92,6 +92,36 @@ class TestLoadStarterQueries:
             result = load_starter_queries()
         assert result is None
 
+    def test_skips_bad_entries_keeps_good_ones(self):
+        """Mixed valid + invalid entries: bad ones skipped, good ones kept."""
+        from oci_logan_mcp.starter import load_starter_queries
+
+        mixed_yaml = """
+version: 1
+queries:
+  - name: Good query
+    query: "* | stats count"
+    description: A valid entry
+    category: basic
+  - "just a string, not a dict"
+  - name: Missing description
+    query: "* | head 10"
+    category: basic
+  - name: Another good one
+    query: "* | stats count by Entity"
+    description: Also valid
+    category: statistics
+"""
+        with patch("oci_logan_mcp.starter.importlib.resources") as mock_res:
+            mock_file = mock_res.files.return_value.__truediv__.return_value.__truediv__.return_value
+            mock_file.read_text.return_value = mixed_yaml
+            result = load_starter_queries()
+
+        assert result is not None
+        assert len(result["basic"]) == 1
+        assert result["basic"][0]["name"] == "Good query"
+        assert len(result["statistics"]) == 1
+
     def test_returns_none_for_missing_queries_key(self):
         """Should return None when YAML has no 'queries' key."""
         from oci_logan_mcp.starter import load_starter_queries

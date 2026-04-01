@@ -40,6 +40,9 @@ def load_starter_queries() -> Optional[Dict[str, List[Dict[str, Any]]]]:
 
         grouped: Dict[str, List[Dict[str, Any]]] = {}
         for entry in data["queries"]:
+            if not isinstance(entry, dict):
+                logger.warning(f"starter_queries.yaml: skipping non-dict entry: {entry!r}")
+                continue
             cat = entry.get("category", "")
             if cat not in VALID_CATEGORIES:
                 logger.warning(f"starter_queries.yaml: skipping entry with unknown category '{cat}'")
