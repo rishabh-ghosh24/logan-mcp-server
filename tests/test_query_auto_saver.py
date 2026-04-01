@@ -4,6 +4,7 @@ import pytest
 from unittest.mock import MagicMock, patch
 
 from oci_logan_mcp.query_auto_saver import QueryAutoSaver
+from oci_logan_mcp.user_store import UserStore
 
 
 # ----------------------------------------------------------------
@@ -23,8 +24,14 @@ def mock_context_manager():
 
 
 @pytest.fixture
-def auto_saver(mock_context_manager):
-    return QueryAutoSaver(mock_context_manager)
+def mock_user_store(tmp_path):
+    """Create a real UserStore backed by a temp directory."""
+    return UserStore(base_dir=tmp_path, user_id="testuser")
+
+
+@pytest.fixture
+def auto_saver(mock_context_manager, mock_user_store):
+    return QueryAutoSaver(mock_context_manager, user_store=mock_user_store)
 
 
 DUMMY_RESULT = {"data": {"rows": [[1]], "columns": [{"name": "count"}]}}
@@ -103,10 +110,10 @@ class TestTrivialRejection:
         "* | stats count",
         "  *  |  stats  count  ",
     ])
-    def test_trivial_not_saved(self, auto_saver, mock_context_manager, query):
+    def test_trivial_not_saved(self, auto_saver, mock_user_store, query):
         result = auto_saver.process_successful_query(query, DUMMY_RESULT)
         assert result is None
-        mock_context_manager.save_learned_query.assert_not_called()
+        assert len(mock_user_store.list_queries()) == 0
 
 
 # ================================================================
@@ -116,12 +123,17 @@ class TestTrivialRejection:
 class TestDeduplication:
     """Already-saved queries should bump use_count, not create duplicates."""
 
-    def test_existing_query_bumps_usage(self, auto_saver, mock_context_manager):
-        mock_context_manager.record_query_usage.return_value = True
+    def test_existing_query_bumps_usage(self, auto_saver, mock_user_store):
         q = "'Log Source' != null | stats count by 'Log Source' | sort -count | head 10"
+        # First call saves it
+        auto_saver.process_successful_query(q, DUMMY_RESULT)
+        initial_count = mock_user_store.list_queries()[0]["use_count"]
+        # Second call should bump usage, not create duplicate
         result = auto_saver.process_successful_query(q, DUMMY_RESULT)
         assert result is None
-        mock_context_manager.save_learned_query.assert_not_called()
+        queries = mock_user_store.list_queries()
+        assert len(queries) == 1
+        assert queries[0]["use_count"] > initial_count
 
 
 # ================================================================
@@ -152,14 +164,14 @@ class TestNameGeneration:
         name, desc, cat = auto_saver._generate_metadata(q)
         assert len(name) <= 60
 
-    def test_unique_name_avoids_collision(self, auto_saver, mock_context_manager):
+    def test_unique_name_avoids_collision(self, auto_saver, mock_user_store):
         # First, find out what name the auto-saver generates for this query
         q = "'Log Source' = 'Linux Secure Logs' | stats count by 'Entity'"
         base_name, _, _ = auto_saver._generate_metadata(q)
-        # Now set up a collision with that exact name
-        mock_context_manager.list_learned_queries.return_value = [
-            {"name": base_name}
-        ]
+        # Save a query with that exact name to cause collision
+        mock_user_store.save_query(
+            name=base_name, query="other query", description="test", category="general"
+        )
         name, desc, cat = auto_saver._generate_metadata(q)
         assert name != base_name
         assert "_v2" in name
@@ -205,31 +217,31 @@ class TestCategoryInference:
 class TestAutoSaveIntegration:
     """Test the full process_successful_query flow."""
 
-    def test_interesting_query_is_saved(self, auto_saver, mock_context_manager):
+    def test_interesting_query_is_saved(self, auto_saver, mock_user_store):
         q = "'Log Source' != null | stats count as 'Log Count' by 'Log Source' | sort -'Log Count' | head 10"
         result = auto_saver.process_successful_query(q, DUMMY_RESULT)
         assert result is not None
-        mock_context_manager.save_learned_query.assert_called_once()
+        queries = mock_user_store.list_queries()
+        assert len(queries) == 1
+        assert "[auto-saved]" in queries[0]["description"]
+        assert "auto-saved" in queries[0]["tags"]
 
-        call_kwargs = mock_context_manager.save_learned_query.call_args
-        assert "[auto-saved]" in call_kwargs.kwargs.get("description", call_kwargs[1].get("description", ""))
-        tags = call_kwargs.kwargs.get("tags", call_kwargs[1].get("tags", []))
-        assert "auto-saved" in tags
-
-    def test_auto_save_never_breaks_execution(self, auto_saver, mock_context_manager):
+    def test_auto_save_never_breaks_execution(self, mock_context_manager, tmp_path):
         """Auto-save errors must be swallowed, never crash query execution."""
+        # Create an auto_saver with user_store=None to test context_manager fallback
         mock_context_manager.record_query_usage.side_effect = RuntimeError("boom")
+        saver = QueryAutoSaver(mock_context_manager, user_store=None)
         q = "'Log Source' != null | stats count by 'Log Source' | sort -count | head 10"
         # Should not raise
-        result = auto_saver.process_successful_query(q, DUMMY_RESULT)
+        result = saver.process_successful_query(q, DUMMY_RESULT)
         assert result is None  # gracefully returned None
 
-    def test_save_called_with_correct_query(self, auto_saver, mock_context_manager):
+    def test_save_called_with_correct_query(self, auto_saver, mock_user_store):
         q = "  'Log Source' = 'OCI Audit Logs' | stats count by 'Status' | sort -Count  "
         auto_saver.process_successful_query(q, DUMMY_RESULT)
-        call_kwargs = mock_context_manager.save_learned_query.call_args
-        saved_query = call_kwargs.kwargs.get("query", call_kwargs[1].get("query", ""))
-        assert saved_query == q.strip()
+        queries = mock_user_store.list_queries()
+        assert len(queries) == 1
+        assert queries[0]["query"] == q.strip()
 
 
 # ================================================================

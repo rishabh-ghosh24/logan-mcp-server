@@ -95,7 +95,7 @@ class OCILogAnalyticsClient:
         time_start: str,
         time_end: str,
         max_results: Optional[int] = None,
-        include_subcompartments: bool = False,
+        include_subcompartments: bool = True,
         compartment_id: Optional[str] = None,
     ) -> Dict[str, Any]:
         """Execute a Log Analytics query.
@@ -130,6 +130,12 @@ class OCILogAnalyticsClient:
             effective_compartment, include_subcompartments
         )
 
+    @staticmethod
+    def _is_cluster_query(query_string: str) -> bool:
+        """Check if this is a cluster query (e.g. '* | cluster')."""
+        import re
+        return bool(re.search(r'\|\s*cluster\b', query_string, re.IGNORECASE))
+
     async def _execute_single_query(
         self,
         query_string: str,
@@ -143,6 +149,7 @@ class OCILogAnalyticsClient:
         await self._rate_limiter.acquire()
 
         max_results = max_results or self.settings.query.max_results
+        is_cluster = self._is_cluster_query(query_string)
 
         time_start_dt = datetime.fromisoformat(time_start.replace("Z", "+00:00"))
         time_end_dt = datetime.fromisoformat(time_end.replace("Z", "+00:00"))
@@ -153,26 +160,33 @@ class OCILogAnalyticsClient:
             time_zone="UTC",
         )
 
+        # For cluster queries, don't cap max_total_count — let the API
+        # process all records so the cluster algorithm produces accurate results.
         query_details = oci.log_analytics.models.QueryDetails(
             compartment_id=compartment_id,
             compartment_id_in_subtree=include_subcompartments,
             query_string=query_string,
             sub_system=oci.log_analytics.models.QueryDetails.SUB_SYSTEM_LOG,
             time_filter=time_range,
-            max_total_count=max_results,
+            **({} if is_cluster else {"max_total_count": max_results}),
         )
 
         logger.info(
             f"OCI Query: compartment={compartment_id}, "
             f"include_subtree={include_subcompartments}, "
             f"namespace={self._namespace}"
+            f"{', cluster_mode=True' if is_cluster else ''}"
         )
+
+        # For cluster queries, use a high page limit to get all clusters.
+        # For regular queries, use max_results as the page limit.
+        page_limit = 10000 if is_cluster else max_results
 
         try:
             response = self._la_client.query(
                 namespace_name=self._namespace,
                 query_details=query_details,
-                limit=max_results,
+                limit=page_limit,
             )
             self._rate_limiter.reset()
 
@@ -180,20 +194,21 @@ class OCILogAnalyticsClient:
             result = self._parse_query_response(response.data)
 
             # Fetch additional pages if available
-            while response.has_next_page and len(result["rows"]) < max_results:
+            row_cap = page_limit if is_cluster else max_results
+            while response.has_next_page and len(result["rows"]) < row_cap:
                 await self._rate_limiter.acquire()
                 response = self._la_client.query(
                     namespace_name=self._namespace,
                     query_details=query_details,
-                    limit=max_results,
+                    limit=page_limit,
                     page=response.next_page,
                 )
                 self._rate_limiter.reset()
                 page_result = self._parse_query_response(response.data)
                 result["rows"].extend(page_result["rows"])
 
-            # Trim to max_results and update count
-            if len(result["rows"]) > max_results:
+            # Trim to limit and update count (skip trim for cluster queries)
+            if not is_cluster and len(result["rows"]) > max_results:
                 result["rows"] = result["rows"][:max_results]
             result["total_count"] = len(result["rows"])
 

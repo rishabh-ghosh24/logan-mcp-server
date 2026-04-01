@@ -3,6 +3,7 @@
 import asyncio
 import json
 import logging
+import os
 import sys
 from typing import Any, Sequence
 
@@ -15,12 +16,13 @@ from mcp.types import (
     ImageContent,
 )
 
-from .config import load_config, config_exists
-from .wizard import run_setup_wizard
+from .config import load_config, config_exists, CONFIG_PATH
 from .client import OCILogAnalyticsClient
 from .cache import CacheManager
 from .query_logger import QueryLogger
 from .context_manager import ContextManager
+from .user_store import UserStore
+from .preferences import PreferenceStore
 from .tools import get_tools
 from .resources import get_resources
 from .handlers import MCPHandlers
@@ -31,6 +33,16 @@ logging.basicConfig(
     format="%(asctime)s - %(name)s - %(levelname)s - %(message)s",
 )
 logger = logging.getLogger(__name__)
+
+# Timeout for background schema refresh (seconds)
+SCHEMA_REFRESH_TIMEOUT = 60
+
+# Startup schema refresh is disabled by default because refresh_schema()
+# currently uses synchronous OCI SDK calls that can block the event loop before
+# the MCP initialize request is answered.
+ENABLE_STARTUP_SCHEMA_REFRESH = os.getenv(
+    "OCI_LA_STARTUP_SCHEMA_REFRESH", "false"
+).lower() in {"1", "true", "yes", "on"}
 
 
 class OCILogAnalyticsMCPServer:
@@ -49,6 +61,8 @@ class OCILogAnalyticsMCPServer:
         self.cache = None
         self.query_logger = None
         self.context_manager = None
+        self.user_store = None
+        self.preference_store = None
         self.handlers = None
 
         self._setup_handlers()
@@ -120,24 +134,23 @@ class OCILogAnalyticsMCPServer:
                 logger.exception(f"Error reading resource {uri}")
                 return json.dumps({"error": str(e)})
 
-    async def initialize(self) -> None:
-        """Initialize server components.
+    async def initialize_core(self) -> None:
+        """Initialize core server components without schema refresh.
 
         Loads configuration, sets up OCI client, and initializes
-        all service components.
+        service components. Schema refresh is deferred to a background
+        task to avoid blocking the MCP handshake.
         """
         logger.info("Initializing OCI Log Analytics MCP Server...")
 
-        # Check for config, run wizard if needed
+        # Fail fast if no config — don't launch interactive wizard during stdio mode
         if not config_exists():
-            logger.info("No configuration found, running setup wizard...")
-            try:
-                self.settings = run_setup_wizard()
-            except (EOFError, KeyboardInterrupt):
-                logger.warning("Setup wizard cancelled. Using defaults.")
-                self.settings = load_config()
-        else:
-            self.settings = load_config()
+            raise RuntimeError(
+                "No configuration found. Run 'oci-logan-mcp --setup' to configure "
+                "the server before using it with an MCP client."
+            )
+
+        self.settings = load_config()
 
         # Initialize components
         self.cache = CacheManager(self.settings.cache)
@@ -156,6 +169,14 @@ class OCILogAnalyticsMCPServer:
         # Initialize context manager
         self.context_manager = ContextManager(self.settings)
 
+        # Initialize per-user stores
+        base_dir = CONFIG_PATH.parent  # ~/.oci-logan-mcp
+        self.user_store = UserStore(base_dir=base_dir)
+        self.preference_store = PreferenceStore(
+            user_dir=base_dir / "users" / self.user_store.user_id
+        )
+        logger.info(f"User identity: {self.user_store.user_id}")
+
         # Initialize handlers
         if self.oci_client:
             self.handlers = MCPHandlers(
@@ -164,30 +185,56 @@ class OCILogAnalyticsMCPServer:
                 cache=self.cache,
                 query_logger=self.query_logger,
                 context_manager=self.context_manager,
+                user_store=self.user_store,
+                preference_store=self.preference_store,
             )
 
-            # Refresh schema data from OCI at startup (always fresh)
-            try:
-                counts = await self.context_manager.refresh_schema(
-                    self.oci_client, self.settings
-                )
-                logger.info(f"Schema refresh at startup: {counts}")
-            except Exception as e:
-                logger.warning(f"Schema refresh failed at startup: {e}")
-
         logger.info("OCI Log Analytics MCP Server initialized")
+
+    async def _refresh_schema_background(self) -> None:
+        """Refresh schema data in background after MCP transport is live.
+
+        Wraps refresh_schema() with a timeout to prevent indefinite stalls.
+        Failures are logged but do not affect server operation — tools
+        fetch schema on demand via SchemaManager.
+        """
+        try:
+            counts = await asyncio.wait_for(
+                self.context_manager.refresh_schema(
+                    self.oci_client, self.settings
+                ),
+                timeout=SCHEMA_REFRESH_TIMEOUT,
+            )
+            logger.info(f"Background schema refresh complete: {counts}")
+        except asyncio.TimeoutError:
+            logger.warning(
+                f"Background schema refresh timed out after {SCHEMA_REFRESH_TIMEOUT}s "
+                "— tools will fetch on demand"
+            )
+        except Exception as e:
+            logger.warning(
+                f"Background schema refresh failed: {e} — tools will fetch on demand"
+            )
 
     async def run(self) -> None:
         """Run the MCP server.
 
         Starts the server and handles stdio communication
-        with MCP clients.  A background keepalive task prevents
-        idle-timeout disconnections from the client.
+        with MCP clients. Schema refresh runs in background after
+        the transport is live. A keepalive task prevents idle-timeout
+        disconnections from the client.
         """
-        await self.initialize()
+        await self.initialize_core()
 
         logger.info("Starting MCP server on stdio...")
         async with stdio_server() as (read_stream, write_stream):
+            schema_task = None
+            if self.oci_client and ENABLE_STARTUP_SCHEMA_REFRESH:
+                schema_task = asyncio.create_task(self._refresh_schema_background())
+            elif self.oci_client:
+                logger.info(
+                    "Skipping startup schema refresh to keep MCP initialization responsive"
+                )
             keepalive_task = asyncio.create_task(self._keepalive_loop())
             try:
                 await self.server.run(
@@ -196,6 +243,12 @@ class OCILogAnalyticsMCPServer:
                     self.server.create_initialization_options(),
                 )
             finally:
+                if schema_task is not None:
+                    schema_task.cancel()
+                    try:
+                        await schema_task
+                    except asyncio.CancelledError:
+                        pass
                 keepalive_task.cancel()
                 try:
                     await keepalive_task
