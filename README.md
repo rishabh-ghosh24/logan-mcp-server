@@ -187,7 +187,7 @@ oci-logan-mcp --promote-and-exit --base-dir /home/opc/.oci-logan-mcp
 # Automate with cron (recommended) — every 2 hours
 crontab -e
 # Add this line:
-0 */2 * * * cd /path/to/logan-mcp-server && source venv/bin/activate && oci-logan-mcp --promote-and-exit >> /var/log/logan-promote.log 2>&1
+0 */2 * * * cd /path/to/logan-mcp-server && source venv/bin/activate && oci-logan-mcp --promote-and-exit --base-dir /home/opc/.oci-logan-mcp >> /var/log/logan-promote.log 2>&1
 ```
 
 ## Deploying on an OCI VM
