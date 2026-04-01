@@ -162,7 +162,8 @@ class TestRunStartupOrder:
         server.server.run = mock_server_run
         server.server.create_initialization_options = MagicMock()
 
-        with patch('oci_logan_mcp.server.stdio_server') as mock_stdio:
+        with patch('oci_logan_mcp.server.ENABLE_STARTUP_SCHEMA_REFRESH', True), \
+             patch('oci_logan_mcp.server.stdio_server') as mock_stdio:
             mock_read = MagicMock()
             mock_write = MagicMock()
 
