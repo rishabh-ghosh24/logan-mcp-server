@@ -608,104 +608,14 @@ class MCPHandlers:
             }, indent=2)}]
 
     async def _get_query_examples(self, args: Dict) -> List[Dict]:
-        """Get example queries for common use cases."""
-        examples = {
-            "basic": [
-                {
-                    "name": "Count all logs",
-                    "query": "* | stats count",
-                    "description": "Get total count of all logs",
-                },
-                {
-                    "name": "Count by log source",
-                    "query": "* | stats count by 'Log Source'",
-                    "description": "Break down log count by source type",
-                },
-                {
-                    "name": "Recent logs",
-                    "query": "* | head 100",
-                    "description": "Get the 100 most recent log entries",
-                },
-                {
-                    "name": "Search by keyword",
-                    "query": "* | where Message contains 'error'",
-                    "description": "Find logs containing specific text",
-                },
-            ],
-            "security": [
-                {
-                    "name": "Failed logins",
-                    "query": "'Log Source' = 'Linux Secure Logs' | where Message contains 'Failed password'",
-                    "description": "Find failed SSH login attempts",
-                },
-                {
-                    "name": "Authentication events",
-                    "query": "* | where Label = 'Authentication'",
-                    "description": "All authentication-related events",
-                },
-                {
-                    "name": "Sudo commands",
-                    "query": "'Log Source' = 'Linux Secure Logs' | where Message contains 'sudo'",
-                    "description": "Track sudo usage",
-                },
-            ],
-            "errors": [
-                {
-                    "name": "All errors",
-                    "query": "* | where Severity in ('ERROR', 'CRITICAL', 'FATAL')",
-                    "description": "Find all error-level logs",
-                },
-                {
-                    "name": "Errors by source",
-                    "query": "* | where Severity = 'ERROR' | stats count by 'Log Source'",
-                    "description": "Count errors per log source",
-                },
-                {
-                    "name": "Error trends",
-                    "query": "* | where Severity = 'ERROR' | timestats count by 'Log Source'",
-                    "description": "Error count over time by source",
-                },
-                {
-                    "name": "Exception traces",
-                    "query": "* | where Message contains 'Exception' or Message contains 'Traceback'",
-                    "description": "Find stack traces and exceptions",
-                },
-            ],
-            "performance": [
-                {
-                    "name": "Slow operations",
-                    "query": "* | where Message contains 'slow' or Message contains 'timeout'",
-                    "description": "Find performance-related issues",
-                },
-                {
-                    "name": "Response times",
-                    "query": "* | where Message regex '\\\\d+ms' | head 100",
-                    "description": "Logs mentioning millisecond timings",
-                },
-            ],
-            "statistics": [
-                {
-                    "name": "Logs by entity",
-                    "query": "* | stats count by Entity",
-                    "description": "Count logs per monitored entity",
-                },
-                {
-                    "name": "Logs by severity",
-                    "query": "* | stats count by Severity",
-                    "description": "Distribution of log severity levels",
-                },
-                {
-                    "name": "Top log sources",
-                    "query": "* | stats count by 'Log Source' | sort -count | head 10",
-                    "description": "Top 10 log sources by volume",
-                },
-                {
-                    "name": "Hourly volume",
-                    "query": "* | timestats count span=1h",
-                    "description": "Log volume per hour",
-                },
-            ],
-        }
+        """Get example queries for common use cases.
+
+        Loads curated examples from the packaged starter YAML file.
+        Falls back to hardcoded examples if the YAML cannot be loaded.
+        """
+        from .starter import load_starter_queries
+
+        examples = load_starter_queries() or _FALLBACK_EXAMPLES
 
         category = args.get("category", "all")
 
@@ -911,3 +821,35 @@ class MCPHandlers:
             "status": "saved",
             "message": f"Preference '{args['intent_key']}' saved. Will be used in future sessions.",
         }, indent=2)}]
+
+
+# Hardcoded fallback examples used when starter_queries.yaml cannot be loaded.
+_FALLBACK_EXAMPLES = {
+    "basic": [
+        {"name": "Count all logs", "query": "* | stats count", "description": "Get total count of all logs"},
+        {"name": "Count by log source", "query": "* | stats count by 'Log Source'", "description": "Break down log count by source type"},
+        {"name": "Recent logs", "query": "* | head 100", "description": "Get the 100 most recent log entries"},
+        {"name": "Search by keyword", "query": "* | where Message contains 'error'", "description": "Find logs containing specific text"},
+    ],
+    "security": [
+        {"name": "Failed logins", "query": "'Log Source' = 'Linux Secure Logs' | where Message contains 'Failed password'", "description": "Find failed SSH login attempts"},
+        {"name": "Authentication events", "query": "* | where Label = 'Authentication'", "description": "All authentication-related events"},
+        {"name": "Sudo commands", "query": "'Log Source' = 'Linux Secure Logs' | where Message contains 'sudo'", "description": "Track sudo usage"},
+    ],
+    "errors": [
+        {"name": "All errors", "query": "* | where Severity in ('ERROR', 'CRITICAL', 'FATAL')", "description": "Find all error-level logs"},
+        {"name": "Errors by source", "query": "* | where Severity = 'ERROR' | stats count by 'Log Source'", "description": "Count errors per log source"},
+        {"name": "Error trends", "query": "* | where Severity = 'ERROR' | timestats count by 'Log Source'", "description": "Error count over time by source"},
+        {"name": "Exception traces", "query": "* | where Message contains 'Exception' or Message contains 'Traceback'", "description": "Find stack traces and exceptions"},
+    ],
+    "performance": [
+        {"name": "Slow operations", "query": "* | where Message contains 'slow' or Message contains 'timeout'", "description": "Find performance-related issues"},
+        {"name": "Response times", "query": r"* | where Message regex '\d+ms' | head 100", "description": "Logs mentioning millisecond timings"},
+    ],
+    "statistics": [
+        {"name": "Logs by entity", "query": "* | stats count by Entity", "description": "Count logs per monitored entity"},
+        {"name": "Logs by severity", "query": "* | stats count by Severity", "description": "Distribution of log severity levels"},
+        {"name": "Top log sources", "query": "* | stats count by 'Log Source' | sort -count | head 10", "description": "Top 10 log sources by volume"},
+        {"name": "Hourly volume", "query": "* | timestats count span=1h", "description": "Log volume per hour"},
+    ],
+}
