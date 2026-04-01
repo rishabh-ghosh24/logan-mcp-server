@@ -84,13 +84,27 @@ class QueryValidator:
         )
 
     async def _validate_fields(self, query: str) -> Tuple[List[str], List[str], str]:
-        """Validate field references in query."""
+        """Validate field references in query.
+
+        Only validates quoted tokens that appear in field positions:
+        - Left side of comparisons: 'Field' = value
+        - After BY/GROUP BY: stats count by 'Field'
+        - After WHERE: where 'Field' ...
+        - After FIELDS: fields 'Field', ...
+        - After SORT: sort 'Field'
+        - After DEDUP: dedup 'Field'
+        - After RENAME ... AS: rename 'X' as 'NewName' (validates 'X', not 'NewName')
+
+        Skips quoted tokens that are string literals or aliases:
+        - Right side of comparisons: = 'value', in ('value1', 'value2')
+        - After AS: stats count as 'Alias'
+        - Inside IN lists: in ('val1', 'val2')
+        """
         errors = []
         suggestions = []
         fixed_query = query
 
-        field_pattern = r"'([^']+)'"
-        referenced_fields = re.findall(field_pattern, query)
+        referenced_fields = self._extract_field_references(query)
 
         if not referenced_fields:
             return errors, suggestions, fixed_query
@@ -122,6 +136,69 @@ class QueryValidator:
                     )
 
         return errors, suggestions, fixed_query
+
+    def _extract_field_references(self, query: str) -> List[str]:
+        """Extract only field-position quoted tokens from a query.
+
+        Returns quoted tokens that are likely field names, excluding
+        string literals (right side of =, values inside IN lists)
+        and aliases (after AS).
+        """
+        fields = []
+
+        # Find all quoted tokens with their positions
+        token_pattern = re.compile(r"'([^']+)'")
+
+        for match in token_pattern.finditer(query):
+            token = match.group(1)
+            start = match.start()
+
+            # Get the text before this token (lowercased, stripped)
+            prefix = query[:start].rstrip().lower()
+
+            # Skip: right side of comparison operators (= 'value', != 'value', like 'value')
+            if re.search(r'(=|!=|<>|>=|<=|>|<|like|not\s+like)\s*$', prefix):
+                continue
+
+            # Skip: after AS keyword (aliases like: stats count as 'Alias')
+            if re.search(r'\bas\s*$', prefix):
+                continue
+
+            # Skip: inside IN (...) lists
+            if self._is_inside_in_list(query, start):
+                continue
+
+            # Skip: after NOT IN (edge case)
+            if re.search(r'\bnot\s+in\s*\(\s*$', prefix):
+                continue
+
+            # What's left should be field references
+            fields.append(token)
+
+        return fields
+
+    def _is_inside_in_list(self, query: str, pos: int) -> bool:
+        """Check if position is inside an IN (...) list.
+
+        Looks backward from pos for an unmatched opening paren
+        preceded by 'in'.
+        """
+        # Find the nearest unmatched '(' before this position
+        depth = 0
+        i = pos - 1
+        while i >= 0:
+            if query[i] == ')':
+                depth += 1
+            elif query[i] == '(':
+                if depth == 0:
+                    # Found unmatched '(' — check if preceded by 'in'
+                    before_paren = query[:i].rstrip().lower()
+                    if re.search(r'\bin\s*$', before_paren):
+                        return True
+                    return False
+                depth -= 1
+            i -= 1
+        return False
 
     def _validate_syntax(self, query: str) -> List[str]:
         """Basic syntax validation."""
