@@ -173,19 +173,22 @@ Each user's queries and preferences are stored under `~/.oci-logan-mcp/users/<us
 
 ### Promoting shared templates
 
-Queries are promoted based on interest score and success rate — not use count. A complex query (interest score >= 4) that works is valuable even if used once.
+Queries are promoted based on interest score and success rate — not use count. A complex query (interest score >= 4) that works is valuable even if used once. Sensitive data (OCIDs, IPs, emails, secrets) is automatically redacted before promotion.
+
+**Important:** Promotion is a single-writer admin task, not something each user session runs. Run it from one place (cron, manually, etc.) to avoid conflicts.
 
 ```bash
 # Run once manually
-python scripts/promote_queries.py /path/to/.oci-logan-mcp
+oci-logan-mcp --promote-and-exit
 
-# Or set up a cron job to run every 2 hours
+# With explicit base directory
+oci-logan-mcp --promote-and-exit --base-dir /home/opc/.oci-logan-mcp
+
+# Automate with cron (recommended) — every 2 hours
 crontab -e
 # Add this line:
-0 */2 * * * cd /path/to/logan-mcp-server && venv/bin/python scripts/promote_queries.py /home/opc/.oci-logan-mcp >> /var/log/logan-promote.log 2>&1
+0 */2 * * * cd /path/to/logan-mcp-server && source venv/bin/activate && oci-logan-mcp --promote-and-exit >> /var/log/logan-promote.log 2>&1
 ```
-
-Sensitive data (OCIDs, IPs, emails, secrets) is automatically redacted before promotion.
 
 ## Deploying on an OCI VM
 

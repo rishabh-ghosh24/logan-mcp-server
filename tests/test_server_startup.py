@@ -270,3 +270,70 @@ class TestSetupCLIFlag:
              patch('oci_logan_mcp.__main__.server_main') as mock_server_main:
             cli_main()
             mock_server_main.assert_called_once()
+
+
+class TestPromoteCLIFlag:
+    """Tests for --promote-and-exit CLI flag."""
+
+    def test_promote_calls_promote_all_and_exits_zero(self):
+        """--promote-and-exit should call promote_all once and exit 0."""
+        from oci_logan_mcp.__main__ import main as cli_main
+        with patch('sys.argv', ['oci-logan-mcp', '--promote-and-exit']), \
+             patch('oci_logan_mcp.__main__.promote_all', return_value={"promoted": 3, "scanned_users": 2}) as mock_promote:
+            with pytest.raises(SystemExit) as exc_info:
+                cli_main()
+            assert exc_info.value.code == 0
+            mock_promote.assert_called_once()
+
+    def test_promote_with_base_dir(self, tmp_path):
+        """--promote-and-exit --base-dir passes the correct Path."""
+        from oci_logan_mcp.__main__ import main as cli_main
+        with patch('sys.argv', ['oci-logan-mcp', '--promote-and-exit', '--base-dir', str(tmp_path)]), \
+             patch('oci_logan_mcp.__main__.promote_all', return_value={"promoted": 0, "scanned_users": 0}) as mock_promote:
+            with pytest.raises(SystemExit) as exc_info:
+                cli_main()
+            assert exc_info.value.code == 0
+            mock_promote.assert_called_once_with(tmp_path)
+
+    def test_promote_does_not_start_server(self):
+        """--promote-and-exit must not call server_main."""
+        from oci_logan_mcp.__main__ import main as cli_main
+        with patch('sys.argv', ['oci-logan-mcp', '--promote-and-exit']), \
+             patch('oci_logan_mcp.__main__.promote_all', return_value={"promoted": 0, "scanned_users": 0}), \
+             patch('oci_logan_mcp.__main__.server_main') as mock_server:
+            with pytest.raises(SystemExit):
+                cli_main()
+            mock_server.assert_not_called()
+
+    def test_promote_exception_exits_one(self):
+        """Promotion failure should exit 1."""
+        from oci_logan_mcp.__main__ import main as cli_main
+        with patch('sys.argv', ['oci-logan-mcp', '--promote-and-exit']), \
+             patch('oci_logan_mcp.__main__.promote_all', side_effect=RuntimeError("disk full")):
+            with pytest.raises(SystemExit) as exc_info:
+                cli_main()
+            assert exc_info.value.code == 1
+
+    def test_setup_and_promote_rejected(self):
+        """--setup and --promote-and-exit together should be rejected."""
+        from oci_logan_mcp.__main__ import main as cli_main
+        with patch('sys.argv', ['oci-logan-mcp', '--setup', '--promote-and-exit']):
+            with pytest.raises(SystemExit) as exc_info:
+                cli_main()
+            assert exc_info.value.code == 2  # argparse error exit code
+
+    def test_user_and_promote_rejected(self):
+        """--user with --promote-and-exit should be rejected."""
+        from oci_logan_mcp.__main__ import main as cli_main
+        with patch('sys.argv', ['oci-logan-mcp', '--promote-and-exit', '--user', 'alice']):
+            with pytest.raises(SystemExit) as exc_info:
+                cli_main()
+            assert exc_info.value.code == 2
+
+    def test_base_dir_without_promote_rejected(self):
+        """--base-dir without --promote-and-exit should be rejected."""
+        from oci_logan_mcp.__main__ import main as cli_main
+        with patch('sys.argv', ['oci-logan-mcp', '--base-dir', '/tmp/x']):
+            with pytest.raises(SystemExit) as exc_info:
+                cli_main()
+            assert exc_info.value.code == 2
