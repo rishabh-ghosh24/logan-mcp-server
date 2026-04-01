@@ -1,0 +1,104 @@
+# Curated starter query examples for OCI Log Analytics.
+#
+# These are shipped with the package so fresh installs get useful examples
+# immediately via get_query_examples. Maintainers can refresh this file
+# from promoted VM learnings using scripts/export_starter_queries.py.
+#
+# Rules:
+#   - Only sanitized, tenant-agnostic queries (no OCIDs, IPs, secrets)
+#   - Categories must match the tool enum: basic, security, errors, performance, statistics
+#   - Each entry needs: name, query, description, category
+#   - Keep queries generic enough to work across any OCI tenancy
+
+version: 1
+
+queries:
+  # --- basic ---
+  - name: Count all logs
+    query: "* | stats count"
+    description: Get total count of all logs
+    category: basic
+
+  - name: Count by log source
+    query: "* | stats count by 'Log Source'"
+    description: Break down log count by source type
+    category: basic
+
+  - name: Recent logs
+    query: "* | head 100"
+    description: Get the 100 most recent log entries
+    category: basic
+
+  - name: Search by keyword
+    query: "* | where Message contains 'error'"
+    description: Find logs containing specific text
+    category: basic
+
+  # --- security ---
+  - name: Failed logins
+    query: "'Log Source' = 'Linux Secure Logs' | where Message contains 'Failed password'"
+    description: Find failed SSH login attempts
+    category: security
+
+  - name: Authentication events
+    query: "* | where Label = 'Authentication'"
+    description: All authentication-related events
+    category: security
+
+  - name: Sudo commands
+    query: "'Log Source' = 'Linux Secure Logs' | where Message contains 'sudo'"
+    description: Track sudo usage
+    category: security
+
+  # --- errors ---
+  - name: All errors
+    query: "* | where Severity in ('ERROR', 'CRITICAL', 'FATAL')"
+    description: Find all error-level logs
+    category: errors
+
+  - name: Errors by source
+    query: "* | where Severity = 'ERROR' | stats count by 'Log Source'"
+    description: Count errors per log source
+    category: errors
+
+  - name: Error trends
+    query: "* | where Severity = 'ERROR' | timestats count by 'Log Source'"
+    description: Error count over time by source
+    category: errors
+
+  - name: Exception traces
+    query: "* | where Message contains 'Exception' or Message contains 'Traceback'"
+    description: Find stack traces and exceptions
+    category: errors
+
+  # --- performance ---
+  - name: Slow operations
+    query: "* | where Message contains 'slow' or Message contains 'timeout'"
+    description: Find performance-related issues
+    category: performance
+
+  - name: Response times
+    query: "* | where Message regex '\\d+ms' | head 100"
+    description: Logs mentioning millisecond timings
+    category: performance
+
+  # --- statistics ---
+  - name: Logs by entity
+    query: "* | stats count by Entity"
+    description: Count logs per monitored entity
+    category: statistics
+
+  - name: Logs by severity
+    query: "* | stats count by Severity"
+    description: Distribution of log severity levels
+    category: statistics
+
+  - name: Top log sources
+    query: "* | stats count by 'Log Source' | sort -count | head 10"
+    description: Top 10 log sources by volume
+    category: statistics
+
+  - name: Hourly volume
+    query: "* | timestats count span=1h"
+    description: Log volume per hour
+    category: statistics
