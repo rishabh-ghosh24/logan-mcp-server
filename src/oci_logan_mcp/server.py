@@ -16,6 +16,12 @@ from mcp.types import (
     ImageContent,
 )
 
+try:
+    from mcp.types import ToolAnnotations
+    _HAS_ANNOTATIONS = True
+except ImportError:
+    _HAS_ANNOTATIONS = False
+
 from .config import load_config, config_exists, CONFIG_PATH
 from .client import OCILogAnalyticsClient
 from .cache import CacheManager
@@ -74,14 +80,20 @@ class OCILogAnalyticsMCPServer:
         async def list_tools() -> list[Tool]:
             """Return list of available tools."""
             tool_defs = get_tools()
-            return [
-                Tool(
-                    name=t["name"],
-                    description=t["description"],
-                    inputSchema=t["inputSchema"],
-                )
-                for t in tool_defs
-            ]
+            tools = []
+            for t in tool_defs:
+                kwargs = {
+                    "name": t["name"],
+                    "description": t["description"],
+                    "inputSchema": t["inputSchema"],
+                }
+                if _HAS_ANNOTATIONS and t.get("destructive"):
+                    kwargs["annotations"] = ToolAnnotations(
+                        destructiveHint=True,
+                        readOnlyHint=False,
+                    )
+                tools.append(Tool(**kwargs))
+            return tools
 
         @self.server.list_resources()
         async def list_resources() -> list[Resource]:

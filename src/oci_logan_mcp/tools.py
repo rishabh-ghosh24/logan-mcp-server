@@ -583,9 +583,11 @@ def get_tools() -> List[Dict[str, Any]]:
         },
         {
             "name": "update_alert",
+            "destructive": True,
             "description": (
                 "Update an existing autonomous alert. Each parameter targets only the affected OCI resource. "
-                "APPROVAL REQUIRED: This tool modifies OCI resources. Confirm with the user before invoking."
+                "TWO-FACTOR CONFIRMATION REQUIRED: First call returns a confirmation token and summary. "
+                "To execute, re-invoke with confirmation_token and your OCI_LA_CONFIRMATION_SECRET."
             ),
             "inputSchema": {
                 "type": "object",
@@ -599,20 +601,26 @@ def get_tools() -> List[Dict[str, Any]]:
                     "threshold_operator": {"type": "string", "enum": ["gt", "gte", "eq", "lt", "lte"]},
                     "severity": {"type": "string", "enum": ["CRITICAL", "ERROR", "WARNING", "INFO"]},
                     "destination_topic_id": {"type": "string"},
+                    "confirmation_token": {"type": "string", "description": "Server-generated token from the confirmation step. Omit on first call."},
+                    "confirmation_secret": {"type": "string", "description": "Your OCI_LA_CONFIRMATION_SECRET value. Required with token to execute."},
                 },
             },
         },
         {
             "name": "delete_alert",
+            "destructive": True,
             "description": (
                 "Delete an autonomous alert and all its backing OCI resources. "
-                "APPROVAL REQUIRED: This tool deletes OCI resources. Confirm with the user before invoking."
+                "TWO-FACTOR CONFIRMATION REQUIRED: First call returns a confirmation token and summary. "
+                "To execute, re-invoke with confirmation_token and your OCI_LA_CONFIRMATION_SECRET."
             ),
             "inputSchema": {
                 "type": "object",
                 "required": ["alert_id"],
                 "properties": {
                     "alert_id": {"type": "string", "description": "Monitoring alarm OCID."},
+                    "confirmation_token": {"type": "string", "description": "Server-generated token from the confirmation step. Omit on first call."},
+                    "confirmation_secret": {"type": "string", "description": "Your OCI_LA_CONFIRMATION_SECRET value. Required with token to execute."},
                 },
             },
         },
@@ -637,9 +645,11 @@ def get_tools() -> List[Dict[str, Any]]:
         },
         {
             "name": "update_saved_search",
+            "destructive": True,
             "description": (
                 "Update an existing saved search. "
-                "APPROVAL REQUIRED: This tool modifies an OCI resource. Confirm with the user before invoking."
+                "TWO-FACTOR CONFIRMATION REQUIRED: First call returns a confirmation token and summary. "
+                "To execute, re-invoke with confirmation_token and your OCI_LA_CONFIRMATION_SECRET."
             ),
             "inputSchema": {
                 "type": "object",
@@ -650,20 +660,26 @@ def get_tools() -> List[Dict[str, Any]]:
                     "query": {"type": "string"},
                     "description": {"type": "string"},
                     "category": {"type": "string"},
+                    "confirmation_token": {"type": "string", "description": "Server-generated token from the confirmation step. Omit on first call."},
+                    "confirmation_secret": {"type": "string", "description": "Your OCI_LA_CONFIRMATION_SECRET value. Required with token to execute."},
                 },
             },
         },
         {
             "name": "delete_saved_search",
+            "destructive": True,
             "description": (
                 "Delete a saved search. "
-                "APPROVAL REQUIRED: This tool deletes an OCI resource. Confirm with the user before invoking."
+                "TWO-FACTOR CONFIRMATION REQUIRED: First call returns a confirmation token and summary. "
+                "To execute, re-invoke with confirmation_token and your OCI_LA_CONFIRMATION_SECRET."
             ),
             "inputSchema": {
                 "type": "object",
                 "required": ["saved_search_id"],
                 "properties": {
                     "saved_search_id": {"type": "string"},
+                    "confirmation_token": {"type": "string", "description": "Server-generated token from the confirmation step. Omit on first call."},
+                    "confirmation_secret": {"type": "string", "description": "Your OCI_LA_CONFIRMATION_SECRET value. Required with token to execute."},
                 },
             },
         },
@@ -714,9 +730,11 @@ def get_tools() -> List[Dict[str, Any]]:
         },
         {
             "name": "add_dashboard_tile",
+            "destructive": True,
             "description": (
                 "Add a new tile to an existing dashboard. "
-                "APPROVAL REQUIRED: This tool modifies an OCI resource. Confirm with the user before invoking."
+                "TWO-FACTOR CONFIRMATION REQUIRED: First call returns a confirmation token and summary. "
+                "To execute, re-invoke with confirmation_token and your OCI_LA_CONFIRMATION_SECRET."
             ),
             "inputSchema": {
                 "type": "object",
@@ -732,20 +750,26 @@ def get_tools() -> List[Dict[str, Any]]:
                     },
                     "width": {"type": "integer"},
                     "height": {"type": "integer"},
+                    "confirmation_token": {"type": "string", "description": "Server-generated token from the confirmation step. Omit on first call."},
+                    "confirmation_secret": {"type": "string", "description": "Your OCI_LA_CONFIRMATION_SECRET value. Required with token to execute."},
                 },
             },
         },
         {
             "name": "delete_dashboard",
+            "destructive": True,
             "description": (
                 "Delete a dashboard and all its tile data sources. "
-                "APPROVAL REQUIRED: This tool deletes OCI resources. Confirm with the user before invoking."
+                "TWO-FACTOR CONFIRMATION REQUIRED: First call returns a confirmation token and summary. "
+                "To execute, re-invoke with confirmation_token and your OCI_LA_CONFIRMATION_SECRET."
             ),
             "inputSchema": {
                 "type": "object",
                 "required": ["dashboard_id"],
                 "properties": {
                     "dashboard_id": {"type": "string"},
+                    "confirmation_token": {"type": "string", "description": "Server-generated token from the confirmation step. Omit on first call."},
+                    "confirmation_secret": {"type": "string", "description": "Your OCI_LA_CONFIRMATION_SECRET value. Required with token to execute."},
                 },
             },
         },
