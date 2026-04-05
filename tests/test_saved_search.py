@@ -159,3 +159,128 @@ class TestFindSearches:
         result = await svc.find_searches(keyword="NETWORK")
         assert len(result) == 1
         assert result[0]["display_name"] == "Network Stats"
+
+
+class TestListSearchesFiltersLoganManaged:
+    @pytest.mark.asyncio
+    async def test_excludes_logan_managed_true(self):
+        client = AsyncMock()
+        client.list_saved_searches.return_value = [
+            {"id": "ocid1.ss.1", "display_name": "User Search",
+             "freeform_tags": {}},
+            {"id": "ocid1.ss.2", "display_name": "Alert Backing",
+             "freeform_tags": {"logan_managed": "true"}},
+        ]
+        svc = SavedSearchService(client, CacheManager(CacheConfig(enabled=True)))
+        results = await svc.list_searches()
+        assert len(results) == 1
+        assert results[0]["id"] == "ocid1.ss.1"
+
+    @pytest.mark.asyncio
+    async def test_includes_no_freeform_tags(self):
+        client = AsyncMock()
+        client.list_saved_searches.return_value = [
+            {"id": "ocid1.ss.1", "display_name": "User Search",
+             "freeform_tags": {}},
+        ]
+        svc = SavedSearchService(client, CacheManager(CacheConfig(enabled=True)))
+        results = await svc.list_searches()
+        assert len(results) == 1
+
+
+class TestCreateSearch:
+    @pytest.mark.asyncio
+    async def test_creates_mss_and_task(self):
+        client = AsyncMock()
+        client.compartment_id = "ocid1.compartment.test"
+        client.create_management_saved_search.return_value = {
+            "id": "ocid1.mss.new", "display_name": "New Search"
+        }
+        client.create_scheduled_task.return_value = {
+            "id": "ocid1.task.new", "display_name": "New Search"
+        }
+        cache = CacheManager(CacheConfig(enabled=True))
+        cache.set("saved_searches", [{"id": "old"}])
+        svc = SavedSearchService(client, cache)
+
+        result = await svc.create_search(
+            display_name="New Search",
+            query="* | stats count",
+            compartment_id="ocid1.compartment.test",
+        )
+
+        assert client.create_management_saved_search.called
+        assert client.create_scheduled_task.called
+        assert result["id"] == "ocid1.task.new"
+        assert result["management_saved_search_id"] == "ocid1.mss.new"
+        assert cache.get("saved_searches") is None
+
+    @pytest.mark.asyncio
+    async def test_create_rolls_back_mss_on_task_failure(self):
+        client = AsyncMock()
+        client.compartment_id = "ocid1.compartment.test"
+        client.create_management_saved_search.return_value = {"id": "ocid1.mss.1"}
+        client.create_scheduled_task.side_effect = Exception("task API error")
+        svc = SavedSearchService(client, CacheManager(CacheConfig(enabled=True)))
+
+        with pytest.raises(Exception, match="task API error"):
+            await svc.create_search(display_name="x", query="* | stats count")
+
+        client.delete_management_saved_search.assert_called_once_with("ocid1.mss.1")
+
+
+class TestDeleteSearch:
+    @pytest.mark.asyncio
+    async def test_deletes_task_and_backing_mss(self):
+        client = AsyncMock()
+        mock_action = MagicMock()
+        mock_action.saved_search_id = "ocid1.mss.backing"
+        client.get_saved_search.return_value = {
+            "id": "ocid1.task.1", "display_name": "Test",
+            "_action": mock_action,
+        }
+        cache = CacheManager(CacheConfig(enabled=True))
+        cache.set("saved_searches", [{"id": "ocid1.task.1"}])
+        svc = SavedSearchService(client, cache)
+
+        await svc.delete_search("ocid1.task.1")
+
+        client.delete_scheduled_task.assert_called_once_with("ocid1.task.1")
+        client.delete_management_saved_search.assert_called_once_with("ocid1.mss.backing")
+        assert cache.get("saved_searches") is None
+
+
+class TestUpdateSearch:
+    @pytest.mark.asyncio
+    async def test_query_update_reaches_backing_mss(self):
+        client = AsyncMock()
+        mock_action = MagicMock()
+        mock_action.saved_search_id = "ocid1.mss.backing"
+        client.get_saved_search.return_value = {
+            "id": "ocid1.task.1", "_action": mock_action,
+        }
+        client.update_management_saved_search.return_value = {"id": "ocid1.mss.backing"}
+        cache = CacheManager(CacheConfig(enabled=True))
+        svc = SavedSearchService(client, cache)
+
+        result = await svc.update_search("ocid1.task.1", query="new query")
+
+        assert client.update_management_saved_search.called
+        assert result["updated"] == ["query"]
+
+    @pytest.mark.asyncio
+    async def test_display_name_updates_task(self):
+        client = AsyncMock()
+        mock_action = MagicMock()
+        mock_action.saved_search_id = "ocid1.mss.backing"
+        client.get_saved_search.return_value = {
+            "id": "ocid1.task.1", "_action": mock_action,
+        }
+        client.update_scheduled_task.return_value = {"id": "ocid1.task.1"}
+        cache = CacheManager(CacheConfig(enabled=True))
+        svc = SavedSearchService(client, cache)
+
+        result = await svc.update_search("ocid1.task.1", display_name="Updated")
+
+        assert result["display_name"] == "Updated"
+        assert cache.get("saved_searches") is None
