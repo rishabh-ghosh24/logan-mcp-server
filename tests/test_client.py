@@ -828,3 +828,59 @@ class TestListSavedSearchesIncludesFreeformTags:
             results = await client.list_saved_searches()
 
         assert results[0]["freeform_tags"] == {"logan_managed": "true"}
+
+
+# ---------------------------------------------------------------------------
+# Fixture alias for new alarm/dashboard/ONS tests
+# ---------------------------------------------------------------------------
+
+@pytest.fixture
+def mock_client(client):
+    """Alias for the client fixture used in alarm/dashboard/ONS tests."""
+    return client
+
+
+# ---------------------------------------------------------------------------
+# Alarm, Dashboard, and ONS method tests
+# ---------------------------------------------------------------------------
+
+class TestAlertClientMethods:
+    @pytest.mark.asyncio
+    async def test_get_topic_calls_ons(self, mock_client):
+        mock_client._ons_client = MagicMock()
+        mock_client._ons_client.get_topic.return_value = MagicMock(data=MagicMock(topic_id="ocid1.topic.1", name="test", lifecycle_state="ACTIVE"))
+        result = await mock_client.get_topic("ocid1.topic.1")
+        mock_client._ons_client.get_topic.assert_called_once_with(topic_id="ocid1.topic.1")
+
+    @pytest.mark.asyncio
+    async def test_create_alarm_calls_monitoring(self, mock_client):
+        mock_client._monitoring_client = MagicMock()
+        mock_client._monitoring_client.create_alarm.return_value = MagicMock(
+            data=MagicMock(id="ocid1.alarm.1", display_name="test",
+                           freeform_tags={}, lifecycle_state="ACTIVE")
+        )
+        details = MagicMock()
+        result = await mock_client.create_alarm(details)
+        mock_client._monitoring_client.create_alarm.assert_called_once_with(
+            create_alarm_details=details
+        )
+        assert result["id"] == "ocid1.alarm.1"
+
+    @pytest.mark.asyncio
+    async def test_delete_alarm_calls_monitoring(self, mock_client):
+        mock_client._monitoring_client = MagicMock()
+        mock_client._monitoring_client.delete_alarm.return_value = MagicMock()
+        await mock_client.delete_alarm("ocid1.alarm.1")
+        mock_client._monitoring_client.delete_alarm.assert_called_once_with(
+            alarm_id="ocid1.alarm.1"
+        )
+
+    @pytest.mark.asyncio
+    async def test_create_management_saved_search(self, mock_client):
+        mock_client._dashx_client = MagicMock()
+        mock_client._dashx_client.create_management_saved_search.return_value = MagicMock(
+            data=MagicMock(id="ocid1.mss.1", display_name="test", freeform_tags={})
+        )
+        details = MagicMock()
+        result = await mock_client.create_management_saved_search(details)
+        assert result["id"] == "ocid1.mss.1"
