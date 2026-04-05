@@ -687,3 +687,110 @@ class TestConfirmationFlow:
         )
         text = json.loads(result[0]["text"])
         assert text.get("status") != "confirmation_required"
+
+
+# ---------------------------------------------------------------------------
+# Parametrized Integration Tests — all 6 guarded tools
+# ---------------------------------------------------------------------------
+
+GUARDED_TOOL_ARGS = {
+    "delete_alert": {"alert_id": "ocid1.alarm.test"},
+    "delete_saved_search": {"saved_search_id": "ocid1.ss.test"},
+    "delete_dashboard": {"dashboard_id": "ocid1.db.test"},
+    "update_alert": {"alert_id": "ocid1.alarm.test", "severity": "WARNING"},
+    "update_saved_search": {"saved_search_id": "ocid1.ss.test", "query": "* | head 5"},
+    "add_dashboard_tile": {
+        "dashboard_id": "ocid1.db.test", "title": "T",
+        "query": "* | stats count", "visualization_type": "bar",
+    },
+}
+
+
+class TestConfirmationIntegration:
+    """End-to-end confirmation flow across all 6 guarded tools."""
+
+    @pytest.fixture
+    def handlers_confirmed(self, settings, mock_oci_client, mock_cache,
+                           mock_query_logger, mock_context_manager,
+                           mock_user_store, mock_preference_store):
+        settings.confirmation_secret = "integration-secret"
+        h = MCPHandlers(
+            settings=settings,
+            oci_client=mock_oci_client,
+            cache=mock_cache,
+            query_logger=mock_query_logger,
+            context_manager=mock_context_manager,
+            user_store=mock_user_store,
+            preference_store=mock_preference_store,
+        )
+        # Mock all service methods to prevent actual OCI calls
+        h.alarm_service.delete_alert = AsyncMock(return_value={"deleted": True})
+        h.alarm_service.update_alert = AsyncMock(return_value={"alarm_id": "a", "updated": []})
+        h.saved_search.delete_search = AsyncMock(return_value=None)
+        h.saved_search.update_search = AsyncMock(return_value={"id": "s"})
+        h.dashboard_service.delete_dashboard = AsyncMock(return_value={"deleted": True})
+        h.dashboard_service.add_tile = AsyncMock(return_value={"dashboard_id": "d"})
+        return h
+
+    @pytest.mark.asyncio
+    @pytest.mark.parametrize("tool_name", list(GUARDED_TOOL_ARGS.keys()))
+    async def test_all_guarded_tools_require_confirmation(
+        self, handlers_confirmed, tool_name
+    ):
+        """Every guarded tool must return confirmation_required on first call."""
+        args = GUARDED_TOOL_ARGS[tool_name]
+        result = await handlers_confirmed.handle_tool_call(tool_name, dict(args))
+        text = json.loads(result[0]["text"])
+        assert text["status"] == "confirmation_required", (
+            f"{tool_name} did not require confirmation"
+        )
+
+    @pytest.mark.asyncio
+    @pytest.mark.parametrize("tool_name", list(GUARDED_TOOL_ARGS.keys()))
+    async def test_all_guarded_tools_execute_with_valid_confirmation(
+        self, handlers_confirmed, tool_name
+    ):
+        """Every guarded tool executes after valid token + secret."""
+        args = dict(GUARDED_TOOL_ARGS[tool_name])
+
+        # Get token
+        result = await handlers_confirmed.handle_tool_call(tool_name, dict(args))
+        token = json.loads(result[0]["text"])["confirmation_token"]
+
+        # Confirm
+        confirmed_args = dict(args)
+        confirmed_args["confirmation_token"] = token
+        confirmed_args["confirmation_secret"] = "integration-secret"
+        result = await handlers_confirmed.handle_tool_call(tool_name, confirmed_args)
+        text = json.loads(result[0]["text"])
+        assert text.get("status") != "confirmation_required", (
+            f"{tool_name} still required confirmation"
+        )
+        assert text.get("status") != "confirmation_failed", (
+            f"{tool_name} confirmation failed"
+        )
+
+    @pytest.mark.asyncio
+    @pytest.mark.parametrize("tool_name", list(GUARDED_TOOL_ARGS.keys()))
+    async def test_all_guarded_tools_reject_arg_change(
+        self, handlers_confirmed, tool_name
+    ):
+        """Token bound to original args — changing any arg causes failure."""
+        args = dict(GUARDED_TOOL_ARGS[tool_name])
+
+        # Get token with original args
+        result = await handlers_confirmed.handle_tool_call(tool_name, dict(args))
+        token = json.loads(result[0]["text"])["confirmation_token"]
+
+        # Modify an arg
+        modified_args = dict(args)
+        first_key = list(modified_args.keys())[0]
+        modified_args[first_key] = modified_args[first_key] + "_CHANGED"
+        modified_args["confirmation_token"] = token
+        modified_args["confirmation_secret"] = "integration-secret"
+
+        result = await handlers_confirmed.handle_tool_call(tool_name, modified_args)
+        text = json.loads(result[0]["text"])
+        assert text["status"] == "confirmation_failed", (
+            f"{tool_name} did not reject changed args"
+        )
