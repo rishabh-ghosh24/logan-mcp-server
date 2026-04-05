@@ -250,6 +250,53 @@ export OCI_LA_AUTH_TYPE=instance_principal
 oci-logan-mcp --setup
 ```
 
+## Destructive Operation Safety
+
+All delete and update operations on OCI resources (alerts, dashboards, saved searches) are protected by **two-factor server-side confirmation**. This prevents any MCP client — Claude, Codex, or others — from accidentally modifying or destroying resources.
+
+### Guarded Tools
+
+| Tool | Action |
+|------|--------|
+| `delete_alert` | Destroys alarm + backing OCI resources |
+| `delete_saved_search` | Destroys saved search |
+| `delete_dashboard` | Destroys dashboard + tile data sources |
+| `update_alert` | Modifies an existing alert |
+| `update_saved_search` | Modifies an existing saved search |
+| `add_dashboard_tile` | Modifies an existing dashboard |
+
+`create_*` tools are **not** guarded — they are additive and don't affect existing resources.
+
+### How It Works
+
+1. **First call** — returns a human-readable summary of the action + a single-use confirmation token
+2. **Second call** — requires the token + your secret to execute
+
+The token is bound to the exact tool and arguments. A token for `delete_alert(id=A)` cannot be used for `delete_alert(id=B)` or any other tool.
+
+### Setup
+
+Set the confirmation secret via environment variable (required — guarded tools are disabled without it):
+
+```bash
+export OCI_LA_CONFIRMATION_SECRET="your-secret-phrase-here"
+```
+
+Optionally configure token expiry in `config.yaml` (default: 300 seconds):
+
+```yaml
+guardrails:
+  token_expiry_seconds: 300
+```
+
+### Fail-Closed Design
+
+- **No secret configured** → guarded tools return `confirmation_unavailable` and refuse to execute
+- **Wrong secret** → `confirmation_failed`
+- **Token reuse** → rejected (single-use)
+- **Token expired** → rejected
+- **Arguments changed** → rejected
+
 ## Development
 
 ### Running Tests
