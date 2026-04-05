@@ -70,6 +70,7 @@ class GuardrailsConfig:
     max_time_range_days: int = 7
     warn_on_large_results: bool = True
     large_result_threshold: int = 10000
+    token_expiry_seconds: int = 300
 
 
 @dataclass
@@ -100,6 +101,7 @@ class Settings:
     logging: LoggingConfig = field(default_factory=LoggingConfig)
     guardrails: GuardrailsConfig = field(default_factory=GuardrailsConfig)
     notifications: NotificationsConfig = field(default_factory=NotificationsConfig)
+    confirmation_secret: str = ""
 
     def to_dict(self) -> dict:
         """Convert settings to dictionary for serialization."""
@@ -237,6 +239,9 @@ def _parse_config(data: Dict[str, Any]) -> Settings:
             large_result_threshold=guardrails_data.get(
                 "large_result_threshold", settings.guardrails.large_result_threshold
             ),
+            token_expiry_seconds=guardrails_data.get(
+                "token_expiry_seconds", settings.guardrails.token_expiry_seconds
+            ),
         )
 
     if notif_data := data.get("notifications"):
@@ -282,6 +287,9 @@ def _apply_env_overrides(settings: Settings) -> Settings:
         settings.notifications.telegram.bot_token = v
     if v := os.environ.get("TELEGRAM_CHAT_ID"):
         settings.notifications.telegram.default_chat_id = v
+
+    if v := os.environ.get("OCI_LA_CONFIRMATION_SECRET"):
+        settings.confirmation_secret = v
 
     return settings
 
