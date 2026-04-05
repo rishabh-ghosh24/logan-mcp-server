@@ -16,6 +16,7 @@ from oci_logan_mcp.config import (
     save_config,
     _parse_config,
 )
+from oci_logan_mcp.config import Settings, NotificationsConfig, SlackConfig, TelegramConfig, _parse_config, _apply_env_overrides
 
 
 class TestSettings:
@@ -86,3 +87,44 @@ class TestOCIConfig:
         for auth_type in ["config_file", "instance_principal", "resource_principal"]:
             config = OCIConfig(auth_type=auth_type)
             assert config.auth_type == auth_type
+
+
+class TestNotificationsConfig:
+    def test_defaults_are_empty(self):
+        s = Settings()
+        assert s.notifications.slack.webhook_url == ""
+        assert s.notifications.telegram.bot_token == ""
+        assert s.notifications.telegram.default_chat_id == ""
+
+    def test_parse_config_slack(self):
+        data = {"notifications": {"slack": {"webhook_url": "https://hooks.slack.com/test"}}}
+        s = _parse_config(data)
+        assert s.notifications.slack.webhook_url == "https://hooks.slack.com/test"
+
+    def test_parse_config_telegram(self):
+        data = {"notifications": {"telegram": {"bot_token": "123:ABC", "default_chat_id": "-999"}}}
+        s = _parse_config(data)
+        assert s.notifications.telegram.bot_token == "123:ABC"
+        assert s.notifications.telegram.default_chat_id == "-999"
+
+    def test_env_override_slack(self, monkeypatch):
+        monkeypatch.setenv("SLACK_WEBHOOK_URL", "https://hooks.slack.com/env")
+        s = _apply_env_overrides(Settings())
+        assert s.notifications.slack.webhook_url == "https://hooks.slack.com/env"
+
+    def test_env_override_telegram_token(self, monkeypatch):
+        monkeypatch.setenv("TELEGRAM_BOT_TOKEN", "tok123")
+        s = _apply_env_overrides(Settings())
+        assert s.notifications.telegram.bot_token == "tok123"
+
+    def test_env_override_telegram_chat(self, monkeypatch):
+        monkeypatch.setenv("TELEGRAM_CHAT_ID", "-100999")
+        s = _apply_env_overrides(Settings())
+        assert s.notifications.telegram.default_chat_id == "-100999"
+
+    def test_to_dict_includes_notifications(self):
+        s = Settings()
+        s.notifications.slack.webhook_url = "https://test"
+        d = s.to_dict()
+        assert d["notifications"]["slack"]["webhook_url"] == "https://test"
+        assert "telegram" in d["notifications"]
