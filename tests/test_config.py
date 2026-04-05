@@ -12,11 +12,14 @@ from oci_logan_mcp.config import (
     CacheConfig,
     LoggingConfig,
     GuardrailsConfig,
+    NotificationsConfig,
+    SlackConfig,
+    TelegramConfig,
     load_config,
     save_config,
     _parse_config,
+    _apply_env_overrides,
 )
-from oci_logan_mcp.config import Settings, NotificationsConfig, SlackConfig, TelegramConfig, _parse_config, _apply_env_overrides
 
 
 class TestSettings:
