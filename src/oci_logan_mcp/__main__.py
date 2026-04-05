@@ -4,7 +4,7 @@ import argparse
 import os
 import sys
 from pathlib import Path
-from typing import NoReturn
+from typing import NoReturn, Optional
 
 from .server import main as server_main
 from .wizard import run_setup_wizard
@@ -61,7 +61,7 @@ def main():
         server_main()
 
 
-def _run_promotion(base_dir: Path | None) -> NoReturn:
+def _run_promotion(base_dir: Optional[Path]) -> NoReturn:
     """Run promote_all once and exit."""
     resolved = base_dir or CONFIG_PATH.parent
     try:
