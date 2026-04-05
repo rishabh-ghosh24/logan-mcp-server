@@ -547,4 +547,240 @@ def get_tools() -> List[Dict[str, Any]]:
                 "required": ["intent_key", "resolved_value"],
             },
         },
+        # ── Alert tools ────────────────────────────────────────────────
+        {
+            "name": "create_alert",
+            "description": (
+                "Create an OCI-native autonomous alert from a Log Analytics query. "
+                "The alert fires 24/7 via OCI Monitoring, independent of the MCP server. "
+                "Requires a numeric aggregation query (e.g. '| stats count'). "
+                "APPROVAL REQUIRED: This tool creates OCI resources. Confirm with the user before invoking."
+            ),
+            "inputSchema": {
+                "type": "object",
+                "required": ["display_name", "query", "destination_topic_id"],
+                "properties": {
+                    "display_name": {"type": "string", "description": "Alert name."},
+                    "query": {"type": "string", "description": "Log Analytics query (must include | stats aggregation)."},
+                    "destination_topic_id": {"type": "string", "description": "ONS topic OCID for notifications."},
+                    "schedule": {"type": "string", "description": "Cron schedule (5-field). Default: '0 */15 * * *'"},
+                    "threshold_value": {"type": "integer", "description": "Numeric threshold. Default: 0"},
+                    "threshold_operator": {"type": "string", "enum": ["gt", "gte", "eq", "lt", "lte"], "description": "Comparison operator. Default: 'gt'"},
+                    "severity": {"type": "string", "enum": ["CRITICAL", "ERROR", "WARNING", "INFO"], "description": "Alert severity. Default: 'CRITICAL'"},
+                    "compartment_id": {"type": "string", "description": "Compartment OCID override."},
+                },
+            },
+        },
+        {
+            "name": "list_alerts",
+            "description": "List all Logan-managed OCI autonomous alerts.",
+            "inputSchema": {
+                "type": "object",
+                "properties": {
+                    "compartment_id": {"type": "string", "description": "Compartment OCID override."},
+                },
+            },
+        },
+        {
+            "name": "update_alert",
+            "description": (
+                "Update an existing autonomous alert. Each parameter targets only the affected OCI resource. "
+                "APPROVAL REQUIRED: This tool modifies OCI resources. Confirm with the user before invoking."
+            ),
+            "inputSchema": {
+                "type": "object",
+                "required": ["alert_id"],
+                "properties": {
+                    "alert_id": {"type": "string", "description": "Monitoring alarm OCID (returned by create_alert or list_alerts)."},
+                    "display_name": {"type": "string"},
+                    "query": {"type": "string"},
+                    "schedule": {"type": "string"},
+                    "threshold_value": {"type": "integer"},
+                    "threshold_operator": {"type": "string", "enum": ["gt", "gte", "eq", "lt", "lte"]},
+                    "severity": {"type": "string", "enum": ["CRITICAL", "ERROR", "WARNING", "INFO"]},
+                    "destination_topic_id": {"type": "string"},
+                },
+            },
+        },
+        {
+            "name": "delete_alert",
+            "description": (
+                "Delete an autonomous alert and all its backing OCI resources. "
+                "APPROVAL REQUIRED: This tool deletes OCI resources. Confirm with the user before invoking."
+            ),
+            "inputSchema": {
+                "type": "object",
+                "required": ["alert_id"],
+                "properties": {
+                    "alert_id": {"type": "string", "description": "Monitoring alarm OCID."},
+                },
+            },
+        },
+        # ── Saved search CRUD ──────────────────────────────────────────
+        {
+            "name": "create_saved_search",
+            "description": (
+                "Create a new Log Analytics saved search. "
+                "APPROVAL REQUIRED: This tool creates an OCI resource. Confirm with the user before invoking."
+            ),
+            "inputSchema": {
+                "type": "object",
+                "required": ["display_name", "query"],
+                "properties": {
+                    "display_name": {"type": "string"},
+                    "query": {"type": "string"},
+                    "description": {"type": "string"},
+                    "compartment_id": {"type": "string"},
+                    "category": {"type": "string"},
+                },
+            },
+        },
+        {
+            "name": "update_saved_search",
+            "description": (
+                "Update an existing saved search. "
+                "APPROVAL REQUIRED: This tool modifies an OCI resource. Confirm with the user before invoking."
+            ),
+            "inputSchema": {
+                "type": "object",
+                "required": ["saved_search_id"],
+                "properties": {
+                    "saved_search_id": {"type": "string"},
+                    "display_name": {"type": "string"},
+                    "query": {"type": "string"},
+                    "description": {"type": "string"},
+                    "category": {"type": "string"},
+                },
+            },
+        },
+        {
+            "name": "delete_saved_search",
+            "description": (
+                "Delete a saved search. "
+                "APPROVAL REQUIRED: This tool deletes an OCI resource. Confirm with the user before invoking."
+            ),
+            "inputSchema": {
+                "type": "object",
+                "required": ["saved_search_id"],
+                "properties": {
+                    "saved_search_id": {"type": "string"},
+                },
+            },
+        },
+        # ── Dashboard tools ────────────────────────────────────────────
+        {
+            "name": "create_dashboard",
+            "description": (
+                "Create an OCI Management Dashboard with visualization tiles. "
+                "APPROVAL REQUIRED: This tool creates OCI resources. Confirm with the user before invoking."
+            ),
+            "inputSchema": {
+                "type": "object",
+                "required": ["display_name", "tiles"],
+                "properties": {
+                    "display_name": {"type": "string"},
+                    "tiles": {
+                        "type": "array",
+                        "items": {
+                            "type": "object",
+                            "required": ["title", "query", "visualization_type"],
+                            "properties": {
+                                "title": {"type": "string"},
+                                "query": {"type": "string"},
+                                "visualization_type": {
+                                    "type": "string",
+                                    "enum": ["bar", "vertical_bar", "line", "pie", "table",
+                                             "tile", "area", "treemap", "heatmap", "histogram"],
+                                },
+                                "width": {"type": "integer"},
+                                "height": {"type": "integer"},
+                            },
+                        },
+                    },
+                    "description": {"type": "string"},
+                    "compartment_id": {"type": "string"},
+                },
+            },
+        },
+        {
+            "name": "list_dashboards",
+            "description": "List OCI Management Dashboards.",
+            "inputSchema": {
+                "type": "object",
+                "properties": {
+                    "compartment_id": {"type": "string"},
+                },
+            },
+        },
+        {
+            "name": "add_dashboard_tile",
+            "description": (
+                "Add a new tile to an existing dashboard. "
+                "APPROVAL REQUIRED: This tool modifies an OCI resource. Confirm with the user before invoking."
+            ),
+            "inputSchema": {
+                "type": "object",
+                "required": ["dashboard_id", "title", "query", "visualization_type"],
+                "properties": {
+                    "dashboard_id": {"type": "string"},
+                    "title": {"type": "string"},
+                    "query": {"type": "string"},
+                    "visualization_type": {
+                        "type": "string",
+                        "enum": ["bar", "vertical_bar", "line", "pie", "table",
+                                 "tile", "area", "treemap", "heatmap", "histogram"],
+                    },
+                    "width": {"type": "integer"},
+                    "height": {"type": "integer"},
+                },
+            },
+        },
+        {
+            "name": "delete_dashboard",
+            "description": (
+                "Delete a dashboard and all its tile data sources. "
+                "APPROVAL REQUIRED: This tool deletes OCI resources. Confirm with the user before invoking."
+            ),
+            "inputSchema": {
+                "type": "object",
+                "required": ["dashboard_id"],
+                "properties": {
+                    "dashboard_id": {"type": "string"},
+                },
+            },
+        },
+        # ── Notification tools ─────────────────────────────────────────
+        {
+            "name": "send_to_slack",
+            "description": (
+                "Send a message or query results to Slack via configured webhook. "
+                "Provide at least one of 'message' or 'query'."
+            ),
+            "inputSchema": {
+                "type": "object",
+                "properties": {
+                    "message": {"type": "string"},
+                    "query": {"type": "string", "description": "Log Analytics query to execute and include in message."},
+                    "time_range": {"type": "string", "description": "Time range for query. Default: 'last_1_hour'"},
+                    "format": {"type": "string", "enum": ["summary", "full"], "description": "Result format. Default: 'summary'"},
+                },
+            },
+        },
+        {
+            "name": "send_to_telegram",
+            "description": (
+                "Send a message or query results to Telegram via configured bot. "
+                "Provide at least one of 'message' or 'query'."
+            ),
+            "inputSchema": {
+                "type": "object",
+                "properties": {
+                    "message": {"type": "string"},
+                    "query": {"type": "string", "description": "Log Analytics query to execute and include in message."},
+                    "time_range": {"type": "string", "description": "Time range for query. Default: 'last_1_hour'"},
+                    "format": {"type": "string", "enum": ["summary", "full"], "description": "Result format. Default: 'summary'"},
+                    "chat_id": {"type": "string", "description": "Override default chat ID."},
+                },
+            },
+        },
     ]
