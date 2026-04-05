@@ -70,6 +70,33 @@ class OCILogAnalyticsClient:
         self._compartment_id = settings.log_analytics.default_compartment_id
 
     @property
+    def monitoring_client(self):
+        """Lazy accessor for OCI Monitoring client."""
+        if not hasattr(self, "_monitoring_client") or self._monitoring_client is None:
+            self._monitoring_client = oci.monitoring.MonitoringClient(
+                config=self._config, signer=self._signer
+            )
+        return self._monitoring_client
+
+    @property
+    def dashx_client(self):
+        """Lazy accessor for OCI Management Dashboard client."""
+        if not hasattr(self, "_dashx_client") or self._dashx_client is None:
+            self._dashx_client = oci.management_dashboard.DashxApisClient(
+                config=self._config, signer=self._signer
+            )
+        return self._dashx_client
+
+    @property
+    def ons_client(self):
+        """Lazy accessor for OCI Notification Control Plane client."""
+        if not hasattr(self, "_ons_client") or self._ons_client is None:
+            self._ons_client = oci.ons.NotificationControlPlaneClient(
+                config=self._config, signer=self._signer
+            )
+        return self._ons_client
+
+    @property
     def namespace(self) -> str:
         """Get current Log Analytics namespace."""
         return self._namespace
@@ -407,6 +434,7 @@ class OCILogAnalyticsClient:
                     "display_name": getattr(s, "display_name", ""),
                     "task_type": getattr(s, "task_type", ""),
                     "lifecycle_state": getattr(s, "lifecycle_state", ""),
+                    "freeform_tags": getattr(s, "freeform_tags", {}) or {},
                 }
                 for s in _get_items(response.data)
             ]
