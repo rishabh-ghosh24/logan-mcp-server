@@ -19,6 +19,9 @@ from .preferences import PreferenceStore
 from .query_auto_saver import QueryAutoSaver
 from .config import Settings, save_config
 from .resources import get_query_templates, get_syntax_guide, get_reference_docs
+from .alarm_service import AlarmService
+from .dashboard_service import DashboardService
+from .notification_service import NotificationService
 
 logger = logging.getLogger(__name__)
 
@@ -53,6 +56,9 @@ class MCPHandlers:
         self.saved_search = SavedSearchService(oci_client, cache)
         self.export_service = ExportService()
         self.auto_saver = QueryAutoSaver(context_manager, user_store=user_store)
+        self.alarm_service = AlarmService(oci_client, cache)
+        self.dashboard_service = DashboardService(oci_client, cache)
+        self.notification_service = NotificationService(settings)
 
     async def handle_tool_call(
         self, name: str, arguments: Dict[str, Any]
@@ -94,6 +100,23 @@ class MCPHandlers:
             # Preferences
             "get_preferences": self._get_preferences,
             "remember_preference": self._remember_preference,
+            # Alerts
+            "create_alert": self._create_alert,
+            "list_alerts": self._list_alerts,
+            "update_alert": self._update_alert,
+            "delete_alert": self._delete_alert,
+            # Saved search CRUD
+            "create_saved_search": self._create_saved_search,
+            "update_saved_search": self._update_saved_search,
+            "delete_saved_search": self._delete_saved_search,
+            # Dashboards
+            "create_dashboard": self._create_dashboard,
+            "list_dashboards": self._list_dashboards,
+            "add_dashboard_tile": self._add_dashboard_tile,
+            "delete_dashboard": self._delete_dashboard,
+            # Notifications
+            "send_to_slack": self._send_to_slack,
+            "send_to_telegram": self._send_to_telegram,
         }
 
         handler = handlers.get(name)
@@ -821,6 +844,123 @@ class MCPHandlers:
             "status": "saved",
             "message": f"Preference '{args['intent_key']}' saved. Will be used in future sessions.",
         }, indent=2)}]
+
+
+    # ── Alert handlers ─────────────────────────────────────────────────
+
+    async def _create_alert(self, args: Dict) -> List[Dict]:
+        result = await self.alarm_service.create_alert(
+            display_name=args["display_name"],
+            query=args["query"],
+            destination_topic_id=args["destination_topic_id"],
+            schedule=args.get("schedule", "0 */15 * * *"),
+            threshold_value=args.get("threshold_value", 0),
+            threshold_operator=args.get("threshold_operator", "gt"),
+            severity=args.get("severity", "CRITICAL"),
+            compartment_id=args.get("compartment_id"),
+        )
+        return [{"type": "text", "text": json.dumps(result, indent=2)}]
+
+    async def _list_alerts(self, args: Dict) -> List[Dict]:
+        result = await self.alarm_service.list_alerts(
+            compartment_id=args.get("compartment_id")
+        )
+        return [{"type": "text", "text": json.dumps(result, indent=2)}]
+
+    async def _update_alert(self, args: Dict) -> List[Dict]:
+        alert_id = args["alert_id"]
+        update_kwargs = {k: v for k, v in args.items() if k != "alert_id"}
+        result = await self.alarm_service.update_alert(alert_id, **update_kwargs)
+        return [{"type": "text", "text": json.dumps(result, indent=2)}]
+
+    async def _delete_alert(self, args: Dict) -> List[Dict]:
+        result = await self.alarm_service.delete_alert(args["alert_id"])
+        return [{"type": "text", "text": json.dumps(result, indent=2)}]
+
+    # ── Saved search CRUD handlers ──────────────────────────────────────
+
+    async def _create_saved_search(self, args: Dict) -> List[Dict]:
+        result = await self.saved_search.create_search(
+            display_name=args["display_name"],
+            query=args["query"],
+            description=args.get("description"),
+            compartment_id=args.get("compartment_id"),
+            category=args.get("category"),
+        )
+        return [{"type": "text", "text": json.dumps(result, indent=2)}]
+
+    async def _update_saved_search(self, args: Dict) -> List[Dict]:
+        search_id = args["saved_search_id"]
+        update_kwargs = {k: v for k, v in args.items() if k != "saved_search_id"}
+        result = await self.saved_search.update_search(search_id, **update_kwargs)
+        return [{"type": "text", "text": json.dumps(result, indent=2)}]
+
+    async def _delete_saved_search(self, args: Dict) -> List[Dict]:
+        await self.saved_search.delete_search(args["saved_search_id"])
+        return [{"type": "text", "text": json.dumps({"deleted": args["saved_search_id"]}, indent=2)}]
+
+    # ── Dashboard handlers ─────────────────────────────────────────────
+
+    async def _create_dashboard(self, args: Dict) -> List[Dict]:
+        result = await self.dashboard_service.create_dashboard(
+            display_name=args["display_name"],
+            tiles=args["tiles"],
+            description=args.get("description"),
+            compartment_id=args.get("compartment_id"),
+        )
+        return [{"type": "text", "text": json.dumps(result, indent=2)}]
+
+    async def _list_dashboards(self, args: Dict) -> List[Dict]:
+        result = await self.dashboard_service.list_dashboards(
+            compartment_id=args.get("compartment_id")
+        )
+        return [{"type": "text", "text": json.dumps(result, indent=2)}]
+
+    async def _add_dashboard_tile(self, args: Dict) -> List[Dict]:
+        result = await self.dashboard_service.add_tile(
+            dashboard_id=args["dashboard_id"],
+            title=args["title"],
+            query=args["query"],
+            visualization_type=args["visualization_type"],
+            width=args.get("width"),
+            height=args.get("height"),
+        )
+        return [{"type": "text", "text": json.dumps(result, indent=2)}]
+
+    async def _delete_dashboard(self, args: Dict) -> List[Dict]:
+        result = await self.dashboard_service.delete_dashboard(args["dashboard_id"])
+        return [{"type": "text", "text": json.dumps(result, indent=2)}]
+
+    # ── Notification handlers ──────────────────────────────────────────
+
+    async def _send_to_slack(self, args: Dict) -> List[Dict]:
+        query_result = None
+        if query := args.get("query"):
+            query_result = await self.query_engine.execute(
+                query=query,
+                time_range=args.get("time_range", "last_1_hour"),
+            )
+        result = await self.notification_service.send_to_slack(
+            message=args.get("message"),
+            query_result=query_result,
+            format_type=args.get("format", "summary"),
+        )
+        return [{"type": "text", "text": json.dumps(result, indent=2)}]
+
+    async def _send_to_telegram(self, args: Dict) -> List[Dict]:
+        query_result = None
+        if query := args.get("query"):
+            query_result = await self.query_engine.execute(
+                query=query,
+                time_range=args.get("time_range", "last_1_hour"),
+            )
+        result = await self.notification_service.send_to_telegram(
+            message=args.get("message"),
+            query_result=query_result,
+            format_type=args.get("format", "summary"),
+            chat_id=args.get("chat_id"),
+        )
+        return [{"type": "text", "text": json.dumps(result, indent=2)}]
 
 
 # Hardcoded fallback examples used when starter_queries.yaml cannot be loaded.

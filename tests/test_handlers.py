@@ -505,3 +505,46 @@ class TestFindCompartment:
         result = await handlers._find_compartment({"name": ""})
         data = json.loads(result[0]["text"])
         assert "error" in data
+
+
+# ---------------------------------------------------------------------------
+# New Tool Routing Tests (v0.4 automation tools)
+# ---------------------------------------------------------------------------
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("tool_name,mock_args", [
+    ("create_alert", {"display_name": "t", "query": "* | stats count", "destination_topic_id": "ocid1.topic.1"}),
+    ("list_alerts", {}),
+    ("update_alert", {"alert_id": "ocid1.alarm.1"}),
+    ("delete_alert", {"alert_id": "ocid1.alarm.1"}),
+    ("create_saved_search", {"display_name": "x", "query": "* | stats count"}),
+    ("update_saved_search", {"saved_search_id": "ocid1.task.1"}),
+    ("delete_saved_search", {"saved_search_id": "ocid1.task.1"}),
+    ("create_dashboard", {"display_name": "x", "tiles": [{"title": "t", "query": "* | stats count", "visualization_type": "bar"}]}),
+    ("list_dashboards", {}),
+    ("add_dashboard_tile", {"dashboard_id": "ocid1.dash.1", "title": "t", "query": "* | stats count", "visualization_type": "bar"}),
+    ("delete_dashboard", {"dashboard_id": "ocid1.dash.1"}),
+    ("send_to_slack", {"message": "hello"}),
+    ("send_to_telegram", {"message": "hello"}),
+])
+async def test_new_tools_are_routed(tool_name, mock_args, handlers):
+    """New v0.4 tools should be registered and not return 'Unknown tool'."""
+    # Patch the new service methods to return a default dict value
+    from unittest.mock import AsyncMock
+    handlers.alarm_service.create_alert = AsyncMock(return_value={"alarm_id": "ocid1.alarm.1"})
+    handlers.alarm_service.list_alerts = AsyncMock(return_value=[])
+    handlers.alarm_service.update_alert = AsyncMock(return_value={"alarm_id": "ocid1.alarm.1", "updated": []})
+    handlers.alarm_service.delete_alert = AsyncMock(return_value={"deleted": ["alarm"], "partial_failure": False})
+    handlers.saved_search.create_search = AsyncMock(return_value={"id": "ocid1.task.1"})
+    handlers.saved_search.update_search = AsyncMock(return_value={"id": "ocid1.task.1"})
+    handlers.saved_search.delete_search = AsyncMock(return_value=None)
+    handlers.dashboard_service.create_dashboard = AsyncMock(return_value={"dashboard_id": "ocid1.dash.1"})
+    handlers.dashboard_service.list_dashboards = AsyncMock(return_value=[])
+    handlers.dashboard_service.add_tile = AsyncMock(return_value={"dashboard_id": "ocid1.dash.1", "saved_search_id": "s1", "title": "t"})
+    handlers.dashboard_service.delete_dashboard = AsyncMock(return_value={"deleted": [], "partial_failure": False})
+    handlers.notification_service.send_to_slack = AsyncMock(return_value={"status": "sent", "destination": "slack"})
+    handlers.notification_service.send_to_telegram = AsyncMock(return_value={"status": "sent", "destination": "telegram"})
+
+    result = await handlers.handle_tool_call(tool_name, mock_args)
+    text = result[0]["text"] if result else ""
+    assert "Unknown tool" not in text
