@@ -8,6 +8,7 @@ from oci_logan_mcp.handlers import MCPHandlers
 from oci_logan_mcp.config import Settings
 from oci_logan_mcp.user_store import UserStore
 from oci_logan_mcp.preferences import PreferenceStore
+from oci_logan_mcp.confirmation import GUARDED_TOOLS
 
 
 # ---------------------------------------------------------------------------
@@ -548,3 +549,141 @@ async def test_new_tools_are_routed(tool_name, mock_args, handlers):
     result = await handlers.handle_tool_call(tool_name, mock_args)
     text = result[0]["text"] if result else ""
     assert "Unknown tool" not in text
+
+
+# ---------------------------------------------------------------------------
+# Confirmation Flow Tests
+# ---------------------------------------------------------------------------
+
+class TestConfirmationFlow:
+    """Destructive/modifying tools require two-factor confirmation."""
+
+    @pytest.fixture
+    def handlers_with_secret(self, settings, mock_oci_client, mock_cache,
+                             mock_query_logger, mock_context_manager,
+                             mock_user_store, mock_preference_store):
+        settings.confirmation_secret = "my-secret"
+        h = MCPHandlers(
+            settings=settings,
+            oci_client=mock_oci_client,
+            cache=mock_cache,
+            query_logger=mock_query_logger,
+            context_manager=mock_context_manager,
+            user_store=mock_user_store,
+            preference_store=mock_preference_store,
+        )
+        # Mock service methods
+        h.alarm_service.delete_alert = AsyncMock(return_value={"deleted": True})
+        h.alarm_service.update_alert = AsyncMock(return_value={"alarm_id": "a1", "updated": ["severity"]})
+        h.saved_search.update_search = AsyncMock(return_value={"id": "s1"})
+        h.saved_search.delete_search = AsyncMock(return_value=None)
+        h.dashboard_service.add_tile = AsyncMock(return_value={"dashboard_id": "d1"})
+        h.dashboard_service.delete_dashboard = AsyncMock(return_value={"deleted": True})
+        return h
+
+    @pytest.mark.asyncio
+    async def test_guarded_tool_without_secret_refuses(self, handlers):
+        """Fail-closed: no secret configured → confirmation_unavailable."""
+        result = await handlers.handle_tool_call(
+            "delete_alert", {"alert_id": "ocid1.alarm.oc1..abc"}
+        )
+        text = json.loads(result[0]["text"])
+        assert text["status"] == "confirmation_unavailable"
+
+    @pytest.mark.asyncio
+    async def test_guarded_tool_without_token_returns_confirmation(
+        self, handlers_with_secret
+    ):
+        """First call without token returns confirmation_required."""
+        result = await handlers_with_secret.handle_tool_call(
+            "delete_alert", {"alert_id": "ocid1.alarm.oc1..abc"}
+        )
+        text = json.loads(result[0]["text"])
+        assert text["status"] == "confirmation_required"
+        assert "confirmation_token" in text
+
+    @pytest.mark.asyncio
+    async def test_guarded_tool_with_valid_token_and_secret_executes(
+        self, handlers_with_secret
+    ):
+        """Correct token + secret + matching args → execution."""
+        args = {"alert_id": "ocid1.alarm.oc1..abc"}
+        # Step 1: get token
+        result = await handlers_with_secret.handle_tool_call("delete_alert", args)
+        token = json.loads(result[0]["text"])["confirmation_token"]
+
+        # Step 2: confirm
+        confirmed_args = dict(args)
+        confirmed_args["confirmation_token"] = token
+        confirmed_args["confirmation_secret"] = "my-secret"
+        result = await handlers_with_secret.handle_tool_call("delete_alert", confirmed_args)
+        text = json.loads(result[0]["text"])
+        assert "deleted" in text
+
+    @pytest.mark.asyncio
+    async def test_guarded_tool_wrong_secret_rejected(self, handlers_with_secret):
+        """Wrong secret is rejected even with valid token."""
+        args = {"alert_id": "ocid1.alarm.oc1..abc"}
+        result = await handlers_with_secret.handle_tool_call("delete_alert", args)
+        token = json.loads(result[0]["text"])["confirmation_token"]
+
+        confirmed_args = dict(args)
+        confirmed_args["confirmation_token"] = token
+        confirmed_args["confirmation_secret"] = "wrong-secret"
+        result = await handlers_with_secret.handle_tool_call("delete_alert", confirmed_args)
+        text = json.loads(result[0]["text"])
+        assert text["status"] == "confirmation_failed"
+
+    @pytest.mark.asyncio
+    async def test_guarded_tool_changed_args_rejected(self, handlers_with_secret):
+        """Token for alert A cannot authorize delete of alert B."""
+        args_a = {"alert_id": "ocid1.alarm.oc1..aaa"}
+        result = await handlers_with_secret.handle_tool_call("delete_alert", args_a)
+        token = json.loads(result[0]["text"])["confirmation_token"]
+
+        args_b = {"alert_id": "ocid1.alarm.oc1..bbb"}
+        args_b["confirmation_token"] = token
+        args_b["confirmation_secret"] = "my-secret"
+        result = await handlers_with_secret.handle_tool_call("delete_alert", args_b)
+        text = json.loads(result[0]["text"])
+        assert text["status"] == "confirmation_failed"
+
+    @pytest.mark.asyncio
+    async def test_guarded_tool_token_reuse_rejected(self, handlers_with_secret):
+        """Token can only be used once."""
+        args = {"alert_id": "ocid1.alarm.oc1..abc"}
+        result = await handlers_with_secret.handle_tool_call("delete_alert", args)
+        token = json.loads(result[0]["text"])["confirmation_token"]
+
+        confirmed_args = dict(args)
+        confirmed_args["confirmation_token"] = token
+        confirmed_args["confirmation_secret"] = "my-secret"
+        # First use succeeds
+        await handlers_with_secret.handle_tool_call("delete_alert", confirmed_args)
+        # Second use fails
+        result = await handlers_with_secret.handle_tool_call("delete_alert", confirmed_args)
+        text = json.loads(result[0]["text"])
+        assert text["status"] == "confirmation_failed"
+
+    @pytest.mark.asyncio
+    async def test_non_guarded_tool_executes_directly(self, handlers_with_secret):
+        """Non-guarded tools are not affected by confirmation."""
+        handlers_with_secret.alarm_service.list_alerts = AsyncMock(return_value=[])
+        result = await handlers_with_secret.handle_tool_call("list_alerts", {})
+        text = result[0]["text"]
+        assert "confirmation_required" not in text
+        assert "confirmation_unavailable" not in text
+
+    @pytest.mark.asyncio
+    async def test_create_alert_not_guarded(self, handlers_with_secret):
+        """create_* tools are additive and not guarded."""
+        handlers_with_secret.alarm_service.create_alert = AsyncMock(
+            return_value={"alarm_id": "new"}
+        )
+        result = await handlers_with_secret.handle_tool_call(
+            "create_alert",
+            {"display_name": "Test", "query": "* | stats count",
+             "destination_topic_id": "ocid1.topic.1"},
+        )
+        text = json.loads(result[0]["text"])
+        assert text.get("status") != "confirmation_required"

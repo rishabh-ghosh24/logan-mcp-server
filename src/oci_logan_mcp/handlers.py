@@ -22,6 +22,7 @@ from .resources import get_query_templates, get_syntax_guide, get_reference_docs
 from .alarm_service import AlarmService
 from .dashboard_service import DashboardService
 from .notification_service import NotificationService
+from .confirmation import ConfirmationManager
 
 logger = logging.getLogger(__name__)
 
@@ -59,6 +60,10 @@ class MCPHandlers:
         self.alarm_service = AlarmService(oci_client, cache)
         self.dashboard_service = DashboardService(oci_client, cache)
         self.notification_service = NotificationService(settings)
+        self.confirmation_manager = ConfirmationManager(
+            secret=settings.confirmation_secret,
+            token_expiry_seconds=settings.guardrails.token_expiry_seconds,
+        )
 
     async def handle_tool_call(
         self, name: str, arguments: Dict[str, Any]
@@ -122,6 +127,39 @@ class MCPHandlers:
         handler = handlers.get(name)
         if not handler:
             return [{"type": "text", "text": f"Unknown tool: {name}"}]
+
+        # --- Confirmation gate for guarded operations ---
+        if self.confirmation_manager.is_guarded(name):
+            if not self.confirmation_manager.is_available():
+                return [{"type": "text", "text": json.dumps({
+                    "status": "confirmation_unavailable",
+                    "error": "OCI_LA_CONFIRMATION_SECRET env var is not set. "
+                             "Destructive/modifying operations are disabled until configured.",
+                }, indent=2)}]
+
+            token = arguments.get("confirmation_token")
+            secret = arguments.get("confirmation_secret", "")
+
+            if not token:
+                confirmation = self.confirmation_manager.request_confirmation(
+                    name, arguments
+                )
+                return [{"type": "text", "text": json.dumps(confirmation, indent=2)}]
+
+            if not self.confirmation_manager.validate_confirmation(
+                token, secret, name, arguments
+            ):
+                return [{"type": "text", "text": json.dumps({
+                    "status": "confirmation_failed",
+                    "error": "Invalid/expired token, wrong secret, or arguments changed. "
+                             "Request a new confirmation token.",
+                }, indent=2)}]
+
+            # Strip confirmation params before passing to handler
+            arguments = {
+                k: v for k, v in arguments.items()
+                if k not in ("confirmation_token", "confirmation_secret")
+            }
 
         try:
             result = await handler(arguments)
