@@ -231,7 +231,7 @@ class AlarmService:
         severity = kwargs.get("severity")
         destination_topic_id = kwargs.get("destination_topic_id")
 
-        if query:
+        if query and saved_search_id:
             self._validate_metric_query(query)
             mss_update = oci.management_dashboard.models.UpdateManagementSavedSearchDetails(
                 data_config=[{"query": query}],
@@ -239,8 +239,10 @@ class AlarmService:
             if display_name:
                 mss_update.display_name = f"logan-alert-{display_name}"
             await self.oci_client.update_management_saved_search(saved_search_id, mss_update)
+        elif query:
+            self._validate_metric_query(query)  # validate even if we can't update
 
-        elif display_name:
+        if display_name and not query and saved_search_id:
             mss_update = oci.management_dashboard.models.UpdateManagementSavedSearchDetails(
                 display_name=f"logan-alert-{display_name}",
             )
@@ -268,6 +270,11 @@ class AlarmService:
         current_mql = alarm.get("query", "")
         if threshold_value is not None or threshold_operator is not None:
             metric_name = current_mql.split("[")[0].strip()
+            if not metric_name:
+                raise ValueError(
+                    "Cannot update threshold: alarm query is missing or not in Logan MQL format. "
+                    "Retrieve the alarm with get_alarm to inspect its current query."
+                )
             op_map = {"gt": ">", "gte": ">=", "eq": "==", "lt": "<", "lte": "<="}
             op_sym = op_map.get(threshold_operator or "gt", ">")
             tv = threshold_value if threshold_value is not None else 0

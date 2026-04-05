@@ -1,5 +1,6 @@
 """Slack and Telegram on-demand notification delivery."""
 import asyncio
+import html
 import json
 import urllib.request
 from typing import Any, Dict, List, Optional
@@ -107,7 +108,7 @@ class NotificationService:
     ) -> str:
         parts = []
         if message:
-            parts.append(f"<b>{message}</b>")
+            parts.append(f"<b>{html.escape(message)}</b>")
         if query_result:
             table_text = self._render_table(query_result, format_type)
             table_text = self._truncate_results(table_text)

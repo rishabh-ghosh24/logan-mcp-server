@@ -165,7 +165,7 @@ class DashboardService:
         if len(existing_tiles) >= 20:
             raise ValueError("Dashboard already has 20 tiles (maximum). Remove a tile before adding.")
 
-        cid = self.oci_client.compartment_id
+        cid = dashboard.get("compartment_id") or self.oci_client.compartment_id
 
         new_search_id = None
         try:
