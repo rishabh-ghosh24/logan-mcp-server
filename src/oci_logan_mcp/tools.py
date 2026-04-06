@@ -587,7 +587,7 @@ def get_tools() -> List[Dict[str, Any]]:
             "description": (
                 "Update an existing autonomous alert. Each parameter targets only the affected OCI resource. "
                 "TWO-FACTOR CONFIRMATION REQUIRED: First call returns a confirmation token and summary. "
-                "To execute, re-invoke with confirmation_token and your OCI_LA_CONFIRMATION_SECRET."
+                "To execute, re-invoke with confirmation_token and your confirmation secret."
             ),
             "inputSchema": {
                 "type": "object",
@@ -612,7 +612,7 @@ def get_tools() -> List[Dict[str, Any]]:
             "description": (
                 "Delete an autonomous alert and all its backing OCI resources. "
                 "TWO-FACTOR CONFIRMATION REQUIRED: First call returns a confirmation token and summary. "
-                "To execute, re-invoke with confirmation_token and your OCI_LA_CONFIRMATION_SECRET."
+                "To execute, re-invoke with confirmation_token and your confirmation secret."
             ),
             "inputSchema": {
                 "type": "object",
@@ -649,7 +649,7 @@ def get_tools() -> List[Dict[str, Any]]:
             "description": (
                 "Update an existing saved search. "
                 "TWO-FACTOR CONFIRMATION REQUIRED: First call returns a confirmation token and summary. "
-                "To execute, re-invoke with confirmation_token and your OCI_LA_CONFIRMATION_SECRET."
+                "To execute, re-invoke with confirmation_token and your confirmation secret."
             ),
             "inputSchema": {
                 "type": "object",
@@ -671,7 +671,7 @@ def get_tools() -> List[Dict[str, Any]]:
             "description": (
                 "Delete a saved search. "
                 "TWO-FACTOR CONFIRMATION REQUIRED: First call returns a confirmation token and summary. "
-                "To execute, re-invoke with confirmation_token and your OCI_LA_CONFIRMATION_SECRET."
+                "To execute, re-invoke with confirmation_token and your confirmation secret."
             ),
             "inputSchema": {
                 "type": "object",
@@ -734,7 +734,7 @@ def get_tools() -> List[Dict[str, Any]]:
             "description": (
                 "Add a new tile to an existing dashboard. "
                 "TWO-FACTOR CONFIRMATION REQUIRED: First call returns a confirmation token and summary. "
-                "To execute, re-invoke with confirmation_token and your OCI_LA_CONFIRMATION_SECRET."
+                "To execute, re-invoke with confirmation_token and your confirmation secret."
             ),
             "inputSchema": {
                 "type": "object",
@@ -761,7 +761,7 @@ def get_tools() -> List[Dict[str, Any]]:
             "description": (
                 "Delete a dashboard and all its tile data sources. "
                 "TWO-FACTOR CONFIRMATION REQUIRED: First call returns a confirmation token and summary. "
-                "To execute, re-invoke with confirmation_token and your OCI_LA_CONFIRMATION_SECRET."
+                "To execute, re-invoke with confirmation_token and your confirmation secret."
             ),
             "inputSchema": {
                 "type": "object",
