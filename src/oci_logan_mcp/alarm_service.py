@@ -10,7 +10,7 @@ from .client import OCILogAnalyticsClient
 from .cache import CacheManager
 
 # OCI Management Dashboard API requires crossService in featuresConfig
-FEATURES_CONFIG = {"crossService": {}}
+FEATURES_CONFIG = {"crossService": {"shared": True}, "dependencies": []}
 
 logger = logging.getLogger(__name__)
 
