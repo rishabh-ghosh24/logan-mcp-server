@@ -139,6 +139,24 @@ class SavedSearchService:
 
     async def update_search(self, search_id: str, **kwargs) -> Dict[str, Any]:
         """Update display_name and/or query of an existing saved search."""
+        if search_id.startswith("ocid1.managementsavedsearch."):
+            mss_update_kwargs = {}
+            if "display_name" in kwargs:
+                mss_update_kwargs["display_name"] = kwargs["display_name"]
+            if "query" in kwargs:
+                mss_update_kwargs["data_config"] = [{"query": kwargs["query"]}]
+            mss_update = oci.management_dashboard.models.UpdateManagementSavedSearchDetails(
+                **mss_update_kwargs
+            )
+            await self.oci_client.update_management_saved_search(search_id, mss_update)
+            self.cache.delete("saved_searches")
+            self.cache.delete(f"saved_search:{search_id}")
+            return {
+                "id": search_id,
+                "updated": list(kwargs.keys()),
+                **{k: v for k, v in kwargs.items()},
+            }
+
         backing_mss_id = await self._get_backing_mss_id(search_id)
 
         if "query" in kwargs and backing_mss_id:

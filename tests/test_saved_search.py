@@ -252,6 +252,24 @@ class TestDeleteSearch:
 
 class TestUpdateSearch:
     @pytest.mark.asyncio
+    async def test_management_saved_search_updates_directly(self):
+        client = AsyncMock()
+        client.update_management_saved_search.return_value = {
+            "id": "ocid1.managementsavedsearch.oc1..test",
+        }
+        cache = CacheManager(CacheConfig(enabled=True))
+        svc = SavedSearchService(client, cache)
+
+        result = await svc.update_search(
+            "ocid1.managementsavedsearch.oc1..test",
+            display_name="Updated",
+            query="new query",
+        )
+
+        client.update_management_saved_search.assert_called_once()
+        assert result["updated"] == ["display_name", "query"]
+
+    @pytest.mark.asyncio
     async def test_query_update_reaches_backing_mss(self):
         client = AsyncMock()
         mock_action = MagicMock()
