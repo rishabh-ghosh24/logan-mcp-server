@@ -98,10 +98,28 @@ class DashboardService:
         self.oci_client = oci_client
         self.cache = cache
 
-    def _compute_tile_positions(self, count: int) -> List[Dict[str, int]]:
+    def _compute_tile_positions(self, tiles: List[Dict[str, Any]]) -> List[Dict[str, int]]:
+        """Compute grid positions for tiles in a 12-column layout.
+
+        Arranges tiles left-to-right, top-to-bottom. When a tile doesn't
+        fit in the remaining columns of the current row, it moves to the
+        next row.
+        """
         positions = []
-        for i in range(count):
-            positions.append({"row": i, "column": 0, "height": 4, "width": 12})
+        current_row = 0
+        current_col = 0
+        row_height = 0
+        for tile in tiles:
+            w = tile.get("width", 12)
+            h = tile.get("height", 4)
+            # If tile doesn't fit in remaining space, move to next row
+            if current_col + w > 12:
+                current_row += row_height
+                current_col = 0
+                row_height = 0
+            positions.append({"row": current_row, "column": current_col, "height": h, "width": w})
+            current_col += w
+            row_height = max(row_height, h)
         return positions
 
     async def create_dashboard(
@@ -127,7 +145,7 @@ class DashboardService:
         group_id = str(uuid4())
         base_tags = {"logan_managed": "true", "logan_group_id": group_id,
                      "logan_kind": "dashboard_saved_search"}
-        positions = self._compute_tile_positions(len(tiles))
+        positions = self._compute_tile_positions(tiles)
         created_search_ids = []
 
         try:
