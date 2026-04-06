@@ -7,7 +7,7 @@ from .client import OCILogAnalyticsClient
 from .cache import CacheManager
 
 PROVIDER_ID = "log-analytics"
-PROVIDER_NAME = "Logging Analytics"
+PROVIDER_NAME = "Log Analytics"
 PROVIDER_VERSION = "3.0.0"
 
 # OCI Management Dashboard API requires crossService in featuresConfig

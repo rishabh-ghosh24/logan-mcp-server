@@ -74,7 +74,7 @@ class AlarmService:
                 is_oob_saved_search=False,
                 type="SEARCH_DONT_SHOW_IN_DASHBOARD",
                 provider_id="log-analytics",
-                provider_name="Logging Analytics",
+                provider_name="Log Analytics",
                 provider_version="3.0.0",
                 metadata_version="2.0",
                 nls={},
