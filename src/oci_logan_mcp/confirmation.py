@@ -86,9 +86,13 @@ class ConfirmationManager:
             "summary": summary,
             "expires_in_seconds": self._token_expiry_seconds,
             "instructions": (
+                "IMPORTANT: You MUST show this confirmation summary to the user "
+                "and ASK them to provide their confirmation secret. "
+                "NEVER reuse a secret from a previous operation. "
+                "Wait for the user's explicit response before proceeding.\n\n"
                 "To proceed, re-invoke this tool with the same arguments plus:\n"
                 "  - confirmation_token: the token above\n"
-                "  - confirmation_secret: your confirmation secret"
+                "  - confirmation_secret: the secret the user provides NOW"
             ),
         }
 
