@@ -128,6 +128,9 @@ Click **Save**, then start a new Codex session to connect.
 | **Query logs** | `run_query`, `run_batch_queries`, `run_saved_search` | Search logs, run multiple queries in parallel, execute saved searches |
 | **Explore schema** | `list_log_sources`, `list_fields`, `list_entities`, `list_parsers`, `list_labels` | Discover what log data is available |
 | **Visualize** | `visualize` | Generate pie, bar, line, area, table, tile, treemap, heatmap, histogram charts |
+| **Dashboards** | `create_dashboard`, `add_dashboard_tile`, `list_dashboards`, `delete_dashboard` | Create OCI Management Dashboards with LA widgets, grid layout, and scope filters |
+| **Alerts** | `create_alert`, `update_alert`, `list_alerts`, `delete_alert` | Create OCI-native alarms from LA queries with metric extraction and ONS notifications |
+| **Saved searches** | `create_saved_search`, `update_saved_search`, `list_saved_searches`, `delete_saved_search` | Manage LA saved searches backed by scheduled tasks |
 | **Export** | `export_results` | Export query results to CSV or JSON |
 | **Manage scope** | `set_compartment`, `set_namespace`, `find_compartment`, `list_compartments` | Switch compartments, query across tenancy |
 | **Validate** | `validate_query`, `get_query_examples` | Check syntax, get curated starter examples by category (included with install) |
@@ -349,6 +352,8 @@ python run_tests.py
 
 | Version | Summary |
 |---|---|
+| **0.5.0** | **Dashboard creation:** Programmatic OCI Management Dashboard creation with proper LA widget wiring, 2-column grid layout, scope filter integration (`parametersMap` with `$(dashboard.params.*)` references), and dashboard delete/update with cleanup. Visualization types: bar, line, pie, table, area, treemap, heatmap, histogram. |
+| **0.4.0** | **Alarms & safety:** OCI-native autonomous alerts from Log Analytics queries (metric extraction + OCI Monitoring alarms + ONS notifications). Two-factor confirmation for destructive operations with per-user hashed secrets, audit logging, and secret redaction in all log output. |
 | **0.3.0** | Multi-user learning: per-user query storage, preference tracking, shared query promotion with sensitive data sanitization, thread-safe file locking. |
 | **0.2.0** | Cluster query accuracy fix, compact cluster output formatting, compartment persistence, startup responsiveness (deferred schema refresh), `--setup` and `--user` CLI flags, Windows setup guide. |
 | **0.1.0** | Initial release: 24 MCP tools, query execution, schema exploration, visualization, export, cross-compartment queries, caching, rate limiting, query auto-save. |
