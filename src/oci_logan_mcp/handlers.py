@@ -23,6 +23,8 @@ from .alarm_service import AlarmService
 from .dashboard_service import DashboardService
 from .notification_service import NotificationService
 from .confirmation import ConfirmationManager
+from .secret_store import SecretStore
+from .audit import AuditLogger
 
 logger = logging.getLogger(__name__)
 
@@ -39,6 +41,8 @@ class MCPHandlers:
         context_manager: ContextManager,
         user_store: Optional[UserStore] = None,
         preference_store: Optional[PreferenceStore] = None,
+        secret_store: Optional[SecretStore] = None,
+        audit_logger: Optional[AuditLogger] = None,
     ):
         """Initialize MCP handlers."""
         self.settings = settings
@@ -48,6 +52,12 @@ class MCPHandlers:
         self.context_manager = context_manager
         self.user_store = user_store
         self.preference_store = preference_store
+        self.audit_logger = audit_logger
+
+        if secret_store is None:
+            from pathlib import Path
+            secret_store = SecretStore(Path("/dev/null/no_secret"))
+        self.secret_store = secret_store
 
         # Initialize services
         self.schema_manager = SchemaManager(oci_client, cache)
@@ -61,7 +71,7 @@ class MCPHandlers:
         self.dashboard_service = DashboardService(oci_client, cache)
         self.notification_service = NotificationService(settings)
         self.confirmation_manager = ConfirmationManager(
-            secret=settings.confirmation_secret,
+            secret_store=secret_store,
             token_expiry_seconds=settings.guardrails.token_expiry_seconds,
         )
 
@@ -128,13 +138,25 @@ class MCPHandlers:
         if not handler:
             return [{"type": "text", "text": f"Unknown tool: {name}"}]
 
+        user_id = self.user_store.user_id if self.user_store else "unknown"
+
         # --- Confirmation gate for guarded operations ---
         if self.confirmation_manager.is_guarded(name):
+            clean_args = {
+                k: v for k, v in arguments.items()
+                if k not in ("confirmation_token", "confirmation_secret")
+            }
+
             if not self.confirmation_manager.is_available():
+                if self.audit_logger:
+                    self.audit_logger.log(
+                        user=user_id, tool=name, args=clean_args,
+                        outcome="confirmation_unavailable",
+                    )
                 return [{"type": "text", "text": json.dumps({
                     "status": "confirmation_unavailable",
-                    "error": "OCI_LA_CONFIRMATION_SECRET env var is not set. "
-                             "Destructive/modifying operations are disabled until configured.",
+                    "error": "No confirmation secret is set. "
+                             "Run the server interactively to set one.",
                 }, indent=2)}]
 
             token = arguments.get("confirmation_token")
@@ -144,28 +166,52 @@ class MCPHandlers:
                 confirmation = self.confirmation_manager.request_confirmation(
                     name, arguments
                 )
+                if self.audit_logger:
+                    self.audit_logger.log(
+                        user=user_id, tool=name, args=clean_args,
+                        outcome="confirmation_requested",
+                    )
                 return [{"type": "text", "text": json.dumps(confirmation, indent=2)}]
 
             if not self.confirmation_manager.validate_confirmation(
                 token, secret, name, arguments
             ):
+                if self.audit_logger:
+                    self.audit_logger.log(
+                        user=user_id, tool=name, args=clean_args,
+                        outcome="confirmation_failed",
+                    )
                 return [{"type": "text", "text": json.dumps({
                     "status": "confirmation_failed",
                     "error": "Invalid/expired token, wrong secret, or arguments changed. "
                              "Request a new confirmation token.",
                 }, indent=2)}]
 
+            if self.audit_logger:
+                self.audit_logger.log(
+                    user=user_id, tool=name, args=clean_args,
+                    outcome="confirmed",
+                )
+
             # Strip confirmation params before passing to handler
-            arguments = {
-                k: v for k, v in arguments.items()
-                if k not in ("confirmation_token", "confirmation_secret")
-            }
+            arguments = clean_args
 
         try:
             result = await handler(arguments)
+            if self.confirmation_manager.is_guarded(name) and self.audit_logger:
+                summary = result[0]["text"][:200] if result else ""
+                self.audit_logger.log(
+                    user=user_id, tool=name, args=arguments,
+                    outcome="executed", result_summary=summary,
+                )
             return result
         except Exception as e:
             logger.exception(f"Error in tool {name}")
+            if self.confirmation_manager.is_guarded(name) and self.audit_logger:
+                self.audit_logger.log(
+                    user=user_id, tool=name, args=arguments,
+                    outcome="execution_failed", error=str(e),
+                )
             return [{"type": "text", "text": f"Error executing {name}: {str(e)}"}]
 
     async def handle_resource_read(self, uri: str) -> Any:

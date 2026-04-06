@@ -9,6 +9,8 @@ from oci_logan_mcp.config import Settings
 from oci_logan_mcp.user_store import UserStore
 from oci_logan_mcp.preferences import PreferenceStore
 from oci_logan_mcp.confirmation import GUARDED_TOOLS
+from oci_logan_mcp.secret_store import SecretStore
+from oci_logan_mcp.audit import AuditLogger
 
 
 # ---------------------------------------------------------------------------
@@ -101,8 +103,20 @@ def mock_preference_store(tmp_path):
 
 
 @pytest.fixture
+def mock_secret_store(tmp_path):
+    """Create a SecretStore backed by a temp file (no secret set)."""
+    return SecretStore(tmp_path / "secret.yaml")
+
+
+@pytest.fixture
+def mock_audit_logger(tmp_path):
+    """Create an AuditLogger backed by a temp directory."""
+    return AuditLogger(tmp_path / "audit")
+
+
+@pytest.fixture
 def handlers(settings, mock_oci_client, mock_cache, mock_query_logger, mock_context_manager,
-             mock_user_store, mock_preference_store):
+             mock_user_store, mock_preference_store, mock_secret_store, mock_audit_logger):
     """Create MCPHandlers with all mocked dependencies."""
     return MCPHandlers(
         settings=settings,
@@ -112,6 +126,8 @@ def handlers(settings, mock_oci_client, mock_cache, mock_query_logger, mock_cont
         context_manager=mock_context_manager,
         user_store=mock_user_store,
         preference_store=mock_preference_store,
+        secret_store=mock_secret_store,
+        audit_logger=mock_audit_logger,
     )
 
 
@@ -561,8 +577,9 @@ class TestConfirmationFlow:
     @pytest.fixture
     def handlers_with_secret(self, settings, mock_oci_client, mock_cache,
                              mock_query_logger, mock_context_manager,
-                             mock_user_store, mock_preference_store):
-        settings.confirmation_secret = "my-secret"
+                             mock_user_store, mock_preference_store,
+                             mock_secret_store, mock_audit_logger):
+        mock_secret_store.set_secret("my-secret")
         h = MCPHandlers(
             settings=settings,
             oci_client=mock_oci_client,
@@ -571,6 +588,8 @@ class TestConfirmationFlow:
             context_manager=mock_context_manager,
             user_store=mock_user_store,
             preference_store=mock_preference_store,
+            secret_store=mock_secret_store,
+            audit_logger=mock_audit_logger,
         )
         # Mock service methods
         h.alarm_service.delete_alert = AsyncMock(return_value={"deleted": True})
@@ -712,8 +731,9 @@ class TestConfirmationIntegration:
     @pytest.fixture
     def handlers_confirmed(self, settings, mock_oci_client, mock_cache,
                            mock_query_logger, mock_context_manager,
-                           mock_user_store, mock_preference_store):
-        settings.confirmation_secret = "integration-secret"
+                           mock_user_store, mock_preference_store,
+                           mock_secret_store, mock_audit_logger):
+        mock_secret_store.set_secret("integration-secret")
         h = MCPHandlers(
             settings=settings,
             oci_client=mock_oci_client,
@@ -722,6 +742,8 @@ class TestConfirmationIntegration:
             context_manager=mock_context_manager,
             user_store=mock_user_store,
             preference_store=mock_preference_store,
+            secret_store=mock_secret_store,
+            audit_logger=mock_audit_logger,
         )
         # Mock all service methods to prevent actual OCI calls
         h.alarm_service.delete_alert = AsyncMock(return_value={"deleted": True})
@@ -794,3 +816,68 @@ class TestConfirmationIntegration:
         assert text["status"] == "confirmation_failed", (
             f"{tool_name} did not reject changed args"
         )
+
+
+# ---------------------------------------------------------------------------
+# Audit Logging Tests
+# ---------------------------------------------------------------------------
+
+class TestAuditLogging:
+    """Audit logger records guarded tool outcomes."""
+
+    @pytest.fixture
+    def audit_dir(self, tmp_path):
+        return tmp_path / "audit_test"
+
+    @pytest.fixture
+    def audit_logger(self, audit_dir):
+        return AuditLogger(audit_dir)
+
+    @pytest.fixture
+    def secret_store(self, tmp_path):
+        ss = SecretStore(tmp_path / "secret_audit.yaml")
+        ss.set_secret("audit-test-secret")
+        return ss
+
+    @pytest.fixture
+    def audit_handlers(self, settings, mock_oci_client, mock_cache,
+                       mock_query_logger, mock_context_manager,
+                       mock_user_store, mock_preference_store,
+                       secret_store, audit_logger):
+        h = MCPHandlers(
+            settings=settings,
+            oci_client=mock_oci_client,
+            cache=mock_cache,
+            query_logger=mock_query_logger,
+            context_manager=mock_context_manager,
+            user_store=mock_user_store,
+            preference_store=mock_preference_store,
+            secret_store=secret_store,
+            audit_logger=audit_logger,
+        )
+        h.alarm_service.delete_alert = AsyncMock(return_value={"deleted": True})
+        return h
+
+    @pytest.mark.asyncio
+    async def test_guarded_tool_audit_trail(self, audit_handlers, audit_dir):
+        """Full confirmation flow produces audit entries for each outcome."""
+        args = {"alert_id": "ocid1.alarm.oc1..audit"}
+
+        # Step 1: request confirmation  ->  confirmation_requested
+        result = await audit_handlers.handle_tool_call("delete_alert", dict(args))
+        token = json.loads(result[0]["text"])["confirmation_token"]
+
+        # Step 2: confirm and execute  ->  confirmed + executed
+        confirmed_args = dict(args)
+        confirmed_args["confirmation_token"] = token
+        confirmed_args["confirmation_secret"] = "audit-test-secret"
+        await audit_handlers.handle_tool_call("delete_alert", confirmed_args)
+
+        # Read audit log and check entries
+        log_file = audit_dir / "audit.log"
+        assert log_file.is_file(), "Audit log file should exist"
+        lines = log_file.read_text().strip().splitlines()
+        outcomes = [json.loads(line)["outcome"] for line in lines]
+        assert "confirmation_requested" in outcomes
+        assert "confirmed" in outcomes
+        assert "executed" in outcomes
