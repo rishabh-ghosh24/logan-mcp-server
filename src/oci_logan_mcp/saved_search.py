@@ -10,6 +10,9 @@ PROVIDER_ID = "log-analytics"
 PROVIDER_NAME = "Logging Analytics"
 PROVIDER_VERSION = "3.0.0"
 
+# OCI Management Dashboard API requires crossService in featuresConfig
+FEATURES_CONFIG = {"crossService": False}
+
 
 class SavedSearchService:
     """Service for managing saved searches."""
@@ -97,7 +100,7 @@ class SavedSearchService:
             widget_vm="",
             parameters_config=[],
             drilldown_config=[],
-            features_config={},
+            features_config=FEATURES_CONFIG,
         )
         mss = await self.oci_client.create_management_saved_search(mss_details)
 

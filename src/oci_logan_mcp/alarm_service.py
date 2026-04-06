@@ -9,6 +9,9 @@ import oci
 from .client import OCILogAnalyticsClient
 from .cache import CacheManager
 
+# OCI Management Dashboard API requires crossService in featuresConfig
+FEATURES_CONFIG = {"crossService": False}
+
 logger = logging.getLogger(__name__)
 
 _CRON_FIELD = r"(\*|(\*\/\d+)|\d+(-\d+)?(\/\d+)?(,(\*|(\*\/\d+)|\d+(-\d+)?(\/\d+)?))*)"
@@ -79,7 +82,7 @@ class AlarmService:
                 widget_vm="",
                 parameters_config=[],
                 drilldown_config=[],
-                features_config={},
+                features_config=FEATURES_CONFIG,
                 freeform_tags={**base_tags, "logan_kind": "alert_saved_search"},
             )
             mss = await self.oci_client.create_management_saved_search(mss_details)

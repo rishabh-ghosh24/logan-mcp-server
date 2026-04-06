@@ -15,6 +15,9 @@ VALID_VIZ_TYPES = {
     "tile", "area", "treemap", "heatmap", "histogram",
 }
 
+# OCI Management Dashboard API requires crossService in featuresConfig
+FEATURES_CONFIG = {"crossService": False}
+
 VIZ_TYPE_MAP = {
     "bar": "bar",
     "vertical_bar": "vertical_bar",
@@ -83,7 +86,7 @@ class DashboardService:
                     widget_vm="",
                     parameters_config=[],
                     drilldown_config=[],
-                    features_config={},
+                    features_config=FEATURES_CONFIG,
                     freeform_tags=base_tags,
                 )
                 mss = await self.oci_client.create_management_saved_search(mss_details)
@@ -121,7 +124,7 @@ class DashboardService:
                 parameters_config=[],
                 drilldown_config=[],
                 is_show_in_home=False,
-                features_config={},
+                features_config=FEATURES_CONFIG,
             )
             dashboard = await self.oci_client.create_management_dashboard(dash_details)
 
@@ -185,7 +188,7 @@ class DashboardService:
                 widget_vm="",
                 parameters_config=[],
                 drilldown_config=[],
-                features_config={},
+                features_config=FEATURES_CONFIG,
                 freeform_tags={"logan_managed": "true",
                                "logan_kind": "dashboard_saved_search",
                                "logan_dashboard_id": dashboard_id},
@@ -240,7 +243,7 @@ class DashboardService:
                 nls={},
                 parameters_config=[],
                 drilldown_config=[],
-                features_config={},
+                features_config=FEATURES_CONFIG,
             )
             await self.oci_client.update_management_dashboard(
                 dashboard_id, update_details, if_match=etag
