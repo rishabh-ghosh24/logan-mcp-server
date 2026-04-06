@@ -21,6 +21,10 @@ class TestSecretStore:
     def test_has_secret_false_initially(self, store):
         assert store.has_secret() is False
 
+    def test_has_secret_true_after_set(self, store):
+        store.set_secret("abcdefgh")
+        assert store.has_secret() is True
+
     def test_is_valid_false_when_no_file(self, store):
         assert store.is_valid() is False
 
