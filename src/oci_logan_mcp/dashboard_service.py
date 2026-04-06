@@ -31,31 +31,49 @@ VIZ_TYPE_MAP = {
     "histogram": "records_histogram",
 }
 
-# Saved search parameters config — references generic OOBSS filters
-# (from https://karthicin.medium.com/oci-management-dashboard-automation-ea4f45cac24b)
+# Saved search parameters config — LA-specific scope filters
+# (from oracle-quickstart/oci-o11y-solutions IAM Domain Audit dashboard)
 SS_PARAMS_CONFIG = [
-    {"name": "time", "displayName": "Time", "required": True,
-     "defaultFilterIds": ["OOBSS-management-dashboard-time-selector-filter"],
+    {"name": "log-analytics-log-group-compartment", "displayName": "Log Group Compartment",
+     "required": True, "defaultFilterIds": ["OOBSS-management-dashboard-filter-4a"],
      "editUi": {"inputType": "savedSearch",
-                "filterTile": {"filterId": "OOBSS-management-dashboard-time-selector-filter"}}},
-    {"name": "compartmentId", "displayName": "Compartment", "required": True,
-     "defaultFilterIds": ["OOBSS-management-dashboard-compartment-filter"],
-     "editUi": {"inputType": "compartmentSelect"}},
-    {"name": "regionName", "displayName": "Region", "required": False,
-     "defaultFilterIds": ["OOBSS-management-dashboard-region-filter"],
+                "filterTile": {"filterId": "OOBSS-management-dashboard-filter-4a"}},
+     "valueFormat": {"type": "object"}},
+    {"name": "log-analytics-entity", "displayName": "Entity",
+     "required": True, "defaultFilterIds": ["OOBSS-management-dashboard-filter-2a"],
      "editUi": {"inputType": "savedSearch",
-                "filterTile": {"filterId": "OOBSS-management-dashboard-region-filter"}}},
+                "filterTile": {"filterId": "OOBSS-management-dashboard-filter-2a"}},
+     "valueFormat": {"type": "object"}},
+    {"name": "log-analytics-region", "displayName": "Region",
+     "required": False, "defaultFilterIds": ["OOBSS-management-dashboard-region-filter"],
+     "editUi": {"inputType": "savedSearch",
+                "filterTile": {"filterId": "OOBSS-management-dashboard-region-filter"}},
+     "valueFormat": {"type": "array"}},
+    {"name": "time", "displayName": "$(bundle.globalSavedSearch.TIME)", "required": True, "hidden": True},
 ]
 
-# Dashboard-level parameters config — tile references for the filter bar
+# Dashboard-level parameters config — filter bar with LA scope tiles
+# (from oracle-quickstart/oci-o11y-solutions IAM Domain Audit dashboard)
 DASH_PARAMS_CONFIG = [
-    {"displayName": "Compartment", "localStorageKey": "compartmentId", "name": "compartmentId",
-     "parametersMap": {"isActiveCompartment": "true", "isStoreInLocalStorage": False},
-     "savedSearchId": "OOBSS-management-dashboard-compartment-filter", "state": "DEFAULT"},
-    {"savedSearchId": "OOBSS-management-dashboard-region-filter", "width": 2, "state": "DEFAULT",
-     "parametersMap": {"isStoreInLocalStorage": True}, "name": "regionFilter", "localStorageKey": "regionFilter"},
-    {"displayName": "$(bundle.globalSavedSearch.TIME)", "name": "time", "src": "$(context.time)"},
+    {"name": "log-analytics-loggroup-filter", "displayName": "Log Group Compartment",
+     "savedSearchId": "OOBSS-management-dashboard-filter-4a", "width": 4,
+     "localStorageKey": "log-analytics-loggroup-filter"},
+    {"name": "log-analytics-entity-filter", "displayName": "Entity",
+     "savedSearchId": "OOBSS-management-dashboard-filter-2a", "width": 6,
+     "localStorageKey": "log-analytics-entity-filter"},
+    {"name": "regionFilter", "displayName": "Region",
+     "savedSearchId": "OOBSS-management-dashboard-region-filter", "width": 2,
+     "localStorageKey": "regionFilter"},
+    {"name": "time", "src": "$(context.time)"},
 ]
+
+# Tile-level parameter mapping — wires dashboard filters to widget inputs
+TILE_PARAMS_MAP = {
+    "time": "$(dashboard.params.time)",
+    "log-analytics-log-group-compartment": "$(dashboard.params.log-analytics-loggroup-filter)",
+    "log-analytics-entity": "$(dashboard.params.log-analytics-entity-filter)",
+    "log-analytics-region": "$(dashboard.params.regionFilter)",
+}
 
 
 def _build_scope_filters(compartment_id: str, tenancy_id: str, region: str = "us-ashburn-1") -> dict:
@@ -193,7 +211,7 @@ class DashboardService:
                         data_config=[],
                         state="DEFAULT",
                         drilldown_config=[],
-                        parameters_map={},
+                        parameters_map=TILE_PARAMS_MAP,
                     )
                 )
 
@@ -314,7 +332,7 @@ class DashboardService:
                 data_config=[],
                 state="DEFAULT",
                 drilldown_config=[],
-                parameters_map={},
+                parameters_map=TILE_PARAMS_MAP,
             )
 
             all_tiles = []
@@ -331,7 +349,7 @@ class DashboardService:
                     data_config=[],
                     state="DEFAULT",
                     drilldown_config=[],
-                    parameters_map={},
+                    parameters_map=TILE_PARAMS_MAP,
                 ))
             all_tiles.append(new_tile)
 
