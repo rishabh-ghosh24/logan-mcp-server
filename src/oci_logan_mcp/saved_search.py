@@ -11,7 +11,7 @@ PROVIDER_NAME = "Logging Analytics"
 PROVIDER_VERSION = "3.0.0"
 
 # OCI Management Dashboard API requires crossService in featuresConfig
-FEATURES_CONFIG = {"crossService": False}
+FEATURES_CONFIG = {"crossService": {}}
 
 
 class SavedSearchService:

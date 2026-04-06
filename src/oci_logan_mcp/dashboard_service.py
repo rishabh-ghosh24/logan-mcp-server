@@ -16,7 +16,7 @@ VALID_VIZ_TYPES = {
 }
 
 # OCI Management Dashboard API requires crossService in featuresConfig
-FEATURES_CONFIG = {"crossService": False}
+FEATURES_CONFIG = {"crossService": {}}
 
 VIZ_TYPE_MAP = {
     "bar": "bar",
