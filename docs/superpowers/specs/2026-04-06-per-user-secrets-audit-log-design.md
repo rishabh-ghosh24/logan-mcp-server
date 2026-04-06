@@ -70,7 +70,7 @@ oci-logan-mcp --user alice.smith --reset-secret
 
 Prompts for a new secret, overwrites the hash file. This is an audit-logged event (`secret_reset`).
 
-**Identity check:** `--reset-secret` verifies that the current OS user (`os.getuid()`) owns the user directory. This prevents Bob from resetting Alice's secret on a shared VM.
+**Identity check:** `--reset-secret` checks that `os.getuid()` matches `os.stat(user_dir).st_uid` — i.e., the calling process's OS user must be the filesystem owner of the user directory. This prevents Bob from resetting Alice's secret on a shared VM. `--reset-secret` also works for initial setup when no hash file exists.
 
 ### Admin Recovery
 
@@ -84,7 +84,7 @@ Next server start treats the user as first-time and prompts for a new secret.
 ### Fail-Closed
 
 - No hash file for user → interactive prompt to set one before server starts
-- If running non-interactively (no TTY) and no hash file exists → server refuses to start with a clear error message
+- If running non-interactively (no TTY) and no hash file exists → server refuses to start with: "No confirmation secret set for user '<user_id>'. Run interactively or use --reset-secret to set one."
 
 ---
 
@@ -111,7 +111,7 @@ One JSON object per line. Fields:
 - `timestamp` — ISO 8601 with timezone
 - `user` — user_id from `--user` flag
 - `pid` — server process ID (correlates multi-step flows from the same session)
-- `tool` — tool name (e.g., `delete_alert`); omitted for `secret_set`/`secret_reset` events
+- `tool` — tool name (e.g., `delete_alert`); set to `__secret_management` for `secret_set`/`secret_reset` events
 - `args` — full tool arguments (excluding `confirmation_token` and `confirmation_secret`)
 - `outcome` — one of the events above
 - `result_summary` — human-readable summary of what happened (on `executed` and `execution_failed` events)
@@ -168,15 +168,15 @@ Example lines:
 ~/.oci-logan-mcp/
 ├── users/
 │   ├── alice.smith/
-│   │   ├── confirmation_secret.hash    ← NEW (salted SHA-256, YAML)
+│   │   ├── confirmation_secret.hash    ← NEW (salted scrypt, YAML) (salted scrypt, YAML)
 │   │   ├── learned_queries.yaml
 │   │   └── preferences.yaml
 │   └── bob.jones/
-│       ├── confirmation_secret.hash    ← NEW
+│       ├── confirmation_secret.hash    ← NEW (salted scrypt, YAML)
 │       └── ...
 ├── logs/
 │   ├── queries.log                     (existing)
-│   └── audit.log                       ← NEW (shared JSON lines)
+│   └── audit.log                       ← NEW (salted scrypt, YAML) (shared JSON lines)
 └── config.yaml
 ```
 
@@ -188,16 +188,21 @@ Example lines:
 
 ```python
 class SecretStore:
-    def __init__(self, user_dir: Path) -> None: ...
+    def __init__(self, secret_path: Path) -> None: ...
     def has_secret(self) -> bool: ...
     def set_secret(self, plaintext: str) -> None: ...
     def verify_secret(self, plaintext: str) -> bool: ...
-    def delete_secret(self) -> None: ...
+```
+
+Initialized by `server.py` with path derived from `UserStore`:
+```python
+secret_path = base_dir / "users" / user_store.user_id / "confirmation_secret.hash"
+secret_store = SecretStore(secret_path)
 ```
 
 - `has_secret()` — checks if hash file exists and is readable
 - `set_secret(plaintext)` — validates minimum 8 chars, generates random 32-byte salt, hashes with `hashlib.scrypt(n=16384, r=8, p=1)`, writes YAML with `0600` permissions
-- `verify_secret(plaintext)` — reads salt+params from file, hashes provided plaintext, compares with `hmac.compare_digest`
+- `verify_secret(plaintext)` — reads salt+params from file (uses stored `n`, `r`, `p` — not hardcoded defaults, for forward compatibility), hashes provided plaintext, compares with `hmac.compare_digest`
 
 Admin recovery is done by deleting the hash file directly (`rm`), not via a code path.
 
@@ -214,7 +219,7 @@ class AuditLogger:
 - Appends one JSON line per call with `timestamp`, `user`, `pid`, `tool`, `args`, `outcome`
 - File-level locking via `locked_file()` pattern from `file_lock.py`
 - Strips `confirmation_token` and `confirmation_secret` from args before writing
-- Manual log rotation: 10MB max, 5 backups
+- Manual log rotation: `AuditLogger.log()` checks file size before each write; if >= 10MB, rotates under the file lock (rename `audit.log` → `audit.log.1`, shift existing backups up, max 5). Rotation is atomic under the lock — no entries lost.
 
 ### ConfirmationManager (updated)
 
@@ -242,12 +247,30 @@ class ConfirmationManager:
 
 ---
 
+## Migration from v1 (env var secret)
+
+Existing deployments may have `OCI_LA_CONFIRMATION_SECRET` set. On upgrade:
+
+- The env var is **ignored** — it has no effect. No migration of the old secret value.
+- If the env var is still set, the server logs a deprecation warning: "OCI_LA_CONFIRMATION_SECRET is no longer used. Per-user secrets are now stored in the user directory."
+- Each user is prompted to set their own secret on their next server start (first-run flow).
+
+This is a clean break — simpler and more secure than trying to migrate a shared secret into per-user hashes.
+
+---
+
+## Conventions
+
+- All audit log timestamps are **UTC** (ISO 8601 with `Z` suffix), regardless of user's `TZ` setting.
+
+---
+
 ## Error Handling
 
 | Scenario | Behavior |
 |----------|----------|
 | No hash file, interactive TTY | Prompt user to set secret |
-| No hash file, no TTY | Refuse to start, print error: "Run with --reset-secret to set a confirmation secret" |
+| No hash file, no TTY | Refuse to start: "No confirmation secret set for user '<user_id>'. Run interactively or use --reset-secret to set one." |
 | Hash file corrupted/unreadable | Refuse to start, print error suggesting --reset-secret |
 | --reset-secret with existing secret | Prompt for new secret, overwrite, audit-log the reset |
 | Concurrent writes to audit.log | File-level locking ensures one writer at a time |
