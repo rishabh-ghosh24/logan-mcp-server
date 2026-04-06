@@ -5,18 +5,26 @@ import time
 import pytest
 
 from oci_logan_mcp.confirmation import ConfirmationManager, GUARDED_TOOLS
+from oci_logan_mcp.secret_store import SecretStore
 
 
 class TestConfirmationManager:
     """Unit tests for ConfirmationManager."""
 
     @pytest.fixture
-    def manager(self):
-        return ConfirmationManager(secret="test-secret", token_expiry_seconds=300)
+    def secret_store(self, tmp_path):
+        store = SecretStore(tmp_path / "confirmation_secret.hash")
+        store.set_secret("test-secret")
+        return store
 
     @pytest.fixture
-    def manager_no_secret(self):
-        return ConfirmationManager(secret="", token_expiry_seconds=300)
+    def manager(self, secret_store):
+        return ConfirmationManager(secret_store=secret_store, token_expiry_seconds=300)
+
+    @pytest.fixture
+    def manager_no_secret(self, tmp_path):
+        store = SecretStore(tmp_path / "no_secret.hash")  # no set_secret called
+        return ConfirmationManager(secret_store=store, token_expiry_seconds=300)
 
     def test_is_guarded(self, manager):
         """All 6 guarded tools are recognized."""
@@ -114,15 +122,17 @@ class TestConfirmationManager:
             is False
         )
 
-    def test_token_expires(self):
-        manager = ConfirmationManager(secret="s", token_expiry_seconds=1)
+    def test_token_expires(self, tmp_path):
+        store = SecretStore(tmp_path / "expire_test.hash")
+        store.set_secret("test-secret")
+        manager = ConfirmationManager(secret_store=store, token_expiry_seconds=1)
         args = {"alert_id": "a"}
         token = manager.request_confirmation("delete_alert", args)[
             "confirmation_token"
         ]
         time.sleep(1.1)
         assert (
-            manager.validate_confirmation(token, "s", "delete_alert", args) is False
+            manager.validate_confirmation(token, "test-secret", "delete_alert", args) is False
         )
 
     def test_bogus_token_rejected(self, manager):
@@ -131,8 +141,10 @@ class TestConfirmationManager:
             is False
         )
 
-    def test_cleanup_expired(self):
-        manager = ConfirmationManager(secret="s", token_expiry_seconds=1)
+    def test_cleanup_expired(self, tmp_path):
+        store = SecretStore(tmp_path / "cleanup_test.hash")
+        store.set_secret("test-secret")
+        manager = ConfirmationManager(secret_store=store, token_expiry_seconds=1)
         for _ in range(5):
             manager.request_confirmation("delete_alert", {"alert_id": "a"})
         time.sleep(1.1)

@@ -2,18 +2,19 @@
 """Two-factor confirmation for destructive MCP tool operations.
 
 Prevents accidental or automated delete/update of OCI resources by requiring
-a server-generated request-bound token AND an env-only secret.
+a server-generated request-bound token AND a per-user hashed secret.
 
 Fail-closed: if no secret is configured, guarded tools refuse to execute.
 """
 
 import hashlib
-import hmac
 import json
 import logging
 import secrets
 import time
 from typing import Any, Dict
+
+from .secret_store import SecretStore
 
 logger = logging.getLogger(__name__)
 
@@ -40,13 +41,13 @@ class ConfirmationManager:
     """Manages two-factor confirmation tokens for destructive operations.
 
     Factor 1: Server-generated single-use token bound to exact tool+args.
-    Factor 2: Env-only secret (OCI_LA_CONFIRMATION_SECRET), never in tool responses.
+    Factor 2: Per-user secret verified via SecretStore.
 
     Tokens are consumed on any validation attempt (success or failure).
     """
 
-    def __init__(self, secret: str = "", token_expiry_seconds: int = 300):
-        self._secret = secret
+    def __init__(self, secret_store: SecretStore, token_expiry_seconds: int = 300):
+        self._secret_store = secret_store
         self._token_expiry_seconds = token_expiry_seconds
         self._pending: Dict[str, Dict[str, Any]] = {}
 
@@ -56,7 +57,7 @@ class ConfirmationManager:
 
     def is_available(self) -> bool:
         """Return True if the confirmation secret is configured."""
-        return bool(self._secret)
+        return self._secret_store.has_secret()
 
     def request_confirmation(
         self, tool_name: str, arguments: Dict[str, Any]
@@ -87,7 +88,7 @@ class ConfirmationManager:
             "instructions": (
                 "To proceed, re-invoke this tool with the same arguments plus:\n"
                 "  - confirmation_token: the token above\n"
-                "  - confirmation_secret: your OCI_LA_CONFIRMATION_SECRET value"
+                "  - confirmation_secret: your confirmation secret"
             ),
         }
 
@@ -111,7 +112,7 @@ class ConfirmationManager:
             logger.warning("Confirmation rejected: token expired")
             return False
 
-        if not hmac.compare_digest(secret, self._secret):
+        if not self._secret_store.verify_secret(secret):
             logger.warning("Confirmation rejected: wrong secret")
             return False
 
