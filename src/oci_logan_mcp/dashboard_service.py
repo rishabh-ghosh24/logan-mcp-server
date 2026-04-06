@@ -56,13 +56,13 @@ SS_PARAMS_CONFIG = [
 # (from oracle-quickstart/oci-o11y-solutions IAM Domain Audit dashboard)
 DASH_PARAMS_CONFIG = [
     {"name": "log-analytics-loggroup-filter", "displayName": "Log Group Compartment",
-     "savedSearchId": "OOBSS-management-dashboard-filter-4a", "width": 4,
+     "savedSearchId": "OOBSS-management-dashboard-filter-4a", "state": "DEFAULT", "width": 4,
      "localStorageKey": "log-analytics-loggroup-filter"},
     {"name": "log-analytics-entity-filter", "displayName": "Entity",
-     "savedSearchId": "OOBSS-management-dashboard-filter-2a", "width": 6,
+     "savedSearchId": "OOBSS-management-dashboard-filter-2a", "state": "DEFAULT", "width": 6,
      "localStorageKey": "log-analytics-entity-filter"},
     {"name": "regionFilter", "displayName": "Region",
-     "savedSearchId": "OOBSS-management-dashboard-region-filter", "width": 2,
+     "savedSearchId": "OOBSS-management-dashboard-region-filter", "state": "DEFAULT", "width": 2,
      "localStorageKey": "regionFilter"},
     {"name": "time", "src": "$(context.time)"},
 ]
