@@ -15,21 +15,82 @@ VALID_VIZ_TYPES = {
     "tile", "area", "treemap", "heatmap", "histogram",
 }
 
-# OCI Management Dashboard API requires crossService in featuresConfig
-FEATURES_CONFIG = {"crossService": {"shared": True}, "dependencies": []}
+# Matches working pg_dashboard_builder.py payload
+FEATURES_CONFIG = {"crossService": {"shared": True}}
 
 VIZ_TYPE_MAP = {
     "bar": "bar",
     "vertical_bar": "vertical_bar",
     "line": "line",
     "pie": "donut",
-    "table": "table",
+    "table": "summary_table",
     "tile": "tile",
     "area": "area",
     "treemap": "treemap",
     "heatmap": "heatmap",
-    "histogram": "histogram",
+    "histogram": "records_histogram",
 }
+
+# Standard LA parameters config for dashboard filters
+PARAMS_CONFIG = [
+    {"name": "log-analytics-log-group-compartment", "displayName": "Log Group Compartment",
+     "required": True, "defaultFilterIds": ["OOBSS-management-dashboard-filter-4a"],
+     "editUi": {"inputType": "savedSearch", "filterTile": {"filterId": "OOBSS-management-dashboard-filter-4a"}},
+     "valueFormat": {"type": "object"}},
+    {"name": "log-analytics-entity", "displayName": "Entity",
+     "required": True, "defaultFilterIds": ["OOBSS-management-dashboard-filter-2a"],
+     "editUi": {"inputType": "savedSearch", "filterTile": {"filterId": "OOBSS-management-dashboard-filter-2a"}},
+     "valueFormat": {"type": "object"}},
+    {"name": "log-analytics-log-set", "displayName": "Log Set",
+     "required": True, "hidden": "$(window.logSetNotEnabled)",
+     "defaultFilterIds": ["OOBSS-management-dashboard-filter-3a"],
+     "editUi": {"inputType": "savedSearch", "filterTile": {"filterId": "OOBSS-management-dashboard-filter-3a"}},
+     "valueFormat": {"type": "object"}},
+    {"name": "log-analytics-region", "displayName": "Region",
+     "required": False, "defaultFilterIds": ["OOBSS-management-dashboard-region-filter"],
+     "editUi": {"inputType": "savedSearch", "filterTile": {"filterId": "OOBSS-management-dashboard-region-filter"}},
+     "valueFormat": {"type": "array"}},
+    {"name": "time", "displayName": "$(bundle.globalSavedSearch.TIME)", "required": True, "hidden": True},
+    {"name": "flex"},
+]
+
+
+def _build_scope_filters(compartment_id: str, tenancy_id: str, region: str = "us-ashburn-1") -> dict:
+    """Build scope filters matching the working pg_dashboard_builder pattern."""
+    region_label = "US East (Ashburn)" if region == "us-ashburn-1" else region
+    base = [
+        {"type": "LogGroup", "flags": {"IncludeSubCompartments": True},
+         "values": [{"value": tenancy_id, "label": "root"}]},
+        {"type": "MetricCompartment", "flags": {}, "values": []},
+        {"type": "Entity", "flags": {"IncludeDependents": True, "ScopeCompartmentId": compartment_id}, "values": []},
+        {"type": "LogSet", "flags": {}, "values": []},
+        {"type": "ResourceCompartment", "flags": {"IncludeSubCompartments": True},
+         "values": [{"value": tenancy_id, "label": "root"}]},
+        {"type": "Region", "flags": {}, "values": [{"value": region, "label": region_label}]},
+    ]
+    result = {"filters": base, "isGlobal": False}
+    for f in base:
+        result[f["type"]] = f
+    return result
+
+
+def _build_ui_config(query: str, viz_type: str, scope_filters: dict) -> dict:
+    """Build uiConfig matching the working pg_dashboard_builder pattern."""
+    return {
+        "timeSelection": {"timePeriod": "l7d"},
+        "showTitle": True,
+        "visualizationType": viz_type,
+        "visualizationOptions": {
+            "customVizOpt": {
+                "primaryFieldIname": "mbody",
+                "primaryFieldDname": "Original Log Content",
+            }
+        },
+        "queryString": query,
+        "scopeFilters": scope_filters,
+        "vizType": "lxSavedSearchWidgetType",
+        "enableWidgetInApp": True,
+    }
 
 
 class DashboardService:
@@ -60,6 +121,9 @@ class DashboardService:
                 )
 
         cid = compartment_id or self.oci_client.compartment_id
+        tenancy_id = self.oci_client.tenancy_id
+        scope_filters = _build_scope_filters(cid, tenancy_id)
+
         group_id = str(uuid4())
         base_tags = {"logan_managed": "true", "logan_group_id": group_id,
                      "logan_kind": "dashboard_saved_search"}
@@ -68,6 +132,7 @@ class DashboardService:
 
         try:
             for i, tile in enumerate(tiles):
+                viz = VIZ_TYPE_MAP.get(tile["visualization_type"], tile["visualization_type"])
                 mss_details = oci.management_dashboard.models.CreateManagementSavedSearchDetails(
                     display_name=tile["title"],
                     description=tile.get("description", tile["title"]),
@@ -79,14 +144,12 @@ class DashboardService:
                     provider_version="3.0.0",
                     metadata_version="2.0",
                     nls={},
-                    data_config=[{"query": tile["query"]}],
-                    ui_config={"visualizationType": VIZ_TYPE_MAP.get(
-                        tile["visualization_type"], tile["visualization_type"]
-                    )},
-                    screen_image="to-do",
+                    data_config=[],
+                    ui_config=_build_ui_config(tile["query"], viz, scope_filters),
+                    screen_image=" ",
                     widget_template="visualizations/chartWidgetTemplate.html",
-                    widget_vm="visualizations/chartWidget",
-                    parameters_config=[],
+                    widget_vm="jet-modules/dashboards/widgets/lxSavedSearchWidget",
+                    parameters_config=PARAMS_CONFIG,
                     drilldown_config=[],
                     features_config=FEATURES_CONFIG,
                     freeform_tags=base_tags,
@@ -105,6 +168,7 @@ class DashboardService:
                         height=tile.get("height", pos["height"]),
                         width=tile.get("width", pos["width"]),
                         nls={},
+                        ui_config={},
                         data_config=[],
                         state="DEFAULT",
                         drilldown_config=[],
@@ -117,15 +181,21 @@ class DashboardService:
                 description=description or "",
                 compartment_id=cid,
                 is_oob_dashboard=False,
+                is_show_in_home=False,
+                type="NORMAL",
                 provider_id="log-analytics",
                 provider_name="Logging Analytics",
                 provider_version="3.0.0",
                 metadata_version="2.0",
                 tiles=tile_details,
+                saved_searches=created_search_ids,
                 nls={},
-                parameters_config=[],
+                ui_config={"isFilteringEnabled": True, "isRefreshEnabled": True,
+                           "isTimeFilterEnabled": True, "timeSelection": {"timePeriod": "l7d"}},
+                data_config=[],
+                screen_image=" ",
+                parameters_config=PARAMS_CONFIG,
                 drilldown_config=[],
-                is_show_in_home=False,
                 features_config=FEATURES_CONFIG,
             )
             dashboard = await self.oci_client.create_management_dashboard(dash_details)
@@ -171,6 +241,9 @@ class DashboardService:
             raise ValueError("Dashboard already has 20 tiles (maximum). Remove a tile before adding.")
 
         cid = dashboard.get("compartment_id") or self.oci_client.compartment_id
+        tenancy_id = self.oci_client.tenancy_id
+        scope_filters = _build_scope_filters(cid, tenancy_id)
+        viz = VIZ_TYPE_MAP.get(visualization_type, visualization_type)
 
         new_search_id = None
         try:
@@ -185,12 +258,12 @@ class DashboardService:
                 provider_version="3.0.0",
                 metadata_version="2.0",
                 nls={},
-                data_config=[{"query": query}],
-                ui_config={"visualizationType": VIZ_TYPE_MAP.get(visualization_type, visualization_type)},
-                screen_image="to-do",
+                data_config=[],
+                ui_config=_build_ui_config(query, viz, scope_filters),
+                screen_image=" ",
                 widget_template="visualizations/chartWidgetTemplate.html",
-                widget_vm="visualizations/chartWidget",
-                parameters_config=[],
+                widget_vm="jet-modules/dashboards/widgets/lxSavedSearchWidget",
+                parameters_config=PARAMS_CONFIG,
                 drilldown_config=[],
                 features_config=FEATURES_CONFIG,
                 freeform_tags={"logan_managed": "true",
@@ -212,6 +285,7 @@ class DashboardService:
                 height=height or 4,
                 width=width or 12,
                 nls={},
+                ui_config={},
                 data_config=[],
                 state="DEFAULT",
                 drilldown_config=[],
@@ -228,6 +302,7 @@ class DashboardService:
                     height=t.get("height", 4),
                     width=t.get("width", 12),
                     nls={},
+                    ui_config={},
                     data_config=[],
                     state="DEFAULT",
                     drilldown_config=[],
@@ -245,7 +320,7 @@ class DashboardService:
                 provider_version="3.0.0",
                 metadata_version="2.0",
                 nls={},
-                parameters_config=[],
+                parameters_config=PARAMS_CONFIG,
                 drilldown_config=[],
                 features_config=FEATURES_CONFIG,
             )

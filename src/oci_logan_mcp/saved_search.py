@@ -11,7 +11,7 @@ PROVIDER_NAME = "Logging Analytics"
 PROVIDER_VERSION = "3.0.0"
 
 # OCI Management Dashboard API requires crossService in featuresConfig
-FEATURES_CONFIG = {"crossService": {"shared": True}, "dependencies": []}
+FEATURES_CONFIG = {"crossService": {"shared": True}}
 
 
 class SavedSearchService:
@@ -95,10 +95,10 @@ class SavedSearchService:
             provider_version=PROVIDER_VERSION,
             metadata_version="2.0",
             nls={},
-            data_config=[{"query": query}],
-            screen_image="to-do",
+            data_config=[],
+            screen_image=" ",
             widget_template="visualizations/chartWidgetTemplate.html",
-            widget_vm="visualizations/chartWidget",
+            widget_vm="jet-modules/dashboards/widgets/lxSavedSearchWidget",
             parameters_config=[],
             drilldown_config=[],
             features_config=FEATURES_CONFIG,

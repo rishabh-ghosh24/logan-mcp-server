@@ -107,6 +107,14 @@ class OCILogAnalyticsClient:
         self._namespace = value
 
     @property
+    def tenancy_id(self) -> str:
+        """Get tenancy ID from config or signer."""
+        tid = self._config.get("tenancy", "")
+        if not tid and hasattr(self._signer, "tenancy_id"):
+            tid = self._signer.tenancy_id
+        return tid or ""
+
+    @property
     def compartment_id(self) -> str:
         """Get current compartment ID."""
         return self._compartment_id
