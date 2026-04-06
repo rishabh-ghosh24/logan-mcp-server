@@ -69,6 +69,7 @@ class AlarmService:
         try:
             mss_details = oci.management_dashboard.models.CreateManagementSavedSearchDetails(
                 display_name=f"logan-alert-{display_name}",
+                description=f"Backing saved search for alert: {display_name}",
                 compartment_id=cid,
                 type="SEARCH_DONT_SHOW_IN_DASHBOARD",
                 provider_id="log-analytics",

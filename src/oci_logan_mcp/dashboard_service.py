@@ -70,6 +70,7 @@ class DashboardService:
             for i, tile in enumerate(tiles):
                 mss_details = oci.management_dashboard.models.CreateManagementSavedSearchDetails(
                     display_name=tile["title"],
+                    description=tile.get("description", tile["title"]),
                     compartment_id=cid,
                     type="WIDGET_SHOW_IN_DASHBOARD",
                     provider_id="log-analytics",
@@ -174,6 +175,7 @@ class DashboardService:
         try:
             mss_details = oci.management_dashboard.models.CreateManagementSavedSearchDetails(
                 display_name=title,
+                description=title,
                 compartment_id=cid,
                 type="WIDGET_SHOW_IN_DASHBOARD",
                 provider_id="log-analytics",
