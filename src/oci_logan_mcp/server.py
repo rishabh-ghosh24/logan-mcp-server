@@ -35,11 +35,32 @@ from .tools import get_tools
 from .resources import get_resources
 from .handlers import MCPHandlers
 
-# Configure logging
+# Configure logging with secret redaction
+class _SecretRedactFilter(logging.Filter):
+    """Redact confirmation_secret values from all log output."""
+    def filter(self, record: logging.LogRecord) -> bool:
+        if hasattr(record, "msg") and isinstance(record.msg, str):
+            # Redact JSON-style "confirmation_secret": "value"
+            import re
+            record.msg = re.sub(
+                r'("confirmation_secret"\s*:\s*)"[^"]*"',
+                r'\1"<REDACTED>"',
+                record.msg,
+            )
+            # Redact key=value style confirmation_secret=value
+            record.msg = re.sub(
+                r'confirmation_secret=[^\s,}]+',
+                'confirmation_secret=<REDACTED>',
+                record.msg,
+            )
+        return True
+
 logging.basicConfig(
     level=logging.INFO,
     format="%(asctime)s - %(name)s - %(levelname)s - %(message)s",
 )
+# Apply redaction filter to root logger so it covers all libraries (including mcp)
+logging.getLogger().addFilter(_SecretRedactFilter())
 logger = logging.getLogger(__name__)
 
 # Timeout for background schema refresh (seconds)
