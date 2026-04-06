@@ -31,27 +31,30 @@ VIZ_TYPE_MAP = {
     "histogram": "records_histogram",
 }
 
-# Standard LA parameters config for dashboard filters
-PARAMS_CONFIG = [
-    {"name": "log-analytics-log-group-compartment", "displayName": "Log Group Compartment",
-     "required": True, "defaultFilterIds": ["OOBSS-management-dashboard-filter-4a"],
-     "editUi": {"inputType": "savedSearch", "filterTile": {"filterId": "OOBSS-management-dashboard-filter-4a"}},
-     "valueFormat": {"type": "object"}},
-    {"name": "log-analytics-entity", "displayName": "Entity",
-     "required": True, "defaultFilterIds": ["OOBSS-management-dashboard-filter-2a"],
-     "editUi": {"inputType": "savedSearch", "filterTile": {"filterId": "OOBSS-management-dashboard-filter-2a"}},
-     "valueFormat": {"type": "object"}},
-    {"name": "log-analytics-log-set", "displayName": "Log Set",
-     "required": True, "hidden": "$(window.logSetNotEnabled)",
-     "defaultFilterIds": ["OOBSS-management-dashboard-filter-3a"],
-     "editUi": {"inputType": "savedSearch", "filterTile": {"filterId": "OOBSS-management-dashboard-filter-3a"}},
-     "valueFormat": {"type": "object"}},
-    {"name": "log-analytics-region", "displayName": "Region",
-     "required": False, "defaultFilterIds": ["OOBSS-management-dashboard-region-filter"],
-     "editUi": {"inputType": "savedSearch", "filterTile": {"filterId": "OOBSS-management-dashboard-region-filter"}},
-     "valueFormat": {"type": "array"}},
-    {"name": "time", "displayName": "$(bundle.globalSavedSearch.TIME)", "required": True, "hidden": True},
-    {"name": "flex"},
+# Saved search parameters config — references generic OOBSS filters
+# (from https://karthicin.medium.com/oci-management-dashboard-automation-ea4f45cac24b)
+SS_PARAMS_CONFIG = [
+    {"name": "time", "displayName": "Time", "required": True,
+     "defaultFilterIds": ["OOBSS-management-dashboard-time-selector-filter"],
+     "editUi": {"inputType": "savedSearch",
+                "filterTile": {"filterId": "OOBSS-management-dashboard-time-selector-filter"}}},
+    {"name": "compartmentId", "displayName": "Compartment", "required": True,
+     "defaultFilterIds": ["OOBSS-management-dashboard-compartment-filter"],
+     "editUi": {"inputType": "compartmentSelect"}},
+    {"name": "regionName", "displayName": "Region", "required": False,
+     "defaultFilterIds": ["OOBSS-management-dashboard-region-filter"],
+     "editUi": {"inputType": "savedSearch",
+                "filterTile": {"filterId": "OOBSS-management-dashboard-region-filter"}}},
+]
+
+# Dashboard-level parameters config — tile references for the filter bar
+DASH_PARAMS_CONFIG = [
+    {"displayName": "Compartment", "localStorageKey": "compartmentId", "name": "compartmentId",
+     "parametersMap": {"isActiveCompartment": "true", "isStoreInLocalStorage": False},
+     "savedSearchId": "OOBSS-management-dashboard-compartment-filter", "state": "DEFAULT"},
+    {"savedSearchId": "OOBSS-management-dashboard-region-filter", "width": 2, "state": "DEFAULT",
+     "parametersMap": {"isStoreInLocalStorage": True}, "name": "regionFilter", "localStorageKey": "regionFilter"},
+    {"displayName": "$(bundle.globalSavedSearch.TIME)", "name": "time", "src": "$(context.time)"},
 ]
 
 
@@ -167,7 +170,7 @@ class DashboardService:
                     screen_image=" ",
                     widget_template="visualizations/chartWidgetTemplate.html",
                     widget_vm="jet-modules/dashboards/widgets/lxSavedSearchWidget",
-                    parameters_config=PARAMS_CONFIG,
+                    parameters_config=SS_PARAMS_CONFIG,
                     drilldown_config=[],
                     features_config=FEATURES_CONFIG,
                     freeform_tags=base_tags,
@@ -213,7 +216,7 @@ class DashboardService:
                            "isTimeFilterEnabled": True, "timeSelection": {"timePeriod": "l7d"}},
                 data_config=[],
                 screen_image=" ",
-                parameters_config=PARAMS_CONFIG,
+                parameters_config=DASH_PARAMS_CONFIG,
                 drilldown_config=[],
                 features_config=FEATURES_CONFIG,
                 freeform_tags={"logan_managed": "true", "logan_group_id": group_id,
@@ -285,7 +288,7 @@ class DashboardService:
                 screen_image=" ",
                 widget_template="visualizations/chartWidgetTemplate.html",
                 widget_vm="jet-modules/dashboards/widgets/lxSavedSearchWidget",
-                parameters_config=PARAMS_CONFIG,
+                parameters_config=SS_PARAMS_CONFIG,
                 drilldown_config=[],
                 features_config=FEATURES_CONFIG,
                 freeform_tags={"logan_managed": "true",
@@ -342,7 +345,7 @@ class DashboardService:
                 provider_version="3.0.0",
                 metadata_version="2.0",
                 nls={},
-                parameters_config=PARAMS_CONFIG,
+                parameters_config=DASH_PARAMS_CONFIG,
                 drilldown_config=[],
                 features_config=FEATURES_CONFIG,
             )
