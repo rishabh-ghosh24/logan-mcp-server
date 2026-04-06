@@ -940,10 +940,18 @@ def _reset_secret(user_id: str) -> None:
     from .secret_store import SecretStore
     from .audit import AuditLogger
 
+    if not sys.stdin.isatty():
+        print("Error: --reset-secret requires an interactive terminal.",
+              file=sys.stderr)
+        sys.exit(1)
+
     base_dir = CONFIG_PATH.parent
     user_dir = base_dir / "users" / user_id
 
-    # Identity check: OS user must own the user directory
+    # Identity check: OS user must own the user directory.
+    # If the directory doesn't exist yet, the calling OS user will become
+    # the owner when it's created — this is the expected first-run flow
+    # where the legitimate user sets up their own identity.
     if user_dir.exists():
         dir_owner = os.stat(user_dir).st_uid
         if dir_owner != os.getuid():
