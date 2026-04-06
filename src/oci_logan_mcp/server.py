@@ -29,6 +29,8 @@ from .query_logger import QueryLogger
 from .context_manager import ContextManager
 from .user_store import UserStore
 from .preferences import PreferenceStore
+from .secret_store import SecretStore
+from .audit import AuditLogger
 from .tools import get_tools
 from .resources import get_resources
 from .handlers import MCPHandlers
@@ -189,6 +191,61 @@ class OCILogAnalyticsMCPServer:
         )
         logger.info(f"User identity: {self.user_store.user_id}")
 
+        # Initialize per-user secret store
+        secret_path = base_dir / "users" / self.user_store.user_id / "confirmation_secret.hash"
+        self.secret_store = SecretStore(secret_path)
+
+        # Initialize shared audit logger
+        self.audit_logger = AuditLogger(log_dir=base_dir / "logs")
+
+        # Deprecation warning for old env var
+        if os.environ.get("OCI_LA_CONFIRMATION_SECRET"):
+            logger.warning(
+                "OCI_LA_CONFIRMATION_SECRET is no longer used. "
+                "Per-user secrets are now stored in the user directory."
+            )
+
+        # Check for corrupted secret file
+        if self.secret_store.has_secret() and not self.secret_store.is_valid():
+            logger.error(
+                "Confirmation secret file for user '%s' is corrupted. "
+                "Run with --reset-secret to set a new one.",
+                self.user_store.user_id,
+            )
+            sys.exit(1)
+
+        # First-run: prompt user to set confirmation secret
+        if not self.secret_store.has_secret():
+            import sys as _sys
+            if _sys.stdin.isatty():
+                import getpass
+                print(f"\nNo confirmation secret found for user '{self.user_store.user_id}'.")
+                print("Destructive operations (delete/update) require a secret for safety.")
+                while True:
+                    secret = getpass.getpass("Enter your confirmation secret: ")
+                    confirm = getpass.getpass("Confirm: ")
+                    if secret != confirm:
+                        print("Secrets do not match. Try again.")
+                        continue
+                    try:
+                        self.secret_store.set_secret(secret)
+                        print("Secret saved. You'll need this to confirm destructive operations.\n")
+                        self.audit_logger.log(
+                            user=self.user_store.user_id,
+                            tool="__secret_management",
+                            args={}, outcome="secret_set",
+                        )
+                        break
+                    except ValueError as e:
+                        print(f"Error: {e}. Try again.")
+            else:
+                logger.error(
+                    "No confirmation secret set for user '%s'. "
+                    "Run interactively or use --reset-secret to set one.",
+                    self.user_store.user_id,
+                )
+                sys.exit(1)
+
         # Initialize handlers
         if self.oci_client:
             self.handlers = MCPHandlers(
@@ -199,6 +256,8 @@ class OCILogAnalyticsMCPServer:
                 context_manager=self.context_manager,
                 user_store=self.user_store,
                 preference_store=self.preference_store,
+                secret_store=self.secret_store,
+                audit_logger=self.audit_logger,
             )
 
         logger.info("OCI Log Analytics MCP Server initialized")

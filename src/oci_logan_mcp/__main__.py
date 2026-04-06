@@ -40,6 +40,11 @@ def main():
         default=None,
         help="User identity for per-user learning (default: $LOGAN_USER or $USER)",
     )
+    parser.add_argument(
+        "--reset-secret",
+        action="store_true",
+        help="Reset your confirmation secret for destructive operations",
+    )
     args = parser.parse_args()
 
     # Reject invalid flag combinations
@@ -49,6 +54,16 @@ def main():
         parser.error("--user is not used in promote mode")
     if args.base_dir and not args.promote_and_exit:
         parser.error("--base-dir only applies with --promote-and-exit")
+    if args.reset_secret and not args.user:
+        parser.error("--reset-secret requires --user")
+    if args.reset_secret and (args.setup or args.promote_and_exit):
+        parser.error("--reset-secret cannot be combined with --setup or --promote-and-exit")
+
+    if args.reset_secret:
+        if args.user:
+            os.environ["LOGAN_USER"] = args.user
+        _reset_secret(args.user)
+        sys.exit(0)
 
     if args.setup:
         run_setup_wizard()
@@ -59,6 +74,49 @@ def main():
         if args.user:
             os.environ["LOGAN_USER"] = args.user
         server_main()
+
+
+def _reset_secret(user_id: str) -> None:
+    """Reset confirmation secret for a user with identity verification."""
+    import getpass
+    from .config import CONFIG_PATH
+    from .secret_store import SecretStore
+    from .audit import AuditLogger
+
+    if not sys.stdin.isatty():
+        print("Error: --reset-secret requires an interactive terminal.",
+              file=sys.stderr)
+        sys.exit(1)
+
+    base_dir = CONFIG_PATH.parent
+    user_dir = base_dir / "users" / user_id
+
+    # Identity check: OS user must own the user directory
+    if user_dir.exists():
+        dir_owner = os.stat(user_dir).st_uid
+        if dir_owner != os.getuid():
+            print(f"Error: You do not own the directory for user '{user_id}'.",
+                  file=sys.stderr)
+            sys.exit(1)
+
+    secret_path = user_dir / "confirmation_secret.hash"
+    store = SecretStore(secret_path)
+
+    while True:
+        secret = getpass.getpass("Enter new confirmation secret: ")
+        confirm = getpass.getpass("Confirm: ")
+        if secret != confirm:
+            print("Secrets do not match. Try again.")
+            continue
+        try:
+            store.set_secret(secret)
+            print("Secret reset successfully.")
+            audit = AuditLogger(base_dir / "logs")
+            audit.log(user=user_id, tool="__secret_management",
+                      args={}, outcome="secret_reset")
+            return
+        except ValueError as e:
+            print(f"Error: {e}. Try again.")
 
 
 def _run_promotion(base_dir: Optional[Path]) -> NoReturn:

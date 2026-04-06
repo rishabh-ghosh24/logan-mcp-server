@@ -101,7 +101,6 @@ class Settings:
     logging: LoggingConfig = field(default_factory=LoggingConfig)
     guardrails: GuardrailsConfig = field(default_factory=GuardrailsConfig)
     notifications: NotificationsConfig = field(default_factory=NotificationsConfig)
-    confirmation_secret: str = ""
 
     def to_dict(self) -> dict:
         """Convert settings to dictionary for serialization."""
@@ -287,9 +286,6 @@ def _apply_env_overrides(settings: Settings) -> Settings:
         settings.notifications.telegram.bot_token = v
     if v := os.environ.get("TELEGRAM_CHAT_ID"):
         settings.notifications.telegram.default_chat_id = v
-
-    if v := os.environ.get("OCI_LA_CONFIRMATION_SECRET"):
-        settings.confirmation_secret = v
 
     return settings
 
