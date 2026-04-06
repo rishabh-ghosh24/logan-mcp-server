@@ -267,20 +267,36 @@ All delete and update operations on OCI resources (alerts, dashboards, saved sea
 
 `create_*` tools are **not** guarded — they are additive and don't affect existing resources.
 
+### Per-User Confirmation Secrets
+
+Each user has their own confirmation secret, set on their first server start. Secrets are:
+
+- **Minimum 8 characters**
+- **Hashed with `hashlib.scrypt`** — the plaintext is never stored
+- **Stored in the user's directory** at `~/.oci-logan-mcp/users/<username>/confirmation_secret.hash`
+
+On first connection (or after `--reset-secret`), the server prompts the user to set their secret interactively. There is no shared env var — `OCI_LA_CONFIRMATION_SECRET` has been removed.
+
+**Forgotten secret?** Use the `--reset-secret` CLI flag to re-enter a new secret:
+
+```bash
+oci-logan-mcp --user firstname.lastname --reset-secret
+```
+
+**Admin recovery:** If `--reset-secret` is unavailable (e.g., non-interactive session), delete the hash file manually and restart:
+
+```bash
+rm ~/.oci-logan-mcp/users/<username>/confirmation_secret.hash
+```
+
+The server will prompt for a new secret on the next start.
+
 ### How It Works
 
 1. **First call** — returns a human-readable summary of the action + a single-use confirmation token
 2. **Second call** — requires the token + your secret to execute
 
-The token is bound to the exact tool and arguments. A token for `delete_alert(id=A)` cannot be used for `delete_alert(id=B)` or any other tool.
-
-### Setup
-
-Set the confirmation secret via environment variable (required — guarded tools are disabled without it):
-
-```bash
-export OCI_LA_CONFIRMATION_SECRET="your-secret-phrase-here"
-```
+The token is bound to the exact tool and resource. A token issued for `delete_alert(id=A)` cannot authorize `delete_alert(id=B)` or any other tool — reusing a token for a different resource is rejected outright.
 
 Optionally configure token expiry in `config.yaml` (default: 300 seconds):
 
@@ -289,12 +305,30 @@ guardrails:
   token_expiry_seconds: 300
 ```
 
+### Audit Log
+
+All guarded tool interactions are logged as JSON-lines to a shared audit log at:
+
+```
+~/.oci-logan-mcp/logs/audit.log
+```
+
+Each entry records:
+
+- **who** — the username (`--user` flag or `LOGAN_USER`)
+- **what** — tool name and arguments
+- **when** — UTC timestamp
+- **outcome** — `confirmed`, `confirmation_failed`, `token_expired`, `confirmation_unavailable`, etc.
+
+This gives administrators a full history of which users attempted or executed destructive operations.
+
 ### Fail-Closed Design
 
-- **No secret configured** → guarded tools return `confirmation_unavailable` and refuse to execute
+- **No secret set** → guarded tools return `confirmation_unavailable` and refuse to execute
 - **Wrong secret** → `confirmation_failed`
 - **Token reuse** → rejected (single-use)
 - **Token expired** → rejected
+- **Resource mismatch** (token for A used on B) → rejected
 - **Arguments changed** → rejected
 
 ## Development
