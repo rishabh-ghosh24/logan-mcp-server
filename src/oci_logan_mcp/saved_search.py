@@ -88,6 +88,7 @@ class SavedSearchService:
             display_name=display_name,
             compartment_id=cid,
             description=description or "",
+            is_oob_saved_search=False,
             type="SEARCH_SHOW_IN_DASHBOARD",
             provider_id=PROVIDER_ID,
             provider_name=PROVIDER_NAME,

@@ -71,6 +71,7 @@ class AlarmService:
                 display_name=f"logan-alert-{display_name}",
                 description=f"Backing saved search for alert: {display_name}",
                 compartment_id=cid,
+                is_oob_saved_search=False,
                 type="SEARCH_DONT_SHOW_IN_DASHBOARD",
                 provider_id="log-analytics",
                 provider_name="Logging Analytics",
