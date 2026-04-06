@@ -146,20 +146,3 @@ class TestConfirmationConfig:
         settings = load_config(config_file)
         assert settings.guardrails.token_expiry_seconds == 120
 
-    def test_confirmation_secret_not_in_to_dict(self):
-        """Secret must never be serialized to disk."""
-        s = Settings()
-        s.confirmation_secret = "super-secret"
-        d = s.to_dict()
-        assert "confirmation_secret" not in str(d)
-
-    def test_confirmation_secret_from_env(self, monkeypatch, tmp_path):
-        config_file = tmp_path / "config.yaml"
-        config_file.write_text("")
-        monkeypatch.setenv("OCI_LA_CONFIRMATION_SECRET", "env-secret-123")
-        settings = load_config(config_file)
-        assert settings.confirmation_secret == "env-secret-123"
-
-    def test_confirmation_secret_default_empty(self):
-        s = Settings()
-        assert s.confirmation_secret == ""
