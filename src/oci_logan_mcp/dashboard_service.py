@@ -188,7 +188,6 @@ class DashboardService:
                 provider_version="3.0.0",
                 metadata_version="2.0",
                 tiles=tile_details,
-                saved_searches=created_search_ids,
                 nls={},
                 ui_config={"isFilteringEnabled": True, "isRefreshEnabled": True,
                            "isTimeFilterEnabled": True, "timeSelection": {"timePeriod": "l7d"}},
