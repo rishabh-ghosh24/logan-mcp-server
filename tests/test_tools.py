@@ -37,3 +37,16 @@ def test_guarded_tools_description_mentions_confirmation():
         assert "TWO-FACTOR CONFIRMATION" in desc, (
             f"{name} description missing TWO-FACTOR CONFIRMATION"
         )
+
+
+def test_setup_confirmation_secret_tool_schema():
+    """First-run secret setup tool is available with both required inputs."""
+    tools = {t["name"]: t for t in get_tools()}
+    setup_tool = tools["setup_confirmation_secret"]
+    props = setup_tool["inputSchema"]["properties"]
+    required = setup_tool["inputSchema"]["required"]
+
+    assert "confirmation_secret" in props
+    assert "confirmation_secret_confirm" in props
+    assert "confirmation_secret" in required
+    assert "confirmation_secret_confirm" in required

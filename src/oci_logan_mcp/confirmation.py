@@ -55,9 +55,17 @@ class ConfirmationManager:
         """Return True if the tool requires confirmation."""
         return tool_name in GUARDED_TOOLS
 
+    def availability_status(self) -> str:
+        """Return confirmation secret state: available, missing, or invalid."""
+        if not self._secret_store.has_secret():
+            return "missing"
+        if not self._secret_store.is_valid():
+            return "invalid"
+        return "available"
+
     def is_available(self) -> bool:
         """Return True if the confirmation secret is configured."""
-        return self._secret_store.has_secret()
+        return self.availability_status() == "available"
 
     def request_confirmation(
         self, tool_name: str, arguments: Dict[str, Any]

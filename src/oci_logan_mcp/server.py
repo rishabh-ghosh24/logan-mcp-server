@@ -40,19 +40,18 @@ class _SecretRedactFilter(logging.Filter):
     """Redact confirmation_secret values from all log output."""
     def filter(self, record: logging.LogRecord) -> bool:
         if hasattr(record, "msg") and isinstance(record.msg, str):
-            # Redact JSON-style "confirmation_secret": "value"
             import re
-            record.msg = re.sub(
-                r'("confirmation_secret"\s*:\s*)"[^"]*"',
-                r'\1"<REDACTED>"',
-                record.msg,
-            )
-            # Redact key=value style confirmation_secret=value
-            record.msg = re.sub(
-                r'confirmation_secret=[^\s,}]+',
-                'confirmation_secret=<REDACTED>',
-                record.msg,
-            )
+            for key in ("confirmation_secret", "confirmation_secret_confirm"):
+                record.msg = re.sub(
+                    rf'("{key}"\s*:\s*)"[^"]*"',
+                    r'\1"<REDACTED>"',
+                    record.msg,
+                )
+                record.msg = re.sub(
+                    rf"{key}=[^\s,}}]+",
+                    f"{key}=<REDACTED>",
+                    record.msg,
+                )
         return True
 
 logging.basicConfig(
@@ -226,17 +225,16 @@ class OCILogAnalyticsMCPServer:
                 "Per-user secrets are now stored in the user directory."
             )
 
-        # Check for corrupted secret file
+        # Interactive CLI users can still set a secret at startup, but MCP/SSH
+        # sessions should continue to start even when no secret exists yet.
         if self.secret_store.has_secret() and not self.secret_store.is_valid():
-            logger.error(
-                "Confirmation secret file for user '%s' is corrupted. "
-                "Run with --reset-secret to set a new one.",
+            logger.warning(
+                "Confirmation secret file for user '%s' is invalid. "
+                "Guarded operations will remain unavailable until the secret is "
+                "recreated with setup_confirmation_secret or --reset-secret.",
                 self.user_store.user_id,
             )
-            sys.exit(1)
-
-        # First-run: prompt user to set confirmation secret
-        if not self.secret_store.has_secret():
+        elif not self.secret_store.has_secret():
             import sys as _sys
             if _sys.stdin.isatty():
                 import getpass
@@ -260,12 +258,13 @@ class OCILogAnalyticsMCPServer:
                     except ValueError as e:
                         print(f"Error: {e}. Try again.")
             else:
-                logger.error(
+                logger.info(
                     "No confirmation secret set for user '%s'. "
-                    "Run interactively or use --reset-secret to set one.",
+                    "Non-guarded tools will work immediately. Use the "
+                    "setup_confirmation_secret tool or --reset-secret before "
+                    "running destructive operations.",
                     self.user_store.user_id,
                 )
-                sys.exit(1)
 
         # Initialize handlers
         if self.oci_client:

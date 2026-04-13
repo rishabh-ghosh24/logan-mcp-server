@@ -107,6 +107,7 @@ class MCPHandlers:
             "find_compartment": self._find_compartment,
             "get_query_examples": self._get_query_examples,
             "get_log_summary": self._get_log_summary,
+            "setup_confirmation_secret": self._setup_confirmation_secret,
             # Memory & context
             "save_learned_query": self._save_learned_query,
             "list_learned_queries": self._list_learned_queries,
@@ -144,20 +145,24 @@ class MCPHandlers:
         if self.confirmation_manager.is_guarded(name):
             clean_args = {
                 k: v for k, v in arguments.items()
-                if k not in ("confirmation_token", "confirmation_secret")
+                if k not in (
+                    "confirmation_token",
+                    "confirmation_secret",
+                    "confirmation_secret_confirm",
+                )
             }
 
             if not self.confirmation_manager.is_available():
+                status = self.confirmation_manager.availability_status()
                 if self.audit_logger:
                     self.audit_logger.log(
                         user=user_id, tool=name, args=clean_args,
                         outcome="confirmation_unavailable",
                     )
-                return [{"type": "text", "text": json.dumps({
-                    "status": "confirmation_unavailable",
-                    "error": "No confirmation secret is set. "
-                             "Run the server interactively to set one.",
-                }, indent=2)}]
+                return [{"type": "text", "text": json.dumps(
+                    self._build_confirmation_unavailable_response(status),
+                    indent=2,
+                )}]
 
             token = arguments.get("confirmation_token")
             secret = arguments.get("confirmation_secret", "")
@@ -213,6 +218,39 @@ class MCPHandlers:
                     outcome="execution_failed", error=str(e),
                 )
             return [{"type": "text", "text": f"Error executing {name}: {str(e)}"}]
+
+    def _build_confirmation_unavailable_response(self, status: str) -> Dict[str, str]:
+        """Return user-facing guidance when confirmation is unavailable."""
+        base = {
+            "status": "confirmation_unavailable",
+            "next_step": (
+                "Call setup_confirmation_secret with confirmation_secret and "
+                "confirmation_secret_confirm to create your safety password."
+            ),
+        }
+        if status == "invalid":
+            return {
+                **base,
+                "error": (
+                    "Your confirmation secret file is invalid, so destructive "
+                    "operations are blocked for safety."
+                ),
+                "message": (
+                    "Recreate it with setup_confirmation_secret, or use "
+                    "--reset-secret if you are recovering from the CLI."
+                ),
+            }
+        return {
+            **base,
+            "error": (
+                "A confirmation secret is required before destructive operations "
+                "like update or delete."
+            ),
+            "message": (
+                "Think of it like a sudo password for safety-sensitive changes. "
+                "Read-only and additive tools will keep working normally."
+            ),
+        }
 
     async def handle_resource_read(self, uri: str) -> Any:
         """Handle resource read requests."""
@@ -814,6 +852,54 @@ class MCPHandlers:
         else:
             top_source = sources[0]['source'] if sources else "N/A"
             return f"Top log source is '{top_source}'. Use list_log_sources to see all available sources."
+
+    async def _setup_confirmation_secret(self, args: Dict) -> List[Dict]:
+        """Create the current user's confirmation secret for guarded operations."""
+        if self.secret_store.has_secret() and self.secret_store.is_valid():
+            return [{"type": "text", "text": json.dumps({
+                "status": "already_configured",
+                "error": "A confirmation secret is already configured for this user.",
+                "message": "Use --reset-secret from the CLI if you need to replace it.",
+            }, indent=2)}]
+
+        secret = args["confirmation_secret"]
+        confirm = args["confirmation_secret_confirm"]
+
+        if secret != confirm:
+            return [{"type": "text", "text": json.dumps({
+                "status": "validation_error",
+                "error": "The secret and confirmation do not match.",
+            }, indent=2)}]
+
+        try:
+            self.secret_store.set_secret(secret)
+        except ValueError as e:
+            return [{"type": "text", "text": json.dumps({
+                "status": "validation_error",
+                "error": str(e),
+            }, indent=2)}]
+
+        user_id = self.user_store.user_id if self.user_store else "unknown"
+        if self.audit_logger:
+            self.audit_logger.log(
+                user=user_id,
+                tool="__secret_management",
+                args={},
+                outcome="secret_set",
+            )
+
+        return [{"type": "text", "text": json.dumps({
+            "status": "configured",
+            "message": (
+                "Confirmation secret saved. You'll use it to approve destructive "
+                "operations such as updating or deleting saved searches, alerts, "
+                "or dashboards."
+            ),
+            "recovery": (
+                "If you forget it, it cannot be retrieved. Use --reset-secret to "
+                "set a new one."
+            ),
+        }, indent=2)}]
 
     # Memory & context tools
 

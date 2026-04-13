@@ -17,7 +17,11 @@ logger = logging.getLogger(__name__)
 _MAX_FILE_SIZE = 10 * 1024 * 1024  # 10 MB
 _MAX_BACKUPS = 5
 _AUDIT_FILENAME = "audit.log"
-_STRIP_KEYS = frozenset({"confirmation_token", "confirmation_secret"})
+_STRIP_KEYS = frozenset({
+    "confirmation_token",
+    "confirmation_secret",
+    "confirmation_secret_confirm",
+})
 
 
 class AuditLogger:

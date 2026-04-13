@@ -272,13 +272,15 @@ All delete and update operations on OCI resources (alerts, dashboards, saved sea
 
 ### Per-User Confirmation Secrets
 
-Each user has their own confirmation secret, set on their first server start. Secrets are:
+Each user has their own confirmation secret. Secrets are:
 
 - **Minimum 8 characters**
 - **Hashed with `hashlib.scrypt`** — the plaintext is never stored
 - **Stored in the user's directory** at `~/.oci-logan-mcp/users/<username>/confirmation_secret.hash`
 
-On first connection (or after `--reset-secret`), the server prompts the user to set their secret interactively. There is no shared env var — `OCI_LA_CONFIRMATION_SECRET` has been removed.
+The server now starts even if a user has no secret yet. Read-only and additive tools work immediately. The first time a user attempts a guarded action, the MCP client can call `setup_confirmation_secret` in-band to create the secret. There is no shared env var — `OCI_LA_CONFIRMATION_SECRET` has been removed.
+
+`setup_confirmation_secret` is for first-time setup only. If a secret is already configured and you need to replace it, use `--reset-secret`.
 
 **Forgotten secret?** Use the `--reset-secret` CLI flag to re-enter a new secret:
 
@@ -292,7 +294,7 @@ oci-logan-mcp --user firstname.lastname --reset-secret
 rm ~/.oci-logan-mcp/users/<username>/confirmation_secret.hash
 ```
 
-The server will prompt for a new secret on the next start.
+Then either restart and use `setup_confirmation_secret`, or run `--reset-secret` interactively to create a new one immediately.
 
 ### How It Works
 
@@ -327,7 +329,8 @@ This gives administrators a full history of which users attempted or executed de
 
 ### Fail-Closed Design
 
-- **No secret set** → guarded tools return `confirmation_unavailable` and refuse to execute
+- **No secret set** → guarded tools return `confirmation_unavailable` and point the user to `setup_confirmation_secret`
+- **Invalid/corrupt secret file** → guarded tools return `confirmation_unavailable` with recovery guidance
 - **Wrong secret** → `confirmation_failed`
 - **Token reuse** → rejected (single-use)
 - **Token expired** → rejected

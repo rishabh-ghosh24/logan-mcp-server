@@ -402,6 +402,31 @@ def get_tools() -> List[Dict[str, Any]]:
                 },
             },
         },
+        {
+            "name": "setup_confirmation_secret",
+            "description": (
+                "Create your confirmation secret for destructive operations like update or "
+                "delete. Use this the first time a guarded tool asks for a confirmation "
+                "secret. This is for initial setup only; use --reset-secret from the CLI "
+                "if you need to replace an existing secret."
+            ),
+            "inputSchema": {
+                "type": "object",
+                "required": ["confirmation_secret", "confirmation_secret_confirm"],
+                "properties": {
+                    "confirmation_secret": {
+                        "type": "string",
+                        "description": (
+                            "Your new confirmation secret. Minimum 8 characters."
+                        ),
+                    },
+                    "confirmation_secret_confirm": {
+                        "type": "string",
+                        "description": "Re-enter the same secret to confirm it.",
+                    },
+                },
+            },
+        },
         # Memory & Context Tools
         {
             "name": "save_learned_query",

@@ -156,6 +156,7 @@ class TestToolRouting:
             "export_results", "set_compartment", "set_namespace",
             "get_current_context", "list_compartments", "test_connection",
             "find_compartment", "get_query_examples", "get_log_summary",
+            "setup_confirmation_secret",
             "save_learned_query", "list_learned_queries",
             "update_tenancy_context", "delete_learned_query",
             "get_preferences", "remember_preference",
@@ -608,6 +609,21 @@ class TestConfirmationFlow:
         )
         text = json.loads(result[0]["text"])
         assert text["status"] == "confirmation_unavailable"
+        assert "setup_confirmation_secret" in text["next_step"]
+
+    @pytest.mark.asyncio
+    async def test_guarded_tool_with_invalid_secret_gives_recovery_guidance(self, handlers):
+        """Invalid secret files should fail closed with recovery instructions."""
+        handlers.secret_store.set_secret("abcdefgh")
+        handlers.secret_store._path.write_text("not valid yaml", encoding="utf-8")
+
+        result = await handlers.handle_tool_call(
+            "delete_alert", {"alert_id": "ocid1.alarm.oc1..abc"}
+        )
+        text = json.loads(result[0]["text"])
+        assert text["status"] == "confirmation_unavailable"
+        assert "invalid" in text["error"].lower()
+        assert "setup_confirmation_secret" in text["message"]
 
     @pytest.mark.asyncio
     async def test_guarded_tool_without_token_returns_confirmation(
@@ -706,6 +722,80 @@ class TestConfirmationFlow:
         )
         text = json.loads(result[0]["text"])
         assert text.get("status") != "confirmation_required"
+
+    @pytest.mark.asyncio
+    async def test_setup_confirmation_secret_succeeds(self, handlers):
+        """First-time setup should persist a hashed secret."""
+        result = await handlers.handle_tool_call(
+            "setup_confirmation_secret",
+            {
+                "confirmation_secret": "my-secret",
+                "confirmation_secret_confirm": "my-secret",
+            },
+        )
+        text = json.loads(result[0]["text"])
+        assert text["status"] == "configured"
+        assert handlers.secret_store.has_secret() is True
+        assert handlers.secret_store.is_valid() is True
+
+    @pytest.mark.asyncio
+    async def test_setup_confirmation_secret_rejects_mismatch(self, handlers):
+        """Mismatched setup entries should fail validation."""
+        result = await handlers.handle_tool_call(
+            "setup_confirmation_secret",
+            {
+                "confirmation_secret": "my-secret",
+                "confirmation_secret_confirm": "other-secret",
+            },
+        )
+        text = json.loads(result[0]["text"])
+        assert text["status"] == "validation_error"
+        assert handlers.secret_store.has_secret() is False
+
+    @pytest.mark.asyncio
+    async def test_setup_confirmation_secret_rejects_short_secret(self, handlers):
+        """Minimum length validation should match SecretStore rules."""
+        result = await handlers.handle_tool_call(
+            "setup_confirmation_secret",
+            {
+                "confirmation_secret": "short",
+                "confirmation_secret_confirm": "short",
+            },
+        )
+        text = json.loads(result[0]["text"])
+        assert text["status"] == "validation_error"
+        assert "at least 8 characters" in text["error"]
+
+    @pytest.mark.asyncio
+    async def test_setup_confirmation_secret_refuses_overwrite(self, handlers_with_secret):
+        """In-band setup is initial-creation only."""
+        result = await handlers_with_secret.handle_tool_call(
+            "setup_confirmation_secret",
+            {
+                "confirmation_secret": "new-secret",
+                "confirmation_secret_confirm": "new-secret",
+            },
+        )
+        text = json.loads(result[0]["text"])
+        assert text["status"] == "already_configured"
+
+    @pytest.mark.asyncio
+    async def test_guarded_tool_uses_normal_confirmation_after_setup(self, handlers):
+        """Once a secret is set in-band, guarded tools should use the normal flow."""
+        handlers.alarm_service.delete_alert = AsyncMock(return_value={"deleted": True})
+
+        await handlers.handle_tool_call(
+            "setup_confirmation_secret",
+            {
+                "confirmation_secret": "my-secret",
+                "confirmation_secret_confirm": "my-secret",
+            },
+        )
+        result = await handlers.handle_tool_call(
+            "delete_alert", {"alert_id": "ocid1.alarm.oc1..abc"}
+        )
+        text = json.loads(result[0]["text"])
+        assert text["status"] == "confirmation_required"
 
 
 # ---------------------------------------------------------------------------

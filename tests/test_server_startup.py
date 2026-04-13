@@ -96,6 +96,55 @@ class TestInitializeCore:
         assert server.handlers is None
 
     @pytest.mark.asyncio
+    async def test_initialize_core_allows_missing_secret_in_noninteractive_mode(self, server):
+        """Missing secret must not abort MCP startup in non-interactive sessions."""
+        mock_secret_store = MagicMock()
+        mock_secret_store.has_secret.return_value = False
+        mock_secret_store.is_valid.return_value = False
+
+        with patch('oci_logan_mcp.server.config_exists', return_value=True), \
+             patch('oci_logan_mcp.server.load_config') as mock_load, \
+             patch('oci_logan_mcp.server.CacheManager'), \
+             patch('oci_logan_mcp.server.QueryLogger'), \
+             patch('oci_logan_mcp.server.OCILogAnalyticsClient') as mock_client_cls, \
+             patch('oci_logan_mcp.server.ContextManager'), \
+             patch('oci_logan_mcp.server.SecretStore', return_value=mock_secret_store), \
+             patch('oci_logan_mcp.server.AuditLogger'), \
+             patch('oci_logan_mcp.server.MCPHandlers') as mock_handlers_cls, \
+             patch('sys.stdin.isatty', return_value=False):
+
+            mock_load.return_value = MagicMock()
+            mock_client_cls.return_value = MagicMock()
+            await server.initialize_core()
+
+        assert server.handlers is not None
+        mock_handlers_cls.assert_called_once()
+
+    @pytest.mark.asyncio
+    async def test_initialize_core_allows_invalid_secret_file(self, server):
+        """Corrupt secret files should not terminate startup."""
+        mock_secret_store = MagicMock()
+        mock_secret_store.has_secret.return_value = True
+        mock_secret_store.is_valid.return_value = False
+
+        with patch('oci_logan_mcp.server.config_exists', return_value=True), \
+             patch('oci_logan_mcp.server.load_config') as mock_load, \
+             patch('oci_logan_mcp.server.CacheManager'), \
+             patch('oci_logan_mcp.server.QueryLogger'), \
+             patch('oci_logan_mcp.server.OCILogAnalyticsClient') as mock_client_cls, \
+             patch('oci_logan_mcp.server.ContextManager'), \
+             patch('oci_logan_mcp.server.SecretStore', return_value=mock_secret_store), \
+             patch('oci_logan_mcp.server.AuditLogger'), \
+             patch('oci_logan_mcp.server.MCPHandlers') as mock_handlers_cls:
+
+            mock_load.return_value = MagicMock()
+            mock_client_cls.return_value = MagicMock()
+            await server.initialize_core()
+
+        assert server.handlers is not None
+        mock_handlers_cls.assert_called_once()
+
+    @pytest.mark.asyncio
     async def test_initialize_core_fails_fast_when_no_config(self, server):
         """If no config exists, initialize_core() should raise RuntimeError, not launch wizard."""
         with patch('oci_logan_mcp.server.config_exists', return_value=False):

@@ -52,12 +52,18 @@ class TestAuditLogger:
     def test_strips_confirmation_fields(self, logger: AuditLogger, log_dir: Path) -> None:
         logger.log(
             user="alice", tool="delete_dashboard",
-            args={"id": "1", "confirmation_token": "tok", "confirmation_secret": "sec"},
+            args={
+                "id": "1",
+                "confirmation_token": "tok",
+                "confirmation_secret": "sec",
+                "confirmation_secret_confirm": "sec",
+            },
             outcome="success",
         )
         entry = json.loads((log_dir / "audit.log").read_text().strip())
         assert "confirmation_token" not in entry["args"]
         assert "confirmation_secret" not in entry["args"]
+        assert "confirmation_secret_confirm" not in entry["args"]
         assert entry["args"]["id"] == "1"
 
     def test_timestamp_is_utc(self, logger: AuditLogger, log_dir: Path) -> None:
