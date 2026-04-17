@@ -207,10 +207,15 @@ class UserStore:
         return modified
 
     def _load(self) -> Dict[str, Any]:
-        # Caller must hold self._lock_path
         data = atomic_yaml_read(self._queries_path, default={"version": 1, "queries": []})
         if self._backfill_entry_ids(data):
-            atomic_yaml_write(self._queries_path, data)
+            # Acquire lock in case caller doesn't hold it (re-entrant safe for those that do).
+            # Double-check pattern: re-read under lock to avoid racing with another process
+            # that already backfilled, then re-check and write.
+            with locked_file(self._lock_path, self._thread_lock):
+                data = atomic_yaml_read(self._queries_path, default={"version": 1, "queries": []})
+                if self._backfill_entry_ids(data):
+                    atomic_yaml_write(self._queries_path, data)
         return data
 
     def _save(self, data: Dict[str, Any]) -> None:

@@ -238,3 +238,37 @@ class TestEntryId:
         store = UserStore(base_dir=tmp_path, user_id="alice")
         queries = store.list_queries()
         assert queries[0]["entry_id"] == custom_id
+
+    def test_concurrent_load_does_not_race_on_backfill(self, tmp_path):
+        """Two concurrent UserStore instances loading a legacy file without entry_ids
+        should both end up seeing the SAME UUIDs written to disk (no last-writer loss)."""
+        import threading
+        import yaml
+        user_dir = tmp_path / "users" / "alice"
+        user_dir.mkdir(parents=True)
+        queries_file = user_dir / "learned_queries.yaml"
+        queries_file.write_text(yaml.dump({
+            "version": 1,
+            "queries": [
+                {"name": "legacy1", "query": "*", "description": "old"},
+                {"name": "legacy2", "query": "* | head 5", "description": "old"},
+            ],
+        }))
+
+        results = {}
+        def load_and_capture(label):
+            store = UserStore(base_dir=tmp_path, user_id="alice")
+            results[label] = [q["entry_id"] for q in store.list_queries()]
+
+        t1 = threading.Thread(target=load_and_capture, args=("t1",))
+        t2 = threading.Thread(target=load_and_capture, args=("t2",))
+        t1.start(); t2.start()
+        t1.join(); t2.join()
+
+        # Both threads should see the same entry_ids (whichever won wrote them; the other re-read)
+        assert sorted(results["t1"]) == sorted(results["t2"])
+
+        # Disk file must reflect the same IDs
+        final = yaml.safe_load(queries_file.read_text())
+        disk_ids = sorted(q["entry_id"] for q in final["queries"])
+        assert disk_ids == sorted(results["t1"])
