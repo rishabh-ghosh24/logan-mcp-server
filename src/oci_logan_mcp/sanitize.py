@@ -38,6 +38,15 @@ def sanitize_query_text(query_text: str) -> Optional[str]:
     return cleaned
 
 
+def normalize_query_text(query: str) -> str:
+    """Normalize query text for cross-user aggregation:
+    - Strip leading/trailing whitespace
+    - Collapse internal whitespace runs to single spaces
+    - Preserve case (query syntax can be case-significant for strings)
+    """
+    return re.sub(r"\s+", " ", query.strip())
+
+
 def sanitize_pattern(text: str) -> Optional[str]:
     """Sanitize a natural language pattern. Returns None if sensitive."""
     candidate = text.strip()
