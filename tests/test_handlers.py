@@ -78,11 +78,8 @@ def mock_context_manager():
     ctx.update_log_sources = MagicMock(return_value="5 total (0 new)")
     ctx.update_confirmed_fields = MagicMock(return_value="10 total (0 new)")
     ctx.update_compartments = MagicMock(return_value="3 total (0 new)")
-    ctx.save_learned_query = MagicMock(return_value={"name": "test", "use_count": 1})
-    ctx.record_query_usage = MagicMock()
     ctx.add_note = MagicMock()
     ctx.get_tenancy_context = MagicMock(return_value={"namespace": "testns"})
-    ctx.get_all_templates = MagicMock(return_value=[])
     return ctx
 
 
@@ -139,22 +136,6 @@ def test_mcp_handlers_exposes_unified_catalog(handlers):
     assert isinstance(handlers.catalog, UnifiedCatalog)
 
 
-def test_mcp_handlers_catalog_is_none_without_user_store(
-    settings, mock_oci_client, mock_cache, mock_query_logger, mock_context_manager,
-    mock_secret_store, mock_audit_logger
-):
-    """Handler catalog should be None when no user_store is provided."""
-    handler = MCPHandlers(
-        settings=settings,
-        oci_client=mock_oci_client,
-        cache=mock_cache,
-        query_logger=mock_query_logger,
-        context_manager=mock_context_manager,
-        user_store=None,
-        secret_store=mock_secret_store,
-        audit_logger=mock_audit_logger,
-    )
-    assert handler.catalog is None
 
 
 # ---------------------------------------------------------------------------
@@ -1131,11 +1112,3 @@ async def test_get_query_examples_filter_by_category(tmp_path):
     assert "category" in body or "error" in body
 
 
-@pytest.mark.asyncio
-async def test_get_query_examples_legacy_fallback_when_no_catalog(tmp_path):
-    """When handler.catalog is None, falls back to starter.load_starter_queries()."""
-    handler = _make_handler_with_catalog(tmp_path)
-    handler.catalog = None
-    result = await handler._get_query_examples({"category": "all"})
-    body = json.loads(result[0]["text"])
-    assert "categories" in body  # still works

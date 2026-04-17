@@ -22,7 +22,7 @@ def _handlers(tmp_path):
     client._config = {"tenancy": "ocid1.tenancy.test"}
     cache = MagicMock(get=MagicMock(return_value=None), set=MagicMock())
     logger = MagicMock()
-    ctx = MagicMock(get_all_templates=MagicMock(return_value=[]))
+    ctx = MagicMock()
     user_dir = tmp_path / "users" / "testuser"
     user_dir.mkdir(parents=True)
     return MCPHandlers(
@@ -166,12 +166,3 @@ class TestHandlerIntegration:
         assert "error" in data
         assert "available" in data
 
-    @pytest.mark.asyncio
-    async def test_fallback_when_yaml_fails(self, _handlers):
-        """Should fall back to hardcoded examples when YAML loading fails."""
-        with patch("oci_logan_mcp.starter.load_starter_queries", return_value=None):
-            result = await _handlers._get_query_examples({"category": "all"})
-        data = json.loads(result[0]["text"])
-        assert "categories" in data
-        assert "basic" in data["categories"]
-        assert len(data["examples"]["basic"]) > 0

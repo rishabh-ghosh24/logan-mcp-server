@@ -18,7 +18,7 @@ from .user_store import UserStore
 from .preferences import PreferenceStore
 from .query_auto_saver import QueryAutoSaver
 from .config import Settings, save_config
-from .resources import get_query_templates, get_syntax_guide, get_reference_docs
+from .resources import get_syntax_guide, get_reference_docs
 from .alarm_service import AlarmService
 from .dashboard_service import DashboardService
 from .notification_service import NotificationService
@@ -42,7 +42,7 @@ class MCPHandlers:
         cache: CacheManager,
         query_logger: QueryLogger,
         context_manager: ContextManager,
-        user_store: Optional[UserStore] = None,
+        user_store: UserStore,
         preference_store: Optional[PreferenceStore] = None,
         secret_store: Optional[SecretStore] = None,
         audit_logger: Optional[AuditLogger] = None,
@@ -73,12 +73,9 @@ class MCPHandlers:
         self.alarm_service = AlarmService(oci_client, cache)
         self.dashboard_service = DashboardService(oci_client, cache)
         self.notification_service = NotificationService(settings)
-        # Wire unified query catalog (Task 5b)
+        # Wire unified query catalog
         from .catalog import UnifiedCatalog
-        if user_store is not None:
-            self.catalog = UnifiedCatalog(base_dir=user_store.base_dir)
-        else:
-            self.catalog = None
+        self.catalog = UnifiedCatalog(base_dir=user_store.base_dir)
         self.confirmation_manager = ConfirmationManager(
             secret_store=secret_store,
             token_expiry_seconds=settings.guardrails.token_expiry_seconds,
@@ -146,7 +143,7 @@ class MCPHandlers:
         if not handler:
             return [{"type": "text", "text": f"Unknown tool: {name}"}]
 
-        user_id = self.user_store.user_id if self.user_store else "unknown"
+        user_id = self.user_store.user_id
 
         # --- Confirmation gate for guarded operations ---
         if self.confirmation_manager.is_guarded(name):
@@ -264,16 +261,8 @@ class MCPHandlers:
         if uri == "loganalytics://schema":
             return await self.schema_manager.get_full_schema()
         elif uri == "loganalytics://query-templates":
-            if self.catalog is not None:
-                entries = self.catalog.for_templates_resource()
-                return {"templates": [self._catalog_entry_to_dict(e) for e in entries]}
-            # Legacy fallback when user_store / catalog unavailable
-            builtin = get_query_templates()
-            return {
-                "templates": self.context_manager.get_all_templates(
-                    builtin.get("templates", [])
-                )
-            }
+            entries = self.catalog.for_templates_resource()
+            return {"templates": [self._catalog_entry_to_dict(e) for e in entries]}
         elif uri == "loganalytics://syntax-guide":
             return get_syntax_guide()
         elif uri == "loganalytics://recent-queries":
@@ -402,22 +391,20 @@ class MCPHandlers:
             )
         except Exception:
             # Track failure before re-raising
-            if self.user_store:
-                try:
-                    self.user_store.record_failure(args["query"])
-                except Exception:
-                    pass
+            try:
+                self.user_store.record_failure(args["query"])
+            except Exception:
+                pass
             raise
 
         # Auto-save interesting queries / bump usage for existing ones
         self.auto_saver.process_successful_query(args["query"], result)
 
         # Track success and preferences
-        if self.user_store:
-            try:
-                self.user_store.record_success(args["query"])
-            except Exception:
-                pass
+        try:
+            self.user_store.record_success(args["query"])
+        except Exception:
+            pass
         if self.preference_store:
             try:
                 source = self.auto_saver._extract_source(args["query"])
@@ -776,20 +763,14 @@ class MCPHandlers:
         """Get example queries for common use cases (onboarding surface)."""
         category = args.get("category", "all")
 
-        # Primary path: catalog-driven (starter entries; Task 15 will add community favorites)
-        if self.catalog is not None:
-            entries = self.catalog.for_onboarding()
-            examples: Dict[str, List[Dict[str, Any]]] = {}
-            for e in entries:
-                examples.setdefault(e.category, []).append({
-                    "name": e.name,
-                    "query": e.query,
-                    "description": e.description,
-                })
-        else:
-            # Legacy fallback until Task 9 makes user_store mandatory
-            from .starter import load_starter_queries
-            examples = load_starter_queries() or _FALLBACK_EXAMPLES
+        entries = self.catalog.for_onboarding()
+        examples: Dict[str, List[Dict[str, Any]]] = {}
+        for e in entries:
+            examples.setdefault(e.category, []).append({
+                "name": e.name,
+                "query": e.query,
+                "description": e.description,
+            })
 
         if category == "all":
             result = {
@@ -906,7 +887,7 @@ class MCPHandlers:
                 "error": str(e),
             }, indent=2)}]
 
-        user_id = self.user_store.user_id if self.user_store else "unknown"
+        user_id = self.user_store.user_id
         if self.audit_logger:
             self.audit_logger.log(
                 user=user_id,
@@ -932,22 +913,13 @@ class MCPHandlers:
 
     async def _save_learned_query(self, args: Dict) -> List[Dict]:
         """Save a working query for future reference."""
-        if self.user_store:
-            saved = self.user_store.save_query(
-                name=args["name"],
-                query=args["query"],
-                description=args["description"],
-                category=args.get("category", "general"),
-                tags=args.get("tags"),
-            )
-        else:
-            saved = self.context_manager.save_learned_query(
-                name=args["name"],
-                query=args["query"],
-                description=args["description"],
-                category=args.get("category", "general"),
-                tags=args.get("tags"),
-            )
+        saved = self.user_store.save_query(
+            name=args["name"],
+            query=args["query"],
+            description=args["description"],
+            category=args.get("category", "general"),
+            tags=args.get("tags"),
+        )
         return [{"type": "text", "text": json.dumps({
             "status": "saved",
             "query": saved,
@@ -1124,35 +1096,3 @@ class MCPHandlers:
             chat_id=args.get("chat_id"),
         )
         return [{"type": "text", "text": json.dumps(result, indent=2)}]
-
-
-# Hardcoded fallback examples used when starter_queries.yaml cannot be loaded.
-_FALLBACK_EXAMPLES = {
-    "basic": [
-        {"name": "Count all logs", "query": "* | stats count", "description": "Get total count of all logs"},
-        {"name": "Count by log source", "query": "* | stats count by 'Log Source'", "description": "Break down log count by source type"},
-        {"name": "Recent logs", "query": "* | head 100", "description": "Get the 100 most recent log entries"},
-        {"name": "Search by keyword", "query": "* | where Message contains 'error'", "description": "Find logs containing specific text"},
-    ],
-    "security": [
-        {"name": "Failed logins", "query": "'Log Source' = 'Linux Secure Logs' | where Message contains 'Failed password'", "description": "Find failed SSH login attempts"},
-        {"name": "Authentication events", "query": "* | where Label = 'Authentication'", "description": "All authentication-related events"},
-        {"name": "Sudo commands", "query": "'Log Source' = 'Linux Secure Logs' | where Message contains 'sudo'", "description": "Track sudo usage"},
-    ],
-    "errors": [
-        {"name": "All errors", "query": "* | where Severity in ('ERROR', 'CRITICAL', 'FATAL')", "description": "Find all error-level logs"},
-        {"name": "Errors by source", "query": "* | where Severity = 'ERROR' | stats count by 'Log Source'", "description": "Count errors per log source"},
-        {"name": "Error trends", "query": "* | where Severity = 'ERROR' | timestats count by 'Log Source'", "description": "Error count over time by source"},
-        {"name": "Exception traces", "query": "* | where Message contains 'Exception' or Message contains 'Traceback'", "description": "Find stack traces and exceptions"},
-    ],
-    "performance": [
-        {"name": "Slow operations", "query": "* | where Message contains 'slow' or Message contains 'timeout'", "description": "Find performance-related issues"},
-        {"name": "Response times", "query": r"* | where Message regex '\d+ms' | head 100", "description": "Logs mentioning millisecond timings"},
-    ],
-    "statistics": [
-        {"name": "Logs by entity", "query": "* | stats count by Entity", "description": "Count logs per monitored entity"},
-        {"name": "Logs by severity", "query": "* | stats count by Severity", "description": "Distribution of log severity levels"},
-        {"name": "Top log sources", "query": "* | stats count by 'Log Source' | sort -count | head 10", "description": "Top 10 log sources by volume"},
-        {"name": "Hourly volume", "query": "* | timestats count span=1h", "description": "Log volume per hour"},
-    ],
-}
