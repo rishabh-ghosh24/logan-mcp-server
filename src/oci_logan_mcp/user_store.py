@@ -125,9 +125,26 @@ class UserStore:
                     self._save(data)
                     return deepcopy(q)
 
-            # Personal ↔ personal: update in place by query text (bypass collision check)
+            # Personal ↔ personal: update in place by query text. If this would
+            # rename the stored entry to a builtin/shared name, enforce the
+            # collision policy on the destination — rename_to must not silently
+            # shadow a protected name just because the query text happens to
+            # match an existing personal entry.
             for q in queries:
                 if q["query"].strip() == query.strip():
+                    if q["name"] != effective_name and not force:
+                        collision = self._check_collision(effective_name)
+                        if collision:
+                            return {
+                                "collision_warning": {
+                                    "conflicts_with": collision,
+                                    "name": effective_name,
+                                    "message": (
+                                        f"A {collision} query with name '{effective_name}' already exists. "
+                                        f"Pass force=True to override, or rename_to='<new_name>' to use a different name."
+                                    ),
+                                }
+                            }
                     q["name"] = effective_name
                     q["description"] = description
                     q["category"] = category

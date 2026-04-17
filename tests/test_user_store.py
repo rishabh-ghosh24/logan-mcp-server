@@ -358,6 +358,49 @@ class TestCollisionPolicy:
         )
         assert "collision_warning" in result
 
+    def test_rename_to_checks_collision_on_text_dedup_path(self, tmp_path):
+        """If a user already has a personal query matching by text, and
+        save_query is called with rename_to=<builtin_or_shared_name>, the
+        collision guard must fire rather than silently renaming the stored
+        entry to a protected name."""
+        store = UserStore(base_dir=tmp_path, user_id="alice")
+        # Seed a personal entry under a safe name.
+        first = store.save_query(
+            name="mine",
+            query="* | stats count",
+            description="d",
+        )
+        assert "collision_warning" not in first
+
+        # Same text, but rename_to is a builtin name — must be blocked.
+        result = store.save_query(
+            name="anything",
+            query="* | stats count",
+            description="d",
+            rename_to="errors_last_hour",
+        )
+        assert "collision_warning" in result
+        assert result["collision_warning"]["conflicts_with"] == "builtin"
+        # Stored entry's name must NOT have been mutated.
+        stored = store.list_queries()
+        assert len(stored) == 1
+        assert stored[0]["name"] == "mine"
+
+    def test_rename_to_text_dedup_with_force_overrides(self, tmp_path):
+        """force=True bypasses the collision guard on the text-dedup rename path,
+        matching the new-entry path's contract."""
+        store = UserStore(base_dir=tmp_path, user_id="alice")
+        store.save_query(name="mine", query="* | stats count", description="d")
+        result = store.save_query(
+            name="anything",
+            query="* | stats count",
+            description="d",
+            rename_to="errors_last_hour",
+            force=True,
+        )
+        assert "collision_warning" not in result
+        assert result["name"] == "errors_last_hour"
+
 
 def test_save_query_race_against_concurrent_promote(tmp_path):
     """promote_all publishes 'popular_query' to shared; then save_query sees the collision."""
