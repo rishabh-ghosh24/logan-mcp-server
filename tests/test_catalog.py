@@ -1,8 +1,12 @@
 """Tests for catalog module."""
 
 from pathlib import Path
+
+import yaml
+
 from oci_logan_mcp.catalog import CatalogEntry, SourceType, UnifiedCatalog
 from oci_logan_mcp.resources import get_query_templates
+from oci_logan_mcp.user_store import UserStore
 
 
 def test_catalog_loads_builtin_and_starter(tmp_path):
@@ -124,3 +128,55 @@ def test_parse_queries_coerces_non_list_tags(tmp_path):
     entries = catalog._parse_queries(data, SourceType.BUILTIN, origin="test")
     assert len(entries) == 1
     assert entries[0].tags == []
+
+
+def test_catalog_loads_personal_and_shared(tmp_path):
+    """UnifiedCatalog.load_personal loads user's learned queries."""
+    store = UserStore(base_dir=tmp_path, user_id="alice")
+    store.save_query(name="q1", query="* | head 5", description="d", interest_score=3)
+
+    catalog = UnifiedCatalog(base_dir=tmp_path)
+    personal = catalog.load_personal(user_id="alice")
+    assert any(e.name == "q1" for e in personal)
+    assert all(e.source == SourceType.PERSONAL for e in personal)
+
+
+def test_catalog_loads_shared(tmp_path):
+    """UnifiedCatalog.load_shared loads shared promoted queries."""
+    shared_dir = tmp_path / "shared"
+    shared_dir.mkdir()
+    (shared_dir / "promoted_queries.yaml").write_text(
+        yaml.dump(
+            {
+                "queries": [
+                    {
+                        "name": "shared_q",
+                        "query": "* | head 10",
+                        "description": "shared",
+                    }
+                ]
+            }
+        )
+    )
+    catalog = UnifiedCatalog(base_dir=tmp_path)
+    shared = catalog.load_shared()
+    assert len(shared) == 1
+    assert shared[0].source == SourceType.SHARED
+
+
+def test_catalog_returns_empty_for_missing_personal_user(tmp_path):
+    """UnifiedCatalog.load_personal returns [] for non-existent user."""
+    catalog = UnifiedCatalog(base_dir=tmp_path)
+    assert catalog.load_personal(user_id="nonexistent") == []
+
+
+def test_catalog_personal_entry_includes_metrics(tmp_path):
+    """Personal catalog entries include interest_score and other metrics."""
+    store = UserStore(base_dir=tmp_path, user_id="bob")
+    store.save_query(
+        name="q2", query="* | stats count", description="d", interest_score=5
+    )
+    catalog = UnifiedCatalog(base_dir=tmp_path)
+    entries = catalog.load_personal(user_id="bob")
+    assert len(entries) == 1
+    assert entries[0].interest_score == 5

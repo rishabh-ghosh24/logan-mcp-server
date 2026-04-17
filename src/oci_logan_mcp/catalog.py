@@ -11,6 +11,8 @@ from typing import List, Optional
 
 import yaml
 
+from .file_lock import atomic_yaml_read
+
 logger = logging.getLogger(__name__)
 
 
@@ -72,6 +74,27 @@ class UnifiedCatalog:
         """
         return self._load_packaged_yaml("starter_queries.yaml", SourceType.STARTER)
 
+    def load_personal(self, user_id: str) -> List[CatalogEntry]:
+        """Load a user's personal learned queries.
+
+        Args:
+            user_id: User ID to load queries for.
+
+        Returns:
+            List of CatalogEntry objects with source=PERSONAL. Empty list if user has no queries.
+        """
+        path = self.base_dir / "users" / user_id / "learned_queries.yaml"
+        return self._load_yaml_file(path, SourceType.PERSONAL)
+
+    def load_shared(self) -> List[CatalogEntry]:
+        """Load shared promoted queries.
+
+        Returns:
+            List of CatalogEntry objects with source=SHARED. Empty list if no shared queries exist.
+        """
+        path = self.base_dir / "shared" / "promoted_queries.yaml"
+        return self._load_yaml_file(path, SourceType.SHARED)
+
     def _parse_queries(
         self, data: dict, source: SourceType, origin: str
     ) -> List[CatalogEntry]:
@@ -111,10 +134,32 @@ class UnifiedCatalog:
                     source=source,
                     category=q.get("category", "general"),
                     tags=tags,
+                    interest_score=q.get("interest_score", 0),
+                    success_count=q.get("success_count", 0),
+                    failure_count=q.get("failure_count", 0),
+                    use_count=q.get("use_count", 0),
+                    created_at=q.get("created_at"),
+                    last_used=q.get("last_used"),
+                    promoted_at=q.get("promoted_at"),
+                    promotion_status=q.get("promotion_status"),
+                    promotion_reason=q.get("promotion_reason"),
                 )
             )
 
         return out
+
+    def _load_yaml_file(self, path: Path, source: SourceType) -> List[CatalogEntry]:
+        """Load queries from a YAML file in the filesystem.
+
+        Args:
+            path: Full path to YAML file.
+            source: SourceType to assign to loaded entries.
+
+        Returns:
+            List of CatalogEntry objects. Returns [] if file missing or corrupt.
+        """
+        data = atomic_yaml_read(path, default={"queries": []})
+        return self._parse_queries(data, source, origin=str(path))
 
     def _load_packaged_yaml(self, filename: str, source: SourceType) -> List[CatalogEntry]:
         """Load queries from a packaged YAML file.
