@@ -1,0 +1,62 @@
+# Built-in query templates for OCI Log Analytics.
+#
+# These are generic, battle-tested query patterns validated against
+# real OCI Log Analytics environments. They ship with the server
+# so any LLM/IDE gets working examples out-of-the-box.
+
+version: 1
+
+queries:
+  # --- Basic patterns ---
+  - name: errors_last_hour
+    description: Find all errors in the last hour
+    query: "'Error' or 'Critical' | timestats span = 1hour count by 'Log Source'"
+
+  - name: top_n_by_field
+    description: Get top N records by a field
+    query: "* | stats count by '{field}' | sort -count | head {n}"
+
+  - name: trend_over_time
+    description: Show trend over time (for line/area charts)
+    query: "* | timestats span = 1hour count"
+
+  - name: search_keyword
+    description: Search for a keyword in logs
+    query: "'{keyword}' | fields 'Log Source', 'Entity', 'Message', 'Time'"
+
+  - name: filter_by_severity
+    description: Filter logs by severity level
+    query: "'Severity' = '{level}' | stats count by 'Host Name'"
+
+  - name: error_by_host
+    description: Count errors by host
+    query: "'Severity' = 'Error' | stats count by 'Host Name' | sort -count"
+
+  - name: recent_logs
+    description: Get most recent logs
+    query: "* | fields 'Time', 'Log Source', 'Message' | sort -'Time' | head 100"
+
+  - name: log_volume_by_source
+    description: Log volume by source
+    query: "* | stats count by 'Log Source' | sort -count"
+
+  # --- Proven patterns from real-world testing ---
+  - name: top_sources_with_alias
+    description: Top N log sources by volume with aliased count (bar/table chart)
+    query: "'Log Source' != null | stats count as 'Log Count' by 'Log Source' | sort -'Log Count' | head 20"
+
+  - name: volume_trend_by_source
+    description: Log volume over time per source (line/area chart)
+    query: "'Log Source' != null | timestats span = 1hour count as 'Log Count' by 'Log Source'"
+
+  - name: audit_status_breakdown
+    description: OCI Audit logs by HTTP status code (security overview)
+    query: "'Log Source' = 'OCI Audit Logs' | stats count by 'Status' | sort -Count"
+
+  - name: total_log_volume_kpi
+    description: Total log count as single KPI number (tile chart)
+    query: "'Log Source' != null | stats count as 'Total Logs'"
+
+  - name: source_entity_heatmap
+    description: Log sources vs entities cross-reference (heatmap chart)
+    query: "'Log Source' != null | stats count as 'Log Count' by 'Log Source', 'Entity' | sort -'Log Count' | head 50"
