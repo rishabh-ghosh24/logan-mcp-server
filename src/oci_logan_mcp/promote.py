@@ -11,7 +11,7 @@ from typing import Any, Dict, List, Optional, Tuple
 
 from .file_lock import atomic_yaml_read, atomic_yaml_write, locked_file
 from .sanitize import sanitize_query_text, normalize_query_text
-from .user_store import SHARED_CATALOG_LOCK_NAME
+from .user_store import SHARED_CATALOG_LOCK_NAME, ensure_entry_ids
 
 logger = logging.getLogger(__name__)
 
@@ -100,11 +100,15 @@ def promote_all(base_dir: Path) -> Dict[str, Any]:
         user_count += 1
         user_id = user_dir.name
         queries_path = user_dir / "learned_queries.yaml"
-        data = atomic_yaml_read(queries_path, default={"queries": []})
+        lock_path = user_dir / "queries.lock"
+        # Backfill entry_id for any legacy (pre-1.2.0) rows before scanning.
+        # ensure_entry_ids persists IDs under the user's queries.lock so status
+        # write-back in phase 4 can match entries by entry_id deterministically.
+        data = ensure_entry_ids(queries_path, lock_path)
 
         for q in data.get("queries", []):
             if not q.get("name") or not q.get("query") or not q.get("entry_id"):
-                continue  # legacy entries without entry_id skip
+                continue  # defensive: entry_id should be present after backfill
 
             canonical_key = (q["name"].lower(), normalize_query_text(q["query"]))
             bucket = promotion_map.setdefault(canonical_key, {

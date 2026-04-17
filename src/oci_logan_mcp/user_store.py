@@ -23,6 +23,42 @@ MAX_QUERIES_PER_USER = 200
 SHARED_CATALOG_LOCK_NAME = "catalog.lock"
 
 
+def _needs_entry_id_backfill(data: Dict[str, Any]) -> bool:
+    return any(not q.get("entry_id") for q in data.get("queries", []))
+
+
+def _apply_entry_id_backfill(data: Dict[str, Any]) -> bool:
+    """Assign UUIDs to any entry missing entry_id. Returns True if modified."""
+    modified = False
+    for q in data.get("queries", []):
+        if not q.get("entry_id"):
+            q["entry_id"] = uuid.uuid4().hex
+            modified = True
+    return modified
+
+
+def ensure_entry_ids(queries_path: Path, lock_path: Path) -> Dict[str, Any]:
+    """Load a learned_queries.yaml, backfilling entry_id for any legacy rows.
+
+    Backfill is idempotent and persisted under the user's queries.lock using the
+    double-check pattern (read-check-lock-reread-recheck-write) so concurrent
+    readers don't assign divergent UUIDs. Returns the final (possibly patched)
+    data dict.
+
+    Shared between UserStore._load and promote.promote_all's phase-1 scan so
+    pre-1.2.0 files get IDs on their first encounter, regardless of entry point.
+    """
+    data = atomic_yaml_read(queries_path, default={"version": 1, "queries": []})
+    if not _needs_entry_id_backfill(data):
+        return data
+    thread_lock = threading.RLock()
+    with locked_file(lock_path, thread_lock):
+        data = atomic_yaml_read(queries_path, default={"version": 1, "queries": []})
+        if _apply_entry_id_backfill(data):
+            atomic_yaml_write(queries_path, data)
+    return data
+
+
 class UserStore:
     """Manages per-user learned queries with shared overlay."""
 
@@ -260,27 +296,8 @@ class UserStore:
         data = atomic_yaml_read(path, default={"queries": []})
         return deepcopy(data.get("queries", []))
 
-    def _backfill_entry_ids(self, data: Dict[str, Any]) -> bool:
-        """Assign UUIDs to any entry missing entry_id. Returns True if any entry was modified.
-        Idempotent: entries already having entry_id are untouched."""
-        modified = False
-        for q in data.get("queries", []):
-            if not q.get("entry_id"):
-                q["entry_id"] = uuid.uuid4().hex
-                modified = True
-        return modified
-
     def _load(self) -> Dict[str, Any]:
-        data = atomic_yaml_read(self._queries_path, default={"version": 1, "queries": []})
-        if self._backfill_entry_ids(data):
-            # Acquire lock in case caller doesn't hold it (re-entrant safe for those that do).
-            # Double-check pattern: re-read under lock to avoid racing with another process
-            # that already backfilled, then re-check and write.
-            with locked_file(self._lock_path, self._thread_lock):
-                data = atomic_yaml_read(self._queries_path, default={"version": 1, "queries": []})
-                if self._backfill_entry_ids(data):
-                    atomic_yaml_write(self._queries_path, data)
-        return data
+        return ensure_entry_ids(self._queries_path, self._lock_path)
 
     def _save(self, data: Dict[str, Any]) -> None:
         data["last_updated"] = datetime.now(timezone.utc).isoformat()

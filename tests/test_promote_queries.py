@@ -173,6 +173,42 @@ def test_promote_writes_back_status_to_personal(tmp_path):
     assert "promotion_reason" in entry
 
 
+def test_promote_backfills_legacy_entries_without_entry_id(tmp_path):
+    """A pre-1.2.0 learned_queries.yaml (no entry_id on any entry) must still
+    be scanned, backfilled, and promoted by promote_all — even if the file has
+    never been opened via UserStore._load() on this deployment."""
+    user_dir = tmp_path / "users" / "alice"
+    user_dir.mkdir(parents=True)
+    # Legacy entry: NO entry_id, but qualifies for single-user promotion.
+    legacy_entry = {
+        "name": "legacy_q",
+        "query": "'Log Source' = 'Linux' | stats count by Severity",
+        "description": "legacy",
+        "category": "general",
+        "tags": [],
+        "use_count": 10,
+        "success_count": 8,
+        "failure_count": 2,
+        "interest_score": 5,
+        "created_at": "2026-01-01T00:00:00",
+        "last_used": "2026-03-24T00:00:00",
+    }
+    qpath = user_dir / "learned_queries.yaml"
+    qpath.write_text(yaml.safe_dump({"version": 1, "queries": [legacy_entry]}))
+
+    result = promote_all(tmp_path)
+
+    # The legacy entry qualifies and must be promoted.
+    assert result["promoted"] == 1
+
+    # Backfill must have persisted an entry_id to disk so status write-back
+    # can match it on this run (and future runs stay deterministic).
+    data_after = yaml.safe_load(qpath.read_text())
+    entry = data_after["queries"][0]
+    assert entry.get("entry_id"), "entry_id must be backfilled and persisted"
+    assert entry.get("promotion_status") == "promoted"
+
+
 def test_promote_phase2_safe_against_concurrent_save(tmp_path):
     """Entry added between runs gets evaluated on the second run."""
     store = UserStore(base_dir=tmp_path, user_id="alice")
