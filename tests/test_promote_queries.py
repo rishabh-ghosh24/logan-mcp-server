@@ -127,27 +127,29 @@ def test_promote_aggregates_multi_user_same_query(tmp_path):
 
 
 def test_promote_handles_name_collision_cross_user(tmp_path):
-    """Two users with DIFFERENT queries under the SAME name: winner is kept,
-    loser gets rejected: name_collision_cross_user status."""
-    # Alice saves "my_q" with text A
+    """Two users with DIFFERENT queries under the SAME name, both independently
+    qualifying for promotion: winner is kept, loser gets
+    rejected: name_collision_cross_user. (Bob must pass qualification on his
+    own merits — otherwise his rejection is attributable to low quality, not
+    the name collision with Alice.)"""
     store_a = UserStore(base_dir=tmp_path, user_id="alice")
-    store_a.save_query(name="my_q", query="* alice variant", description="d", interest_score=5)
+    store_a.save_query(name="my_q", query="* alice variant", description="d", interest_score=9)
     qpath_a = tmp_path / "users" / "alice" / "learned_queries.yaml"
     data = yaml.safe_load(qpath_a.read_text())
     data["queries"][0]["success_count"] = 10
     qpath_a.write_text(yaml.dump(data))
 
-    # Bob saves "my_q" with DIFFERENT text B
+    # Bob: DIFFERENT text under the same name, independently qualifies.
     store_b = UserStore(base_dir=tmp_path, user_id="bob")
-    store_b.save_query(name="my_q", query="* bob variant", description="d", interest_score=2)
+    store_b.save_query(name="my_q", query="* bob variant", description="d", interest_score=5)
     qpath_b = tmp_path / "users" / "bob" / "learned_queries.yaml"
     data = yaml.safe_load(qpath_b.read_text())
-    data["queries"][0]["success_count"] = 3
+    data["queries"][0]["success_count"] = 10
     qpath_b.write_text(yaml.dump(data))
 
     promote_all(tmp_path)
 
-    # Alice (higher interest_score) wins, Bob gets rejection status
+    # Alice (higher interest_score) wins, Bob gets the name-collision rejection.
     alice_data = yaml.safe_load(qpath_a.read_text())
     bob_data = yaml.safe_load(qpath_b.read_text())
     assert alice_data["queries"][0].get("promotion_status") == "promoted"
@@ -171,6 +173,98 @@ def test_promote_writes_back_status_to_personal(tmp_path):
     assert "promotion_status" in entry
     assert entry["promotion_status"].startswith("rejected:") or entry["promotion_status"] == "pending"
     assert "promotion_reason" in entry
+
+
+def test_name_collision_falls_back_when_winner_fails_sanitization(tmp_path):
+    """When the higher-scoring name-collision candidate fails sanitization, a
+    lower-scoring but clean candidate with the same name must still be
+    promoted — not pruned in phase 1.5 and silently dropped.
+
+    Alice: 'my_q' with embedded secret (sanitize_for_sharing -> None), high score.
+    Bob:   'my_q' with clean text, lower score.
+
+    Expected: Bob's query is promoted, Alice's gets 'rejected: sanitization_failed'.
+    Pre-fix behavior: Alice wins phase 1.5, sanitization fails in phase 2, Bob
+    was already deleted as a name-collision loser — nothing gets promoted.
+    """
+    # Alice: higher interest, but query contains a secret.
+    store_a = UserStore(base_dir=tmp_path, user_id="alice")
+    store_a.save_query(
+        name="my_q",
+        query="password = 'hunter2' | stats count",
+        description="dirty",
+        interest_score=9,
+    )
+    qpath_a = tmp_path / "users" / "alice" / "learned_queries.yaml"
+    data = yaml.safe_load(qpath_a.read_text())
+    data["queries"][0]["success_count"] = 20
+    qpath_a.write_text(yaml.dump(data))
+
+    # Bob: lower interest, clean query.
+    store_b = UserStore(base_dir=tmp_path, user_id="bob")
+    store_b.save_query(
+        name="my_q",
+        query="'Log Source' = 'Linux' | stats count by Host",
+        description="clean",
+        interest_score=5,
+    )
+    qpath_b = tmp_path / "users" / "bob" / "learned_queries.yaml"
+    data = yaml.safe_load(qpath_b.read_text())
+    data["queries"][0]["success_count"] = 10
+    qpath_b.write_text(yaml.dump(data))
+
+    result = promote_all(tmp_path)
+
+    # Bob's clean query should have been promoted as fallback.
+    assert result["promoted"] == 1
+    shared = yaml.safe_load((tmp_path / "shared" / "promoted_queries.yaml").read_text())
+    assert len(shared["queries"]) == 1
+    assert "hunter2" not in shared["queries"][0]["query"]
+    assert shared["queries"][0]["name"] == "my_q"
+
+    # Status write-back: Alice rejected for sanitization, Bob promoted.
+    alice_data = yaml.safe_load(qpath_a.read_text())
+    bob_data = yaml.safe_load(qpath_b.read_text())
+    assert alice_data["queries"][0]["promotion_status"] == "rejected: sanitization_failed"
+    assert bob_data["queries"][0]["promotion_status"] == "promoted"
+
+
+def test_name_collision_resolved_when_multiple_candidates_qualify(tmp_path):
+    """When both candidates of a name collision pass qualification AND
+    sanitization, the higher-scoring one still wins and the other is marked
+    rejected: name_collision_cross_user. (Regression guard for fix 3 — this
+    is the scenario the existing collision logic already handles, and it must
+    keep working after the reordering.)"""
+    store_a = UserStore(base_dir=tmp_path, user_id="alice")
+    store_a.save_query(
+        name="shared_name",
+        query="'Log Source' = 'Linux' | stats count",
+        description="A",
+        interest_score=9,
+    )
+    qpath_a = tmp_path / "users" / "alice" / "learned_queries.yaml"
+    data = yaml.safe_load(qpath_a.read_text())
+    data["queries"][0]["success_count"] = 15
+    qpath_a.write_text(yaml.dump(data))
+
+    store_b = UserStore(base_dir=tmp_path, user_id="bob")
+    store_b.save_query(
+        name="shared_name",
+        query="'Log Source' = 'Linux' | head 5",
+        description="B",
+        interest_score=4,
+    )
+    qpath_b = tmp_path / "users" / "bob" / "learned_queries.yaml"
+    data = yaml.safe_load(qpath_b.read_text())
+    data["queries"][0]["success_count"] = 8
+    qpath_b.write_text(yaml.dump(data))
+
+    promote_all(tmp_path)
+
+    alice_data = yaml.safe_load(qpath_a.read_text())
+    bob_data = yaml.safe_load(qpath_b.read_text())
+    assert alice_data["queries"][0]["promotion_status"] == "promoted"
+    assert bob_data["queries"][0]["promotion_status"] == "rejected: name_collision_cross_user"
 
 
 def test_promote_backfills_legacy_entries_without_entry_id(tmp_path):

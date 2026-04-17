@@ -122,54 +122,22 @@ def promote_all(base_dir: Path) -> Dict[str, Any]:
             if bucket["best"] is None or q.get("interest_score", 0) > bucket["best"].get("interest_score", 0):
                 bucket["best"] = q
 
-    # Phase 1.5: name-level collision detection across different canonical keys
-    name_to_keys: Dict[str, List[Tuple[str, str]]] = {}
-    for ck in promotion_map.keys():
-        name_lower = ck[0]
-        name_to_keys.setdefault(name_lower, []).append(ck)
-
-    name_collision_losers: Dict[str, Dict[str, Dict[str, Any]]] = {}  # user_id -> entry_id -> update
-
-    for name_lower, keys in name_to_keys.items():
-        if len(keys) <= 1:
-            continue
-        # Multiple different queries share this name — pick winner by (interest_score, success_rate)
-        def score_key(ck: Tuple[str, str]) -> Tuple[float, float]:
-            b = promotion_map[ck]
-            total = sum(e.get("success_count", 0) + e.get("failure_count", 0) for e in b["entries_by_user"].values())
-            successes = sum(e.get("success_count", 0) for e in b["entries_by_user"].values())
-            rate = successes / total if total > 0 else 0.0
-            return (b["best"].get("interest_score", 0), rate)
-
-        winner_key = max(keys, key=score_key)
-        for ck in keys:
-            if ck == winner_key:
-                continue
-            winner_best = promotion_map[winner_key]["best"]
-            for uid, entry in promotion_map[ck]["entries_by_user"].items():
-                name_collision_losers.setdefault(uid, {})[entry["entry_id"]] = {
-                    "promotion_status": "rejected: name_collision_cross_user",
-                    "promotion_reason": (
-                        f"Another user's query with name '{name_lower}' scored higher "
-                        f"(interest_score={winner_best.get('interest_score', 0)}) and was promoted instead."
-                    ),
-                }
-            del promotion_map[ck]
-
-    # Phase 2: decide promotion outcomes, build per-user status updates
+    # Phase 2: evaluate each canonical key for qualification + sanitization.
+    # Promotion candidates are held pending the name-collision resolution
+    # in phase 2.5 — we intentionally do NOT prune name collisions up front,
+    # because the highest-scoring variant can still fail sanitization, in
+    # which case a lower-scoring clean variant with the same name must take
+    # over instead of being silently dropped.
     now = datetime.now(timezone.utc).isoformat()
-    promoted = []
     status_updates_by_user: Dict[str, Dict[str, Dict[str, Any]]] = {}
-
-    # Seed with name-collision losers
-    for uid, entries in name_collision_losers.items():
-        status_updates_by_user.setdefault(uid, {}).update(entries)
+    # canonical_key -> {"sanitized": entry, "bucket": bucket, "success_rate": float,
+    #                    "interest": int, "uc": int, "total_success": int, "total_failure": int}
+    promote_candidates: Dict[Tuple[str, str], Dict[str, Any]] = {}
 
     for canonical_key, bucket in promotion_map.items():
         best = bucket["best"]
         uc = len(bucket["users"])
 
-        # Aggregate metrics across users
         total_success = sum(e.get("success_count", 0) for e in bucket["entries_by_user"].values())
         total_failure = sum(e.get("failure_count", 0) for e in bucket["entries_by_user"].values())
         total = total_success + total_failure
@@ -203,24 +171,24 @@ def promote_all(base_dir: Path) -> Dict[str, Any]:
         if promoted_flag:
             sanitized = sanitize_for_sharing(best)
             if sanitized is None:
-                status = "rejected: sanitization_failed"
-                reason = "Query contained content that could not be sanitized for sharing"
+                # Sanitization failed — this canonical key is out; a name-
+                # collision peer may still qualify in phase 2.5.
                 for uid, entry in bucket["entries_by_user"].items():
                     status_updates_by_user.setdefault(uid, {})[entry["entry_id"]] = {
-                        "promotion_status": status,
-                        "promotion_reason": reason,
+                        "promotion_status": "rejected: sanitization_failed",
+                        "promotion_reason": "Query contained content that could not be sanitized for sharing",
                     }
                 continue
             sanitized["success_count"] = total_success
             sanitized["failure_count"] = total_failure
             sanitized["interest_score"] = interest
-            promoted.append(sanitized)
-            for uid, entry in bucket["entries_by_user"].items():
-                status_updates_by_user.setdefault(uid, {})[entry["entry_id"]] = {
-                    "promotion_status": "promoted",
-                    "promotion_reason": f"Promoted to shared catalog (users={uc}, success_rate={success_rate:.2f})",
-                    "promoted_at": now,
-                }
+            promote_candidates[canonical_key] = {
+                "sanitized": sanitized,
+                "bucket": bucket,
+                "success_rate": success_rate,
+                "interest": interest,
+                "uc": uc,
+            }
         else:
             if decision_reason and decision_reason.startswith("No execution"):
                 status = "pending"
@@ -235,6 +203,50 @@ def promote_all(base_dir: Path) -> Dict[str, Any]:
                     "promotion_status": status,
                     "promotion_reason": decision_reason,
                 }
+
+    # Phase 2.5: resolve cross-user name collisions among *qualified+sanitized*
+    # candidates only. Losers that already survived qualification and
+    # sanitization are flipped to 'rejected: name_collision_cross_user'.
+    # Candidates that failed earlier stages were never here to begin with, so
+    # their spot can be reclaimed by a lower-scoring clean peer.
+    name_groups: Dict[str, List[Tuple[str, str]]] = {}
+    for ck in promote_candidates:
+        name_groups.setdefault(ck[0], []).append(ck)
+
+    promoted: List[Dict[str, Any]] = []
+    for name_lower, keys in name_groups.items():
+        if len(keys) == 1:
+            winner_key = keys[0]
+        else:
+            def score_key(ck: Tuple[str, str]) -> Tuple[int, float]:
+                c = promote_candidates[ck]
+                return (c["interest"], c["success_rate"])
+            winner_key = max(keys, key=score_key)
+            winner_interest = promote_candidates[winner_key]["interest"]
+            for ck in keys:
+                if ck == winner_key:
+                    continue
+                loser_bucket = promote_candidates[ck]["bucket"]
+                for uid, entry in loser_bucket["entries_by_user"].items():
+                    status_updates_by_user.setdefault(uid, {})[entry["entry_id"]] = {
+                        "promotion_status": "rejected: name_collision_cross_user",
+                        "promotion_reason": (
+                            f"Another user's query with name '{name_lower}' scored higher "
+                            f"(interest_score={winner_interest}) and was promoted instead."
+                        ),
+                    }
+
+        winner = promote_candidates[winner_key]
+        promoted.append(winner["sanitized"])
+        for uid, entry in winner["bucket"]["entries_by_user"].items():
+            status_updates_by_user.setdefault(uid, {})[entry["entry_id"]] = {
+                "promotion_status": "promoted",
+                "promotion_reason": (
+                    f"Promoted to shared catalog (users={winner['uc']}, "
+                    f"success_rate={winner['success_rate']:.2f})"
+                ),
+                "promoted_at": now,
+            }
 
     # Phase 3: write shared file (under shared lock)
     promoted.sort(key=lambda q: q.get("interest_score", 0), reverse=True)
