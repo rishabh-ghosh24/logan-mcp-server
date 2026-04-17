@@ -162,3 +162,79 @@ class TestFilterQueries:
         store.save_query(name="untagged", query="q2", description="test", category="general")
         result = store.list_queries(tag="auto-saved")
         assert len(result) == 1
+
+
+class TestEntryId:
+    def test_save_query_generates_entry_id(self, tmp_path):
+        """New entries get a UUID4 hex entry_id."""
+        store = UserStore(base_dir=tmp_path, user_id="alice")
+        saved = store.save_query(name="q1", query="* | head 5", description="d")
+        assert "entry_id" in saved
+        assert len(saved["entry_id"]) == 32  # UUID4 hex
+        assert all(c in "0123456789abcdef" for c in saved["entry_id"])
+
+    def test_save_query_name_dedup_preserves_entry_id(self, tmp_path):
+        """Updating an existing entry by name preserves its original entry_id."""
+        store = UserStore(base_dir=tmp_path, user_id="alice")
+        first = store.save_query(name="q1", query="* | head 5", description="d1")
+        original_id = first["entry_id"]
+        # Save again with same name, different query text — goes through name-dedup path
+        second = store.save_query(name="q1", query="* | head 10", description="d2")
+        assert second["entry_id"] == original_id
+
+    def test_save_query_text_dedup_preserves_entry_id(self, tmp_path):
+        """Updating an existing entry by query text preserves its original entry_id."""
+        store = UserStore(base_dir=tmp_path, user_id="alice")
+        first = store.save_query(name="q1", query="* | head 5", description="d")
+        original_id = first["entry_id"]
+        # Same query text, different name — goes through text-dedup path
+        second = store.save_query(name="q1_renamed", query="* | head 5", description="d2")
+        assert second["entry_id"] == original_id
+        # The entry's name was updated
+        assert second["name"] == "q1_renamed"
+
+    def test_load_backfills_entry_id_for_legacy_entries(self, tmp_path):
+        """Entries in legacy YAML without entry_id get UUIDs assigned on first load,
+        and the file is rewritten so subsequent loads don't regenerate them."""
+        # Write a legacy-style YAML (no entry_id) directly
+        user_dir = tmp_path / "users" / "alice"
+        user_dir.mkdir(parents=True)
+        queries_file = user_dir / "learned_queries.yaml"
+        import yaml
+        queries_file.write_text(yaml.dump({
+            "version": 1,
+            "queries": [
+                {"name": "legacy1", "query": "*", "description": "old"},
+                {"name": "legacy2", "query": "* | head 5", "description": "old"},
+            ],
+        }))
+
+        # First load — should backfill
+        store = UserStore(base_dir=tmp_path, user_id="alice")
+        queries = store.list_queries()
+        assert len(queries) == 2
+        ids_after_first = [q["entry_id"] for q in queries]
+        assert all(len(eid) == 32 for eid in ids_after_first)
+
+        # Second load — UUIDs should be SAME (idempotent, not regenerated)
+        store2 = UserStore(base_dir=tmp_path, user_id="alice")
+        queries2 = store2.list_queries()
+        ids_after_second = [q["entry_id"] for q in queries2]
+        assert sorted(ids_after_first) == sorted(ids_after_second)
+
+    def test_save_query_existing_entry_id_not_overwritten(self, tmp_path):
+        """If an entry in YAML already has an entry_id, it stays."""
+        user_dir = tmp_path / "users" / "alice"
+        user_dir.mkdir(parents=True)
+        queries_file = user_dir / "learned_queries.yaml"
+        import yaml
+        custom_id = "abcd1234" * 4  # 32 chars
+        queries_file.write_text(yaml.dump({
+            "version": 1,
+            "queries": [
+                {"name": "preset", "query": "*", "description": "d", "entry_id": custom_id},
+            ],
+        }))
+        store = UserStore(base_dir=tmp_path, user_id="alice")
+        queries = store.list_queries()
+        assert queries[0]["entry_id"] == custom_id

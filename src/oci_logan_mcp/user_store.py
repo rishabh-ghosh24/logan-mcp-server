@@ -7,6 +7,7 @@ import os
 import re
 import shutil
 import threading
+import uuid
 from copy import deepcopy
 from datetime import datetime, timezone
 from pathlib import Path
@@ -87,6 +88,7 @@ class UserStore:
 
             # New entry
             entry = {
+                "entry_id": uuid.uuid4().hex,
                 "name": name,
                 "query": query.strip(),
                 "description": description,
@@ -194,8 +196,22 @@ class UserStore:
         data = atomic_yaml_read(path, default={"queries": []})
         return deepcopy(data.get("queries", []))
 
+    def _backfill_entry_ids(self, data: Dict[str, Any]) -> bool:
+        """Assign UUIDs to any entry missing entry_id. Returns True if any entry was modified.
+        Idempotent: entries already having entry_id are untouched."""
+        modified = False
+        for q in data.get("queries", []):
+            if not q.get("entry_id"):
+                q["entry_id"] = uuid.uuid4().hex
+                modified = True
+        return modified
+
     def _load(self) -> Dict[str, Any]:
-        return atomic_yaml_read(self._queries_path, default={"version": 1, "queries": []})
+        # Caller must hold self._lock_path
+        data = atomic_yaml_read(self._queries_path, default={"version": 1, "queries": []})
+        if self._backfill_entry_ids(data):
+            atomic_yaml_write(self._queries_path, data)
+        return data
 
     def _save(self, data: Dict[str, Any]) -> None:
         data["last_updated"] = datetime.now(timezone.utc).isoformat()
