@@ -104,7 +104,7 @@ class TestMergedQueries:
                          "category": "general", "tags": [], "use_count": 5, "success_count": 4,
                          "failure_count": 1, "interest_score": 3, "source": "shared"}],
         })
-        store.save_query(name="q1", query="my version", description="personal", category="general")
+        store.save_query(name="q1", query="my version", description="personal", category="general", force=True)
         merged = store.list_merged_queries()
         q1 = next(q for q in merged if q["name"] == "q1")
         assert q1["query"] == "my version"

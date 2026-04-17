@@ -191,7 +191,7 @@ def test_for_my_queries_personal_wins_over_shared(tmp_path):
     }))
     # Seed personal with q1 (different query)
     store = UserStore(base_dir=tmp_path, user_id="alice")
-    store.save_query(name="q1", query="* personal", description="personal version")
+    store.save_query(name="q1", query="* personal", description="personal version", force=True)
 
     catalog = UnifiedCatalog(base_dir=tmp_path)
     merged = catalog.for_my_queries_view(user_id="alice")
@@ -244,7 +244,7 @@ def test_merge_by_name_case_insensitive(tmp_path):
         "queries": [{"name": "MyQuery", "query": "* shared", "description": "shared"}]
     }))
     store = UserStore(base_dir=tmp_path, user_id="alice")
-    store.save_query(name="myquery", query="* personal", description="personal")
+    store.save_query(name="myquery", query="* personal", description="personal", force=True)
 
     catalog = UnifiedCatalog(base_dir=tmp_path)
     merged = catalog.for_my_queries_view(user_id="alice")
