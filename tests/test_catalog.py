@@ -77,3 +77,50 @@ def test_get_query_templates_reads_yaml():
     # Byte-exact regression guard for at least one template
     errors = next(t for t in result["templates"] if t["name"] == "errors_last_hour")
     assert errors["query"] == "'Error' or 'Critical' | timestats span = 1hour count by 'Log Source'"
+
+
+def test_parse_queries_skips_non_dict_entries(tmp_path):
+    """_parse_queries skips non-dict entries and logs them."""
+    catalog = UnifiedCatalog(base_dir=tmp_path)
+    data = {
+        "queries": [
+            "not a dict",
+            {"name": "ok", "query": "*", "description": "d"},
+        ]
+    }
+    entries = catalog._parse_queries(data, SourceType.BUILTIN, origin="test")
+    assert len(entries) == 1
+    assert entries[0].name == "ok"
+
+
+def test_parse_queries_skips_entries_missing_required_keys(tmp_path):
+    """_parse_queries skips entries missing required keys and logs them."""
+    catalog = UnifiedCatalog(base_dir=tmp_path)
+    data = {
+        "queries": [
+            {"name": "no_query", "description": "x"},  # missing 'query'
+            {"query": "*", "description": "x"},  # missing 'name'
+            {"name": "ok", "query": "*", "description": "d"},
+        ]
+    }
+    entries = catalog._parse_queries(data, SourceType.BUILTIN, origin="test")
+    assert len(entries) == 1
+    assert entries[0].name == "ok"
+
+
+def test_parse_queries_coerces_non_list_tags(tmp_path):
+    """_parse_queries coerces non-list tags to empty list and logs warning."""
+    catalog = UnifiedCatalog(base_dir=tmp_path)
+    data = {
+        "queries": [
+            {
+                "name": "bad_tags",
+                "query": "*",
+                "description": "d",
+                "tags": "not-a-list",
+            },
+        ]
+    }
+    entries = catalog._parse_queries(data, SourceType.BUILTIN, origin="test")
+    assert len(entries) == 1
+    assert entries[0].tags == []

@@ -72,35 +72,33 @@ class UnifiedCatalog:
         """
         return self._load_packaged_yaml("starter_queries.yaml", SourceType.STARTER)
 
-    def _load_packaged_yaml(self, filename: str, source: SourceType) -> List[CatalogEntry]:
-        """Load queries from a packaged YAML file.
+    def _parse_queries(
+        self, data: dict, source: SourceType, origin: str
+    ) -> List[CatalogEntry]:
+        """Parse a loaded YAML dict into CatalogEntry list, skipping malformed entries.
 
         Args:
-            filename: Name of YAML file in src/oci_logan_mcp/data/ directory.
-            source: SourceType to assign to loaded entries.
+            data: Parsed YAML data dict (expected to have "queries" key).
+            source: SourceType to assign to entries.
+            origin: Origin string for logging (filename or description).
 
         Returns:
-            List of CatalogEntry objects. Returns [] on any failure.
+            List of CatalogEntry objects. Malformed entries are logged and skipped.
         """
-        try:
-            data_file = importlib.resources.files("oci_logan_mcp") / "data" / filename
-            raw = data_file.read_text(encoding="utf-8")
-            data = yaml.safe_load(raw) or {}
-        except Exception:
-            return []
-
         out = []
         for q in data.get("queries", []):
             if not isinstance(q, dict):
+                logger.warning(f"{origin}: skipping non-dict entry: {q!r}")
                 continue
             if not {"name", "query", "description"} <= q.keys():
+                logger.warning(f"{origin}: skipping entry missing required keys: {q!r}")
                 continue
 
             # Defensively coerce tags to list if present
             tags = q.get("tags", [])
             if not isinstance(tags, list):
                 logger.warning(
-                    f"{filename}: Entry '{q.get('name')}' has non-list tags, coercing to []"
+                    f"{origin}: non-list tags coerced to [] for entry {q['name']}"
                 )
                 tags = []
 
@@ -117,3 +115,23 @@ class UnifiedCatalog:
             )
 
         return out
+
+    def _load_packaged_yaml(self, filename: str, source: SourceType) -> List[CatalogEntry]:
+        """Load queries from a packaged YAML file.
+
+        Args:
+            filename: Name of YAML file in src/oci_logan_mcp/data/ directory.
+            source: SourceType to assign to loaded entries.
+
+        Returns:
+            List of CatalogEntry objects. Returns [] on any failure.
+        """
+        try:
+            data_file = importlib.resources.files("oci_logan_mcp") / "data" / filename
+            raw = data_file.read_text(encoding="utf-8")
+            data = yaml.safe_load(raw) or {}
+        except (FileNotFoundError, yaml.YAMLError, UnicodeDecodeError) as e:
+            logger.error(f"Failed to load packaged YAML {filename}: {e}")
+            return []
+
+        return self._parse_queries(data, source, origin=filename)
