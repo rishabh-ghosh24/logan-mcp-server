@@ -79,8 +79,6 @@ def mock_context_manager():
     ctx.update_confirmed_fields = MagicMock(return_value="10 total (0 new)")
     ctx.update_compartments = MagicMock(return_value="3 total (0 new)")
     ctx.save_learned_query = MagicMock(return_value={"name": "test", "use_count": 1})
-    ctx.list_learned_queries = MagicMock(return_value=[])
-    ctx.delete_learned_query = MagicMock(return_value=True)
     ctx.record_query_usage = MagicMock()
     ctx.add_note = MagicMock()
     ctx.get_tenancy_context = MagicMock(return_value={"namespace": "testns"})
@@ -185,8 +183,8 @@ class TestToolRouting:
             "get_current_context", "list_compartments", "test_connection",
             "find_compartment", "get_query_examples", "get_log_summary",
             "setup_confirmation_secret",
-            "save_learned_query", "list_learned_queries",
-            "update_tenancy_context", "delete_learned_query",
+            "save_learned_query",
+            "update_tenancy_context",
             "get_preferences", "remember_preference",
         ]
         # Invoke handle_tool_call to initialize the handlers dict
@@ -397,36 +395,6 @@ class TestMemoryHandlers:
         queries = mock_user_store.list_queries()
         assert len(queries) == 1
         assert queries[0]["name"] == "error_count"
-
-    @pytest.mark.asyncio
-    async def test_list_learned_queries(self, handlers, mock_user_store):
-        """Should return list of learned queries including the saved personal one."""
-        mock_user_store.save_query(
-            name="q1", query="* | head 10", description="test", category="general"
-        )
-        result = await handlers._list_learned_queries({"category": "all"})
-        data = json.loads(result[0]["text"])
-        # Catalog path includes builtins + starters, so count > 1
-        assert data["count"] >= 1
-        names = {q["name"] for q in data["queries"]}
-        assert "q1" in names
-
-    @pytest.mark.asyncio
-    async def test_delete_learned_query_found(self, handlers, mock_user_store):
-        """Should delete and return success status."""
-        mock_user_store.save_query(
-            name="q1", query="test", description="test", category="general"
-        )
-        result = await handlers._delete_learned_query({"name": "q1"})
-        data = json.loads(result[0]["text"])
-        assert data["status"] == "deleted"
-
-    @pytest.mark.asyncio
-    async def test_delete_learned_query_not_found(self, handlers, mock_user_store):
-        """Should return not_found when query doesn't exist."""
-        result = await handlers._delete_learned_query({"name": "nonexistent"})
-        data = json.loads(result[0]["text"])
-        assert data["status"] == "not_found"
 
     @pytest.mark.asyncio
     async def test_update_tenancy_context_notes(self, handlers, mock_context_manager):
@@ -1086,154 +1054,3 @@ class TestAuditLogging:
         assert "confirmation_requested" in outcomes
         assert "confirmed" in outcomes
         assert "executed" in outcomes
-
-
-# ---------------------------------------------------------------------------
-# list_learned_queries catalog routing tests (Task 7)
-# ---------------------------------------------------------------------------
-
-def _make_handler_with_tmp(tmp_path, user_id="testuser"):
-    """Helper: build a real MCPHandlers with file-backed stores under tmp_path."""
-    import yaml
-    from oci_logan_mcp.user_store import UserStore
-    from oci_logan_mcp.preferences import PreferenceStore
-    from oci_logan_mcp.secret_store import SecretStore
-    from oci_logan_mcp.audit import AuditLogger
-    from unittest.mock import MagicMock
-
-    user_store = UserStore(base_dir=tmp_path, user_id=user_id)
-    user_dir = tmp_path / "users" / user_id
-    user_dir.mkdir(parents=True, exist_ok=True)
-    pref_store = PreferenceStore(user_dir=user_dir)
-    secret_store = SecretStore(tmp_path / "secret.yaml")
-    audit = AuditLogger(tmp_path / "audit")
-
-    s = Settings()
-    s.log_analytics.namespace = "testns"
-    s.log_analytics.default_compartment_id = "ocid1.compartment.default"
-    s.query.max_results = 1000
-    s.query.default_time_range = "last_1_hour"
-
-    oci_client = MagicMock()
-    oci_client.namespace = "testns"
-    oci_client.compartment_id = "ocid1.compartment.default"
-    oci_client._config = {"tenancy": "ocid1.tenancy.test"}
-    cache = MagicMock()
-    cache.get = MagicMock(return_value=None)
-    cache.set = MagicMock()
-    query_logger = MagicMock()
-    query_logger.get_recent_queries = MagicMock(return_value=[])
-    ctx = MagicMock()
-    ctx.get_tenancy_context = MagicMock(return_value={"namespace": "testns"})
-
-    return MCPHandlers(
-        settings=s,
-        oci_client=oci_client,
-        cache=cache,
-        query_logger=query_logger,
-        context_manager=ctx,
-        user_store=user_store,
-        preference_store=pref_store,
-        secret_store=secret_store,
-        audit_logger=audit,
-    ), user_store
-
-
-@pytest.mark.asyncio
-async def test_list_learned_queries_includes_source_field(tmp_path):
-    """After rewiring, each returned query has a `source` field."""
-    import yaml
-
-    # Seed a shared query
-    shared_dir = tmp_path / "shared"
-    shared_dir.mkdir()
-    (shared_dir / "promoted_queries.yaml").write_text(yaml.dump({
-        "queries": [{"name": "shared_q", "query": "* | stats count",
-                     "description": "a shared query"}]
-    }))
-
-    handler, user_store = _make_handler_with_tmp(tmp_path)
-    # Save a personal query
-    user_store.save_query(name="personal_q", query="* | head 5",
-                          description="personal", category="general")
-
-    result = await handler._list_learned_queries({})
-    body = json.loads(result[0]["text"])
-    assert body["count"] > 0
-    for q in body["queries"]:
-        assert "source" in q, f"Missing 'source' in {q}"
-        assert q["source"] in {"personal", "shared", "builtin", "starter"}
-
-
-@pytest.mark.asyncio
-async def test_list_learned_queries_includes_builtin_entries(tmp_path):
-    """After routing through catalog.for_my_queries_view, builtin entries appear.
-    This would fail if the old list_merged_queries path were used (no builtins there)."""
-    handler, _user_store = _make_handler_with_tmp(tmp_path)
-
-    result = await handler._list_learned_queries({})
-    body = json.loads(result[0]["text"])
-    sources = {q["source"] for q in body["queries"]}
-    assert "builtin" in sources, (
-        "Expected builtin entries to appear when routing through catalog.for_my_queries_view; "
-        "old list_merged_queries path does not include builtins"
-    )
-
-
-@pytest.mark.asyncio
-async def test_list_learned_queries_personal_wins_over_shared(tmp_path):
-    """If a personal and shared entry share a name, personal wins."""
-    import yaml
-
-    # Seed shared query named "q1"
-    shared_dir = tmp_path / "shared"
-    shared_dir.mkdir()
-    (shared_dir / "promoted_queries.yaml").write_text(yaml.dump({
-        "queries": [{"name": "q1", "query": "shared version",
-                     "description": "shared q1"}]
-    }))
-
-    handler, user_store = _make_handler_with_tmp(tmp_path)
-    # Save personal query named "q1" with different text
-    user_store.save_query(name="q1", query="personal version",
-                          description="personal q1", category="general")
-
-    result = await handler._list_learned_queries({})
-    body = json.loads(result[0]["text"])
-
-    q1_entries = [q for q in body["queries"] if q["name"] == "q1"]
-    assert len(q1_entries) == 1, "Should have exactly one 'q1' entry"
-    assert q1_entries[0]["source"] == "personal"
-    assert q1_entries[0]["query"] == "personal version"
-
-
-@pytest.mark.asyncio
-async def test_list_learned_queries_filters_by_category(tmp_path):
-    """category filter applies correctly to merged results."""
-    handler, user_store = _make_handler_with_tmp(tmp_path)
-    user_store.save_query(name="net_q", query="* | stats count",
-                          description="network", category="network")
-    user_store.save_query(name="sec_q", query="* | head 10",
-                          description="security", category="security")
-
-    result = await handler._list_learned_queries({"category": "network"})
-    body = json.loads(result[0]["text"])
-    for q in body["queries"]:
-        assert q["category"] == "network"
-    names = {q["name"] for q in body["queries"]}
-    assert "net_q" in names
-    assert "sec_q" not in names
-
-
-@pytest.mark.asyncio
-async def test_list_learned_queries_legacy_path_when_catalog_none(tmp_path):
-    """Legacy user_store path still works when catalog is explicitly None."""
-    handler, user_store = _make_handler_with_tmp(tmp_path)
-    handler.catalog = None
-    user_store.save_query(name="legacy_q", query="* | head 1",
-                          description="legacy", category="general")
-
-    result = await handler._list_learned_queries({})
-    body = json.loads(result[0]["text"])
-    assert "queries" in body
-    assert body["count"] >= 1

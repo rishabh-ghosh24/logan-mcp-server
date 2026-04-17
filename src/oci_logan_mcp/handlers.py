@@ -119,9 +119,7 @@ class MCPHandlers:
             "setup_confirmation_secret": self._setup_confirmation_secret,
             # Memory & context
             "save_learned_query": self._save_learned_query,
-            "list_learned_queries": self._list_learned_queries,
             "update_tenancy_context": self._update_tenancy_context,
-            "delete_learned_query": self._delete_learned_query,
             # Preferences
             "get_preferences": self._get_preferences,
             "remember_preference": self._remember_preference,
@@ -294,27 +292,6 @@ class MCPHandlers:
             "name": entry.name,
             "description": entry.description,
             "query": entry.query,
-        }
-
-    def _catalog_entry_to_list_dict(self, entry: "CatalogEntry") -> Dict[str, Any]:
-        """Serialize a CatalogEntry to the list_learned_queries shape.
-        Unlike _catalog_entry_to_dict (which is minimal for the templates resource),
-        this includes provenance and metrics so users can see what's theirs vs shared.
-        """
-        return {
-            "name": entry.name,
-            "query": entry.query,
-            "description": entry.description,
-            "category": entry.category,
-            "tags": entry.tags,
-            "source": entry.source.value,  # "personal" | "shared" | "builtin" | "starter"
-            "interest_score": entry.interest_score,
-            "success_count": entry.success_count,
-            "failure_count": entry.failure_count,
-            "use_count": entry.use_count,
-            "created_at": entry.created_at,
-            "last_used": entry.last_used,
-            "promoted_at": entry.promoted_at,
         }
 
     # Tool implementations
@@ -970,37 +947,6 @@ class MCPHandlers:
             "message": f"Query '{args['name']}' saved. It will be available in future sessions.",
         }, indent=2, default=str)}]
 
-    async def _list_learned_queries(self, args: Dict) -> List[Dict]:
-        """List previously saved learned queries (merged personal + shared + builtin + starter)."""
-        category_filter = args.get("category")
-        tag_filter = args.get("tag")
-
-        if self.catalog is not None and self.user_store is not None:
-            entries = self.catalog.for_my_queries_view(user_id=self.user_store.user_id)
-            # Apply filters
-            if category_filter and category_filter != "all":
-                entries = [e for e in entries if e.category == category_filter]
-            if tag_filter:
-                entries = [e for e in entries if tag_filter in e.tags]
-            # Serialize to the same dict shape as before
-            queries = [self._catalog_entry_to_list_dict(e) for e in entries]
-        elif self.user_store:
-            # Legacy fallback (path retained until Task 9)
-            queries = self.user_store.list_merged_queries(
-                category=category_filter,
-                tag=tag_filter,
-            )
-        else:
-            queries = self.context_manager.list_learned_queries(
-                category=category_filter,
-                tag=tag_filter,
-            )
-
-        return [{"type": "text", "text": json.dumps({
-            "count": len(queries),
-            "queries": queries,
-        }, indent=2, default=str)}]
-
     async def _update_tenancy_context(self, args: Dict) -> List[Dict]:
         """Update persistent tenancy context."""
         updated = []
@@ -1019,23 +965,6 @@ class MCPHandlers:
             "changes": updated,
             "message": "Tenancy context updated. Changes persist across sessions.",
         }, indent=2)}]
-
-    async def _delete_learned_query(self, args: Dict) -> List[Dict]:
-        """Delete a learned query by name."""
-        if self.user_store:
-            deleted = self.user_store.delete_query(args["name"])
-        else:
-            deleted = self.context_manager.delete_learned_query(args["name"])
-        if deleted:
-            return [{"type": "text", "text": json.dumps({
-                "status": "deleted",
-                "message": f"Query '{args['name']}' deleted.",
-            }, indent=2)}]
-        else:
-            return [{"type": "text", "text": json.dumps({
-                "status": "not_found",
-                "message": f"No learned query named '{args['name']}' found.",
-            }, indent=2)}]
 
     async def _get_preferences(self, args: Dict) -> List[Dict]:
         """Get learned user preferences."""

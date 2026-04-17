@@ -134,7 +134,7 @@ Click **Save**, then start a new Codex session to connect.
 | **Export** | `export_results` | Export query results to CSV or JSON |
 | **Manage scope** | `set_compartment`, `set_namespace`, `find_compartment`, `list_compartments` | Switch compartments, query across tenancy |
 | **Validate** | `validate_query`, `get_query_examples` | Check syntax, get curated starter examples by category (included with install) |
-| **Remember** | `save_learned_query`, `list_learned_queries`, `get_preferences`, `remember_preference` | Save queries, learn field preferences and time ranges per log source |
+| **Remember** | `save_learned_query`, `get_preferences`, `remember_preference` | Save queries for improved future suggestions, learn field preferences and time ranges per log source |
 | **Monitor** | `test_connection`, `get_current_context`, `get_log_summary` | Check connectivity, see current config, view log volume |
 
 ## Multi-User Learning
