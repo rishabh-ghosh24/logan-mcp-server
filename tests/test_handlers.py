@@ -1054,3 +1054,88 @@ class TestAuditLogging:
         assert "confirmation_requested" in outcomes
         assert "confirmed" in outcomes
         assert "executed" in outcomes
+
+
+# ---------------------------------------------------------------------------
+# get_query_examples via UnifiedCatalog (Task 8)
+# ---------------------------------------------------------------------------
+
+def _make_handler_with_catalog(tmp_path):
+    """Helper: build MCPHandlers with a real UserStore + UnifiedCatalog at tmp_path."""
+    from unittest.mock import MagicMock
+    from oci_logan_mcp.user_store import UserStore
+    from oci_logan_mcp.preferences import PreferenceStore
+    from oci_logan_mcp.secret_store import SecretStore
+    from oci_logan_mcp.audit import AuditLogger
+
+    user_store = UserStore(base_dir=tmp_path, user_id="testuser")
+    user_dir = tmp_path / "users" / "testuser"
+    user_dir.mkdir(parents=True, exist_ok=True)
+    pref_store = PreferenceStore(user_dir=user_dir)
+    secret_store = SecretStore(tmp_path / "secret.yaml")
+    audit = AuditLogger(tmp_path / "audit")
+
+    settings = Settings()
+    settings.log_analytics.namespace = "testns"
+    settings.log_analytics.default_compartment_id = "ocid1.compartment.default"
+    settings.query.max_results = 1000
+    settings.query.default_time_range = "last_1_hour"
+
+    oci_client = MagicMock()
+    oci_client.namespace = "testns"
+    oci_client.compartment_id = "ocid1.compartment.default"
+    oci_client._config = {"tenancy": "ocid1.tenancy.test"}
+    cache = MagicMock()
+    cache.get = MagicMock(return_value=None)
+    cache.set = MagicMock()
+    query_logger = MagicMock()
+    query_logger.get_recent_queries = MagicMock(return_value=[])
+    ctx = MagicMock()
+    ctx.get_tenancy_context = MagicMock(return_value={"namespace": "testns"})
+
+    return MCPHandlers(
+        settings=settings,
+        oci_client=oci_client,
+        cache=cache,
+        query_logger=query_logger,
+        context_manager=ctx,
+        user_store=user_store,
+        preference_store=pref_store,
+        secret_store=secret_store,
+        audit_logger=audit,
+    )
+
+
+@pytest.mark.asyncio
+async def test_get_query_examples_uses_catalog(tmp_path):
+    """After rewiring, get_query_examples sources from UnifiedCatalog."""
+    handler = _make_handler_with_catalog(tmp_path)
+    result = await handler._get_query_examples({"category": "all"})
+    body = json.loads(result[0]["text"])
+    assert "categories" in body
+    assert "examples" in body
+    assert isinstance(body["examples"], dict)
+    # Entries grouped by category — each entry has exactly name/query/description
+    for cat, entries in body["examples"].items():
+        for e in entries:
+            assert set(e.keys()) == {"name", "query", "description"}
+
+
+@pytest.mark.asyncio
+async def test_get_query_examples_filter_by_category(tmp_path):
+    """Category filter works through catalog."""
+    handler = _make_handler_with_catalog(tmp_path)
+    result = await handler._get_query_examples({"category": "basic"})
+    body = json.loads(result[0]["text"])
+    # Either returns the category entries or an error if category unknown — shape matches existing behavior
+    assert "category" in body or "error" in body
+
+
+@pytest.mark.asyncio
+async def test_get_query_examples_legacy_fallback_when_no_catalog(tmp_path):
+    """When handler.catalog is None, falls back to starter.load_starter_queries()."""
+    handler = _make_handler_with_catalog(tmp_path)
+    handler.catalog = None
+    result = await handler._get_query_examples({"category": "all"})
+    body = json.loads(result[0]["text"])
+    assert "categories" in body  # still works

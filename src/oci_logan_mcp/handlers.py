@@ -773,16 +773,23 @@ class MCPHandlers:
             }, indent=2)}]
 
     async def _get_query_examples(self, args: Dict) -> List[Dict]:
-        """Get example queries for common use cases.
-
-        Loads curated examples from the packaged starter YAML file.
-        Falls back to hardcoded examples if the YAML cannot be loaded.
-        """
-        from .starter import load_starter_queries
-
-        examples = load_starter_queries() or _FALLBACK_EXAMPLES
-
+        """Get example queries for common use cases (onboarding surface)."""
         category = args.get("category", "all")
+
+        # Primary path: catalog-driven (starter entries; Task 15 will add community favorites)
+        if self.catalog is not None:
+            entries = self.catalog.for_onboarding()
+            examples: Dict[str, List[Dict[str, Any]]] = {}
+            for e in entries:
+                examples.setdefault(e.category, []).append({
+                    "name": e.name,
+                    "query": e.query,
+                    "description": e.description,
+                })
+        else:
+            # Legacy fallback until Task 9 makes user_store mandatory
+            from .starter import load_starter_queries
+            examples = load_starter_queries() or _FALLBACK_EXAMPLES
 
         if category == "all":
             result = {
