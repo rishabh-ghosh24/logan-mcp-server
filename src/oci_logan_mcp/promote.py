@@ -264,6 +264,16 @@ def promote_all(base_dir: Path) -> Dict[str, Any]:
         }
         for p in promoted:
             ck = (p["name"].lower(), normalize_query_text(p["query"]))
+            name_lower = ck[0]
+            # Evict stale same-name entries whose canonical key differs from
+            # the new winner. This run's phase 2.5 already chose exactly one
+            # winner per name among qualified candidates and flipped the losers'
+            # per-user statuses to 'rejected: name_collision_cross_user'; the
+            # shared catalog must reflect that decision. Otherwise a previously
+            # promoted same-name entry from an earlier run lingers and
+            # contradicts the per-user state.
+            for stale_key in [k for k in existing_by_canonical if k[0] == name_lower and k != ck]:
+                del existing_by_canonical[stale_key]
             existing_by_canonical[ck] = p
         final = list(existing_by_canonical.values())
         final.sort(key=lambda q: q.get("interest_score", 0), reverse=True)

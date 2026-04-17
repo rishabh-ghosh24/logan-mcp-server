@@ -267,6 +267,69 @@ def test_name_collision_resolved_when_multiple_candidates_qualify(tmp_path):
     assert bob_data["queries"][0]["promotion_status"] == "rejected: name_collision_cross_user"
 
 
+def test_phase3_evicts_stale_same_name_entry_when_new_winner_chosen(tmp_path):
+    """Multi-run scenario: Bob's query is promoted to shared under name 'shared_name'.
+    A later run sees Alice with a DIFFERENT query text under the same name, scoring
+    higher. Alice must supersede Bob in shared — the stale Bob entry (same name,
+    different canonical key) must be evicted so shared does not carry two entries
+    with identical names and divergent queries.
+
+    This is the case where per-user statuses and the shared catalog would otherwise
+    disagree: Bob flagged 'rejected: name_collision_cross_user', Alice 'promoted',
+    but shared/promoted_queries.yaml still contains both under the same name.
+    """
+    # --- Run 1: Bob promotes 'shared_name' with text B ---
+    store_b = UserStore(base_dir=tmp_path, user_id="bob")
+    store_b.save_query(
+        name="shared_name",
+        query="'Log Source' = 'Linux' | stats count by Host",
+        description="bob's version",
+        interest_score=5,
+    )
+    qpath_b = tmp_path / "users" / "bob" / "learned_queries.yaml"
+    data = yaml.safe_load(qpath_b.read_text())
+    data["queries"][0]["success_count"] = 10
+    qpath_b.write_text(yaml.dump(data))
+
+    promote_all(tmp_path)
+
+    shared_path = tmp_path / "shared" / "promoted_queries.yaml"
+    shared = yaml.safe_load(shared_path.read_text())
+    assert len(shared["queries"]) == 1
+    assert shared["queries"][0]["name"] == "shared_name"
+    bobs_query_text = shared["queries"][0]["query"]
+
+    # --- Run 2: Alice arrives with different text under same name, higher score.
+    # Use force=True because the save-time collision guard would otherwise block
+    # her (Bob's version is now in the shared catalog). We are testing promotion
+    # reconciliation, not the save guard. ---
+    store_a = UserStore(base_dir=tmp_path, user_id="alice")
+    store_a.save_query(
+        name="shared_name",
+        query="'Log Source' = 'Linux' | timestats count",
+        description="alice's better version",
+        interest_score=9,
+        force=True,
+    )
+    qpath_a = tmp_path / "users" / "alice" / "learned_queries.yaml"
+    data = yaml.safe_load(qpath_a.read_text())
+    data["queries"][0]["success_count"] = 15
+    qpath_a.write_text(yaml.dump(data))
+
+    promote_all(tmp_path)
+
+    # Shared catalog must have exactly one 'shared_name' entry, and it must be Alice's.
+    shared = yaml.safe_load(shared_path.read_text())
+    same_name_entries = [q for q in shared["queries"] if q["name"].lower() == "shared_name"]
+    assert len(same_name_entries) == 1, (
+        f"Stale same-name entry not evicted from shared: {same_name_entries}"
+    )
+    assert same_name_entries[0]["query"] != bobs_query_text, (
+        "Shared still holds Bob's stale query after Alice superseded him"
+    )
+    assert "timestats" in same_name_entries[0]["query"]
+
+
 def test_promote_backfills_legacy_entries_without_entry_id(tmp_path):
     """A pre-1.2.0 learned_queries.yaml (no entry_id on any entry) must still
     be scanned, backfilled, and promoted by promote_all — even if the file has
