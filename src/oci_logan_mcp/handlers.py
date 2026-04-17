@@ -2,7 +2,7 @@
 
 import json
 import logging
-from typing import Any, Dict, List, Optional
+from typing import TYPE_CHECKING, Any, Dict, List, Optional
 
 from .query_engine import QueryEngine
 from .schema_manager import SchemaManager
@@ -25,6 +25,9 @@ from .notification_service import NotificationService
 from .confirmation import ConfirmationManager
 from .secret_store import SecretStore
 from .audit import AuditLogger
+
+if TYPE_CHECKING:
+    from .catalog import CatalogEntry
 
 logger = logging.getLogger(__name__)
 
@@ -284,7 +287,7 @@ class MCPHandlers:
         else:
             raise ValueError(f"Unknown resource: {uri}")
 
-    def _catalog_entry_to_dict(self, entry: Any) -> Dict[str, Any]:
+    def _catalog_entry_to_dict(self, entry: "CatalogEntry") -> Dict[str, Any]:
         """Serialize a CatalogEntry to the query-templates resource wire format.
         Keep keys minimal and stable — MCP clients depend on this shape."""
         return {

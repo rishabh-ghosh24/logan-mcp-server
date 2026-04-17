@@ -578,11 +578,12 @@ class TestResourceRead:
         # Top-level: exactly one key "templates" whose value is a list
         assert set(result.keys()) == {"templates"}
         assert isinstance(result["templates"], list)
-        # Every entry: at minimum name, query, description as strings
+        # Every entry: exactly name, query, description as strings
         for t in result["templates"]:
-            assert isinstance(t.get("name"), str)
-            assert isinstance(t.get("query"), str)
-            assert isinstance(t.get("description"), str)
+            assert set(t.keys()) == {"name", "description", "query"}
+            assert isinstance(t["name"], str)
+            assert isinstance(t["query"], str)
+            assert isinstance(t["description"], str)
 
 
 # ---------------------------------------------------------------------------
