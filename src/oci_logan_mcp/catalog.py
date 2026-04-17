@@ -174,9 +174,22 @@ class UnifiedCatalog:
         """builtin > shared. Personal and starter excluded."""
         return self._merge_by_name([self.load_builtins(), self.load_shared()])
 
-    def for_onboarding(self) -> List[CatalogEntry]:
-        """Starter only (Task 15 will augment with top-N shared community favorites)."""
-        return self.load_starters()
+    def for_onboarding(self, include_community_favorites: int = 5) -> List[CatalogEntry]:
+        """Starter entries plus top-N shared 'community favorites' by interest_score.
+
+        Community favorites are clearly distinguishable by their source (SHARED).
+        Callers can filter by source if they want starters only.
+        Builtin and personal are excluded from onboarding.
+        """
+        entries = self.load_starters()
+        if include_community_favorites > 0:
+            shared = sorted(
+                self.load_shared(),
+                key=lambda e: e.interest_score,
+                reverse=True,
+            )
+            entries.extend(shared[:include_community_favorites])
+        return entries
 
     def _merge_by_name(self, buckets: List[List[CatalogEntry]]) -> List[CatalogEntry]:
         """Merge entries across sources. Buckets are in priority order (highest first).

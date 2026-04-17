@@ -236,6 +236,51 @@ def test_for_onboarding_returns_starters_only(tmp_path):
     assert all(e.source == SourceType.STARTER for e in entries)
 
 
+def test_for_onboarding_includes_community_favorites_when_shared_exists(tmp_path):
+    """Top-N shared queries appear alongside starters, tagged as SHARED source."""
+    shared_dir = tmp_path / "shared"
+    shared_dir.mkdir()
+    (shared_dir / "promoted_queries.yaml").write_text(yaml.dump({
+        "queries": [
+            {"name": "fav_high", "query": "*", "description": "popular", "interest_score": 10},
+            {"name": "fav_mid", "query": "*", "description": "moderate", "interest_score": 5},
+            {"name": "fav_low", "query": "*", "description": "barely", "interest_score": 1},
+        ]
+    }))
+    catalog = UnifiedCatalog(base_dir=tmp_path)
+    entries = catalog.for_onboarding(include_community_favorites=2)
+
+    # Has starters AND the top-2 community favorites (by interest_score)
+    sources = [e.source for e in entries]
+    assert SourceType.STARTER in sources
+    assert SourceType.SHARED in sources
+
+    shared_entries = [e for e in entries if e.source == SourceType.SHARED]
+    assert len(shared_entries) == 2
+    # Top-2 by interest_score: fav_high (10) and fav_mid (5), NOT fav_low (1)
+    shared_names = {e.name for e in shared_entries}
+    assert shared_names == {"fav_high", "fav_mid"}
+
+
+def test_for_onboarding_without_shared_returns_only_starters(tmp_path):
+    """With no shared file, onboarding returns just starters (pre-v0.5 behavior)."""
+    catalog = UnifiedCatalog(base_dir=tmp_path)
+    entries = catalog.for_onboarding()
+    assert all(e.source == SourceType.STARTER for e in entries)
+
+
+def test_for_onboarding_include_zero_favorites_returns_starters_only(tmp_path):
+    """Explicitly setting include_community_favorites=0 skips shared entirely."""
+    shared_dir = tmp_path / "shared"
+    shared_dir.mkdir()
+    (shared_dir / "promoted_queries.yaml").write_text(yaml.dump({
+        "queries": [{"name": "f", "query": "*", "description": "d", "interest_score": 10}]
+    }))
+    catalog = UnifiedCatalog(base_dir=tmp_path)
+    entries = catalog.for_onboarding(include_community_favorites=0)
+    assert all(e.source == SourceType.STARTER for e in entries)
+
+
 def test_merge_by_name_case_insensitive(tmp_path):
     """Case-insensitive name collision: personal 'myquery' shadows shared 'MyQuery'."""
     shared_dir = tmp_path / "shared"
