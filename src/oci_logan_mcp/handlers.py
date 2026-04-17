@@ -19,6 +19,12 @@ from .preferences import PreferenceStore
 from .query_auto_saver import QueryAutoSaver
 from .config import Settings, save_config
 from .resources import get_query_templates, get_syntax_guide, get_reference_docs
+from .alarm_service import AlarmService
+from .dashboard_service import DashboardService
+from .notification_service import NotificationService
+from .confirmation import ConfirmationManager
+from .secret_store import SecretStore
+from .audit import AuditLogger
 
 logger = logging.getLogger(__name__)
 
@@ -35,6 +41,8 @@ class MCPHandlers:
         context_manager: ContextManager,
         user_store: Optional[UserStore] = None,
         preference_store: Optional[PreferenceStore] = None,
+        secret_store: Optional[SecretStore] = None,
+        audit_logger: Optional[AuditLogger] = None,
     ):
         """Initialize MCP handlers."""
         self.settings = settings
@@ -44,6 +52,12 @@ class MCPHandlers:
         self.context_manager = context_manager
         self.user_store = user_store
         self.preference_store = preference_store
+        self.audit_logger = audit_logger
+
+        if secret_store is None:
+            from pathlib import Path
+            secret_store = SecretStore(Path("/dev/null/no_secret"))
+        self.secret_store = secret_store
 
         # Initialize services
         self.schema_manager = SchemaManager(oci_client, cache)
@@ -53,6 +67,13 @@ class MCPHandlers:
         self.saved_search = SavedSearchService(oci_client, cache)
         self.export_service = ExportService()
         self.auto_saver = QueryAutoSaver(context_manager, user_store=user_store)
+        self.alarm_service = AlarmService(oci_client, cache)
+        self.dashboard_service = DashboardService(oci_client, cache)
+        self.notification_service = NotificationService(settings)
+        self.confirmation_manager = ConfirmationManager(
+            secret_store=secret_store,
+            token_expiry_seconds=settings.guardrails.token_expiry_seconds,
+        )
 
     async def handle_tool_call(
         self, name: str, arguments: Dict[str, Any]
@@ -86,6 +107,7 @@ class MCPHandlers:
             "find_compartment": self._find_compartment,
             "get_query_examples": self._get_query_examples,
             "get_log_summary": self._get_log_summary,
+            "setup_confirmation_secret": self._setup_confirmation_secret,
             # Memory & context
             "save_learned_query": self._save_learned_query,
             "list_learned_queries": self._list_learned_queries,
@@ -94,18 +116,141 @@ class MCPHandlers:
             # Preferences
             "get_preferences": self._get_preferences,
             "remember_preference": self._remember_preference,
+            # Alerts
+            "create_alert": self._create_alert,
+            "list_alerts": self._list_alerts,
+            "update_alert": self._update_alert,
+            "delete_alert": self._delete_alert,
+            # Saved search CRUD
+            "create_saved_search": self._create_saved_search,
+            "update_saved_search": self._update_saved_search,
+            "delete_saved_search": self._delete_saved_search,
+            # Dashboards
+            "create_dashboard": self._create_dashboard,
+            "list_dashboards": self._list_dashboards,
+            "add_dashboard_tile": self._add_dashboard_tile,
+            "delete_dashboard": self._delete_dashboard,
+            # Notifications
+            "send_to_slack": self._send_to_slack,
+            "send_to_telegram": self._send_to_telegram,
         }
 
         handler = handlers.get(name)
         if not handler:
             return [{"type": "text", "text": f"Unknown tool: {name}"}]
 
+        user_id = self.user_store.user_id if self.user_store else "unknown"
+
+        # --- Confirmation gate for guarded operations ---
+        if self.confirmation_manager.is_guarded(name):
+            clean_args = {
+                k: v for k, v in arguments.items()
+                if k not in (
+                    "confirmation_token",
+                    "confirmation_secret",
+                    "confirmation_secret_confirm",
+                )
+            }
+
+            if not self.confirmation_manager.is_available():
+                status = self.confirmation_manager.availability_status()
+                if self.audit_logger:
+                    self.audit_logger.log(
+                        user=user_id, tool=name, args=clean_args,
+                        outcome="confirmation_unavailable",
+                    )
+                return [{"type": "text", "text": json.dumps(
+                    self._build_confirmation_unavailable_response(status),
+                    indent=2,
+                )}]
+
+            token = arguments.get("confirmation_token")
+            secret = arguments.get("confirmation_secret", "")
+
+            if not token:
+                confirmation = self.confirmation_manager.request_confirmation(
+                    name, arguments
+                )
+                if self.audit_logger:
+                    self.audit_logger.log(
+                        user=user_id, tool=name, args=clean_args,
+                        outcome="confirmation_requested",
+                    )
+                return [{"type": "text", "text": json.dumps(confirmation, indent=2)}]
+
+            if not self.confirmation_manager.validate_confirmation(
+                token, secret, name, arguments
+            ):
+                if self.audit_logger:
+                    self.audit_logger.log(
+                        user=user_id, tool=name, args=clean_args,
+                        outcome="confirmation_failed",
+                    )
+                return [{"type": "text", "text": json.dumps({
+                    "status": "confirmation_failed",
+                    "error": "Invalid/expired token, wrong secret, or arguments changed. "
+                             "Request a new confirmation token.",
+                }, indent=2)}]
+
+            if self.audit_logger:
+                self.audit_logger.log(
+                    user=user_id, tool=name, args=clean_args,
+                    outcome="confirmed",
+                )
+
+            # Strip confirmation params before passing to handler
+            arguments = clean_args
+
         try:
             result = await handler(arguments)
+            if self.confirmation_manager.is_guarded(name) and self.audit_logger:
+                summary = result[0]["text"][:200] if result else ""
+                self.audit_logger.log(
+                    user=user_id, tool=name, args=arguments,
+                    outcome="executed", result_summary=summary,
+                )
             return result
         except Exception as e:
             logger.exception(f"Error in tool {name}")
+            if self.confirmation_manager.is_guarded(name) and self.audit_logger:
+                self.audit_logger.log(
+                    user=user_id, tool=name, args=arguments,
+                    outcome="execution_failed", error=str(e),
+                )
             return [{"type": "text", "text": f"Error executing {name}: {str(e)}"}]
+
+    def _build_confirmation_unavailable_response(self, status: str) -> Dict[str, str]:
+        """Return user-facing guidance when confirmation is unavailable."""
+        base = {
+            "status": "confirmation_unavailable",
+            "next_step": (
+                "Call setup_confirmation_secret with confirmation_secret and "
+                "confirmation_secret_confirm to create your safety password."
+            ),
+        }
+        if status == "invalid":
+            return {
+                **base,
+                "error": (
+                    "Your confirmation secret file is invalid, so destructive "
+                    "operations are blocked for safety."
+                ),
+                "message": (
+                    "Recreate it with setup_confirmation_secret, or use "
+                    "--reset-secret if you are recovering from the CLI."
+                ),
+            }
+        return {
+            **base,
+            "error": (
+                "A confirmation secret is required before destructive operations "
+                "like update or delete."
+            ),
+            "message": (
+                "Think of it like a sudo password for safety-sensitive changes. "
+                "Read-only and additive tools will keep working normally."
+            ),
+        }
 
     async def handle_resource_read(self, uri: str) -> Any:
         """Handle resource read requests."""
@@ -708,6 +853,54 @@ class MCPHandlers:
             top_source = sources[0]['source'] if sources else "N/A"
             return f"Top log source is '{top_source}'. Use list_log_sources to see all available sources."
 
+    async def _setup_confirmation_secret(self, args: Dict) -> List[Dict]:
+        """Create the current user's confirmation secret for guarded operations."""
+        if self.secret_store.has_secret() and self.secret_store.is_valid():
+            return [{"type": "text", "text": json.dumps({
+                "status": "already_configured",
+                "error": "A confirmation secret is already configured for this user.",
+                "message": "Use --reset-secret from the CLI if you need to replace it.",
+            }, indent=2)}]
+
+        secret = args["confirmation_secret"]
+        confirm = args["confirmation_secret_confirm"]
+
+        if secret != confirm:
+            return [{"type": "text", "text": json.dumps({
+                "status": "validation_error",
+                "error": "The secret and confirmation do not match.",
+            }, indent=2)}]
+
+        try:
+            self.secret_store.set_secret(secret)
+        except ValueError as e:
+            return [{"type": "text", "text": json.dumps({
+                "status": "validation_error",
+                "error": str(e),
+            }, indent=2)}]
+
+        user_id = self.user_store.user_id if self.user_store else "unknown"
+        if self.audit_logger:
+            self.audit_logger.log(
+                user=user_id,
+                tool="__secret_management",
+                args={},
+                outcome="secret_set",
+            )
+
+        return [{"type": "text", "text": json.dumps({
+            "status": "configured",
+            "message": (
+                "Confirmation secret saved. You'll use it to approve destructive "
+                "operations such as updating or deleting saved searches, alerts, "
+                "or dashboards."
+            ),
+            "recovery": (
+                "If you forget it, it cannot be retrieved. Use --reset-secret to "
+                "set a new one."
+            ),
+        }, indent=2)}]
+
     # Memory & context tools
 
     async def _save_learned_query(self, args: Dict) -> List[Dict]:
@@ -821,6 +1014,123 @@ class MCPHandlers:
             "status": "saved",
             "message": f"Preference '{args['intent_key']}' saved. Will be used in future sessions.",
         }, indent=2)}]
+
+
+    # ── Alert handlers ─────────────────────────────────────────────────
+
+    async def _create_alert(self, args: Dict) -> List[Dict]:
+        result = await self.alarm_service.create_alert(
+            display_name=args["display_name"],
+            query=args["query"],
+            destination_topic_id=args["destination_topic_id"],
+            schedule=args.get("schedule", "0 */15 * * *"),
+            threshold_value=args.get("threshold_value", 0),
+            threshold_operator=args.get("threshold_operator", "gt"),
+            severity=args.get("severity", "CRITICAL"),
+            compartment_id=args.get("compartment_id"),
+        )
+        return [{"type": "text", "text": json.dumps(result, indent=2)}]
+
+    async def _list_alerts(self, args: Dict) -> List[Dict]:
+        result = await self.alarm_service.list_alerts(
+            compartment_id=args.get("compartment_id")
+        )
+        return [{"type": "text", "text": json.dumps(result, indent=2)}]
+
+    async def _update_alert(self, args: Dict) -> List[Dict]:
+        alert_id = args["alert_id"]
+        update_kwargs = {k: v for k, v in args.items() if k != "alert_id"}
+        result = await self.alarm_service.update_alert(alert_id, **update_kwargs)
+        return [{"type": "text", "text": json.dumps(result, indent=2)}]
+
+    async def _delete_alert(self, args: Dict) -> List[Dict]:
+        result = await self.alarm_service.delete_alert(args["alert_id"])
+        return [{"type": "text", "text": json.dumps(result, indent=2)}]
+
+    # ── Saved search CRUD handlers ──────────────────────────────────────
+
+    async def _create_saved_search(self, args: Dict) -> List[Dict]:
+        result = await self.saved_search.create_search(
+            display_name=args["display_name"],
+            query=args["query"],
+            description=args.get("description"),
+            compartment_id=args.get("compartment_id"),
+            category=args.get("category"),
+        )
+        return [{"type": "text", "text": json.dumps(result, indent=2)}]
+
+    async def _update_saved_search(self, args: Dict) -> List[Dict]:
+        search_id = args["saved_search_id"]
+        update_kwargs = {k: v for k, v in args.items() if k != "saved_search_id"}
+        result = await self.saved_search.update_search(search_id, **update_kwargs)
+        return [{"type": "text", "text": json.dumps(result, indent=2)}]
+
+    async def _delete_saved_search(self, args: Dict) -> List[Dict]:
+        await self.saved_search.delete_search(args["saved_search_id"])
+        return [{"type": "text", "text": json.dumps({"deleted": args["saved_search_id"]}, indent=2)}]
+
+    # ── Dashboard handlers ─────────────────────────────────────────────
+
+    async def _create_dashboard(self, args: Dict) -> List[Dict]:
+        result = await self.dashboard_service.create_dashboard(
+            display_name=args["display_name"],
+            tiles=args["tiles"],
+            description=args.get("description"),
+            compartment_id=args.get("compartment_id"),
+        )
+        return [{"type": "text", "text": json.dumps(result, indent=2)}]
+
+    async def _list_dashboards(self, args: Dict) -> List[Dict]:
+        result = await self.dashboard_service.list_dashboards(
+            compartment_id=args.get("compartment_id")
+        )
+        return [{"type": "text", "text": json.dumps(result, indent=2)}]
+
+    async def _add_dashboard_tile(self, args: Dict) -> List[Dict]:
+        result = await self.dashboard_service.add_tile(
+            dashboard_id=args["dashboard_id"],
+            title=args["title"],
+            query=args["query"],
+            visualization_type=args["visualization_type"],
+            width=args.get("width"),
+            height=args.get("height"),
+        )
+        return [{"type": "text", "text": json.dumps(result, indent=2)}]
+
+    async def _delete_dashboard(self, args: Dict) -> List[Dict]:
+        result = await self.dashboard_service.delete_dashboard(args["dashboard_id"])
+        return [{"type": "text", "text": json.dumps(result, indent=2)}]
+
+    # ── Notification handlers ──────────────────────────────────────────
+
+    async def _send_to_slack(self, args: Dict) -> List[Dict]:
+        query_result = None
+        if query := args.get("query"):
+            query_result = await self.query_engine.execute(
+                query=query,
+                time_range=args.get("time_range", "last_1_hour"),
+            )
+        result = await self.notification_service.send_to_slack(
+            message=args.get("message"),
+            query_result=query_result,
+            format_type=args.get("format", "summary"),
+        )
+        return [{"type": "text", "text": json.dumps(result, indent=2)}]
+
+    async def _send_to_telegram(self, args: Dict) -> List[Dict]:
+        query_result = None
+        if query := args.get("query"):
+            query_result = await self.query_engine.execute(
+                query=query,
+                time_range=args.get("time_range", "last_1_hour"),
+            )
+        result = await self.notification_service.send_to_telegram(
+            message=args.get("message"),
+            query_result=query_result,
+            format_type=args.get("format", "summary"),
+            chat_id=args.get("chat_id"),
+        )
+        return [{"type": "text", "text": json.dumps(result, indent=2)}]
 
 
 # Hardcoded fallback examples used when starter_queries.yaml cannot be loaded.

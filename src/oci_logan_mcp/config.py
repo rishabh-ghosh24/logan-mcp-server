@@ -70,6 +70,24 @@ class GuardrailsConfig:
     max_time_range_days: int = 7
     warn_on_large_results: bool = True
     large_result_threshold: int = 10000
+    token_expiry_seconds: int = 300
+
+
+@dataclass
+class SlackConfig:
+    webhook_url: str = ""
+
+
+@dataclass
+class TelegramConfig:
+    bot_token: str = ""
+    default_chat_id: str = ""
+
+
+@dataclass
+class NotificationsConfig:
+    slack: SlackConfig = field(default_factory=SlackConfig)
+    telegram: TelegramConfig = field(default_factory=TelegramConfig)
 
 
 @dataclass
@@ -82,6 +100,7 @@ class Settings:
     cache: CacheConfig = field(default_factory=CacheConfig)
     logging: LoggingConfig = field(default_factory=LoggingConfig)
     guardrails: GuardrailsConfig = field(default_factory=GuardrailsConfig)
+    notifications: NotificationsConfig = field(default_factory=NotificationsConfig)
 
     def to_dict(self) -> dict:
         """Convert settings to dictionary for serialization."""
@@ -115,6 +134,15 @@ class Settings:
                 "max_time_range_days": self.guardrails.max_time_range_days,
                 "warn_on_large_results": self.guardrails.warn_on_large_results,
                 "large_result_threshold": self.guardrails.large_result_threshold,
+            },
+            "notifications": {
+                "slack": {
+                    "webhook_url": self.notifications.slack.webhook_url,
+                },
+                "telegram": {
+                    "bot_token": self.notifications.telegram.bot_token,
+                    "default_chat_id": self.notifications.telegram.default_chat_id,
+                },
             },
         }
 
@@ -210,7 +238,21 @@ def _parse_config(data: Dict[str, Any]) -> Settings:
             large_result_threshold=guardrails_data.get(
                 "large_result_threshold", settings.guardrails.large_result_threshold
             ),
+            token_expiry_seconds=guardrails_data.get(
+                "token_expiry_seconds", settings.guardrails.token_expiry_seconds
+            ),
         )
+
+    if notif_data := data.get("notifications"):
+        if slack_data := notif_data.get("slack"):
+            settings.notifications.slack = SlackConfig(
+                webhook_url=slack_data.get("webhook_url", ""),
+            )
+        if tg_data := notif_data.get("telegram"):
+            settings.notifications.telegram = TelegramConfig(
+                bot_token=tg_data.get("bot_token", ""),
+                default_chat_id=tg_data.get("default_chat_id", ""),
+            )
 
     return settings
 
@@ -237,6 +279,13 @@ def _apply_env_overrides(settings: Settings) -> Settings:
                 value = int(value)
 
             setattr(section_obj, key, value)
+
+    if v := os.environ.get("SLACK_WEBHOOK_URL"):
+        settings.notifications.slack.webhook_url = v
+    if v := os.environ.get("TELEGRAM_BOT_TOKEN"):
+        settings.notifications.telegram.bot_token = v
+    if v := os.environ.get("TELEGRAM_CHAT_ID"):
+        settings.notifications.telegram.default_chat_id = v
 
     return settings
 

@@ -12,9 +12,13 @@ from oci_logan_mcp.config import (
     CacheConfig,
     LoggingConfig,
     GuardrailsConfig,
+    NotificationsConfig,
+    SlackConfig,
+    TelegramConfig,
     load_config,
     save_config,
     _parse_config,
+    _apply_env_overrides,
 )
 
 
@@ -86,3 +90,59 @@ class TestOCIConfig:
         for auth_type in ["config_file", "instance_principal", "resource_principal"]:
             config = OCIConfig(auth_type=auth_type)
             assert config.auth_type == auth_type
+
+
+class TestNotificationsConfig:
+    def test_defaults_are_empty(self):
+        s = Settings()
+        assert s.notifications.slack.webhook_url == ""
+        assert s.notifications.telegram.bot_token == ""
+        assert s.notifications.telegram.default_chat_id == ""
+
+    def test_parse_config_slack(self):
+        data = {"notifications": {"slack": {"webhook_url": "https://hooks.slack.com/test"}}}
+        s = _parse_config(data)
+        assert s.notifications.slack.webhook_url == "https://hooks.slack.com/test"
+
+    def test_parse_config_telegram(self):
+        data = {"notifications": {"telegram": {"bot_token": "123:ABC", "default_chat_id": "-999"}}}
+        s = _parse_config(data)
+        assert s.notifications.telegram.bot_token == "123:ABC"
+        assert s.notifications.telegram.default_chat_id == "-999"
+
+    def test_env_override_slack(self, monkeypatch):
+        monkeypatch.setenv("SLACK_WEBHOOK_URL", "https://hooks.slack.com/env")
+        s = _apply_env_overrides(Settings())
+        assert s.notifications.slack.webhook_url == "https://hooks.slack.com/env"
+
+    def test_env_override_telegram_token(self, monkeypatch):
+        monkeypatch.setenv("TELEGRAM_BOT_TOKEN", "tok123")
+        s = _apply_env_overrides(Settings())
+        assert s.notifications.telegram.bot_token == "tok123"
+
+    def test_env_override_telegram_chat(self, monkeypatch):
+        monkeypatch.setenv("TELEGRAM_CHAT_ID", "-100999")
+        s = _apply_env_overrides(Settings())
+        assert s.notifications.telegram.default_chat_id == "-100999"
+
+    def test_to_dict_includes_notifications(self):
+        s = Settings()
+        s.notifications.slack.webhook_url = "https://test"
+        d = s.to_dict()
+        assert d["notifications"]["slack"]["webhook_url"] == "https://test"
+        assert "telegram" in d["notifications"]
+
+
+class TestConfirmationConfig:
+    """Tests for confirmation secret and token expiry config."""
+
+    def test_guardrails_token_expiry_default(self):
+        g = GuardrailsConfig()
+        assert g.token_expiry_seconds == 300
+
+    def test_guardrails_token_expiry_from_yaml(self, tmp_path):
+        config_file = tmp_path / "config.yaml"
+        config_file.write_text("guardrails:\n  token_expiry_seconds: 120\n")
+        settings = load_config(config_file)
+        assert settings.guardrails.token_expiry_seconds == 120
+

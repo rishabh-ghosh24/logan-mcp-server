@@ -770,3 +770,117 @@ class TestClientProperties:
     def test_compartment_setter(self, client):
         client.compartment_id = "ocid1.compartment.new"
         assert client.compartment_id == "ocid1.compartment.new"
+
+
+# ---------------------------------------------------------------------------
+# Lazy OCI Client Tests
+# ---------------------------------------------------------------------------
+
+class TestLazyClients:
+    def test_monitoring_client_created_on_first_access(self, client):
+        with patch("oci.monitoring.MonitoringClient") as MockMon:
+            MockMon.return_value = MagicMock()
+            client._monitoring_client = None  # ensure not pre-set
+            _ = client.monitoring_client
+            assert MockMon.called
+
+    def test_monitoring_client_reused_on_second_access(self, client):
+        with patch("oci.monitoring.MonitoringClient") as MockMon:
+            MockMon.return_value = MagicMock()
+            client._monitoring_client = None  # ensure not pre-set
+            _ = client.monitoring_client
+            _ = client.monitoring_client
+            assert MockMon.call_count == 1
+
+    def test_dashx_client_lazy(self, client):
+        with patch("oci.management_dashboard.DashxApisClient") as MockDash:
+            MockDash.return_value = MagicMock()
+            client._dashx_client = None  # ensure not pre-set
+            _ = client.dashx_client
+            assert MockDash.called
+
+    def test_ons_client_lazy(self, client):
+        with patch("oci.ons.NotificationControlPlaneClient") as MockONS:
+            MockONS.return_value = MagicMock()
+            client._ons_client = None  # ensure not pre-set
+            _ = client.ons_client
+            assert MockONS.called
+
+
+# ---------------------------------------------------------------------------
+# list_saved_searches freeform_tags Tests
+# ---------------------------------------------------------------------------
+
+class TestListSavedSearchesIncludesFreeformTags:
+    @pytest.mark.asyncio
+    async def test_freeform_tags_included(self, client):
+        task = MagicMock()
+        task.id = "ocid1.task.1"
+        task.display_name = "My Search"
+        task.task_type = "SAVED_SEARCH"
+        task.lifecycle_state = "ACTIVE"
+        task.freeform_tags = {"logan_managed": "true"}
+
+        with patch("oci_logan_mcp.client.list_call_get_all_results") as mock_list:
+            mock_resp = MagicMock()
+            mock_resp.data = [task]
+            mock_list.return_value = mock_resp
+            results = await client.list_saved_searches()
+
+        assert results[0]["freeform_tags"] == {"logan_managed": "true"}
+
+
+# ---------------------------------------------------------------------------
+# Fixture alias for new alarm/dashboard/ONS tests
+# ---------------------------------------------------------------------------
+
+@pytest.fixture
+def mock_client(client):
+    """Alias for the client fixture used in alarm/dashboard/ONS tests."""
+    return client
+
+
+# ---------------------------------------------------------------------------
+# Alarm, Dashboard, and ONS method tests
+# ---------------------------------------------------------------------------
+
+class TestAlertClientMethods:
+    @pytest.mark.asyncio
+    async def test_get_topic_calls_ons(self, mock_client):
+        mock_client._ons_client = MagicMock()
+        mock_client._ons_client.get_topic.return_value = MagicMock(data=MagicMock(topic_id="ocid1.topic.1", name="test", lifecycle_state="ACTIVE"))
+        result = await mock_client.get_topic("ocid1.topic.1")
+        mock_client._ons_client.get_topic.assert_called_once_with(topic_id="ocid1.topic.1")
+
+    @pytest.mark.asyncio
+    async def test_create_alarm_calls_monitoring(self, mock_client):
+        mock_client._monitoring_client = MagicMock()
+        mock_client._monitoring_client.create_alarm.return_value = MagicMock(
+            data=MagicMock(id="ocid1.alarm.1", display_name="test",
+                           freeform_tags={}, lifecycle_state="ACTIVE")
+        )
+        details = MagicMock()
+        result = await mock_client.create_alarm(details)
+        mock_client._monitoring_client.create_alarm.assert_called_once_with(
+            create_alarm_details=details
+        )
+        assert result["id"] == "ocid1.alarm.1"
+
+    @pytest.mark.asyncio
+    async def test_delete_alarm_calls_monitoring(self, mock_client):
+        mock_client._monitoring_client = MagicMock()
+        mock_client._monitoring_client.delete_alarm.return_value = MagicMock()
+        await mock_client.delete_alarm("ocid1.alarm.1")
+        mock_client._monitoring_client.delete_alarm.assert_called_once_with(
+            alarm_id="ocid1.alarm.1"
+        )
+
+    @pytest.mark.asyncio
+    async def test_create_management_saved_search(self, mock_client):
+        mock_client._dashx_client = MagicMock()
+        mock_client._dashx_client.create_management_saved_search.return_value = MagicMock(
+            data=MagicMock(id="ocid1.mss.1", display_name="test", freeform_tags={})
+        )
+        details = MagicMock()
+        result = await mock_client.create_management_saved_search(details)
+        assert result["id"] == "ocid1.mss.1"

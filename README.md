@@ -128,6 +128,9 @@ Click **Save**, then start a new Codex session to connect.
 | **Query logs** | `run_query`, `run_batch_queries`, `run_saved_search` | Search logs, run multiple queries in parallel, execute saved searches |
 | **Explore schema** | `list_log_sources`, `list_fields`, `list_entities`, `list_parsers`, `list_labels` | Discover what log data is available |
 | **Visualize** | `visualize` | Generate pie, bar, line, area, table, tile, treemap, heatmap, histogram charts |
+| **Dashboards** | `create_dashboard`, `add_dashboard_tile`, `list_dashboards`, `delete_dashboard` | Create OCI Management Dashboards with LA widgets, grid layout, and scope filters |
+| **Alerts** | `create_alert`, `update_alert`, `list_alerts`, `delete_alert` | Create OCI-native alarms from LA queries with metric extraction and ONS notifications |
+| **Saved searches** | `create_saved_search`, `update_saved_search`, `list_saved_searches`, `delete_saved_search` | Manage LA saved searches backed by scheduled tasks |
 | **Export** | `export_results` | Export query results to CSV or JSON |
 | **Manage scope** | `set_compartment`, `set_namespace`, `find_compartment`, `list_compartments` | Switch compartments, query across tenancy |
 | **Validate** | `validate_query`, `get_query_examples` | Check syntax, get curated starter examples by category (included with install) |
@@ -250,6 +253,90 @@ export OCI_LA_AUTH_TYPE=instance_principal
 oci-logan-mcp --setup
 ```
 
+## Destructive Operation Safety
+
+All delete and update operations on OCI resources (alerts, dashboards, saved searches) are protected by **two-factor server-side confirmation**. This prevents any MCP client — Claude, Codex, or others — from accidentally modifying or destroying resources.
+
+### Guarded Tools
+
+| Tool | Action |
+|------|--------|
+| `delete_alert` | Destroys alarm + backing OCI resources |
+| `delete_saved_search` | Destroys saved search |
+| `delete_dashboard` | Destroys dashboard + tile data sources |
+| `update_alert` | Modifies an existing alert |
+| `update_saved_search` | Modifies an existing saved search |
+| `add_dashboard_tile` | Modifies an existing dashboard |
+
+`create_*` tools are **not** guarded — they are additive and don't affect existing resources.
+
+### Per-User Confirmation Secrets
+
+Each user has their own confirmation secret. Secrets are:
+
+- **Minimum 8 characters**
+- **Hashed with `hashlib.scrypt`** — the plaintext is never stored
+- **Stored in the user's directory** at `~/.oci-logan-mcp/users/<username>/confirmation_secret.hash`
+
+The server now starts even if a user has no secret yet. Read-only and additive tools work immediately. The first time a user attempts a guarded action, the MCP client can call `setup_confirmation_secret` in-band to create the secret. There is no shared env var — `OCI_LA_CONFIRMATION_SECRET` has been removed.
+
+`setup_confirmation_secret` is for first-time setup only. If a secret is already configured and you need to replace it, use `--reset-secret`.
+
+**Forgotten secret?** Use the `--reset-secret` CLI flag to re-enter a new secret:
+
+```bash
+oci-logan-mcp --user firstname.lastname --reset-secret
+```
+
+**Admin recovery:** If `--reset-secret` is unavailable (e.g., non-interactive session), delete the hash file manually and restart:
+
+```bash
+rm ~/.oci-logan-mcp/users/<username>/confirmation_secret.hash
+```
+
+Then either restart and use `setup_confirmation_secret`, or run `--reset-secret` interactively to create a new one immediately.
+
+### How It Works
+
+1. **First call** — returns a human-readable summary of the action + a single-use confirmation token
+2. **Second call** — requires the token + your secret to execute
+
+The token is bound to the exact tool and resource. A token issued for `delete_alert(id=A)` cannot authorize `delete_alert(id=B)` or any other tool — reusing a token for a different resource is rejected outright.
+
+Optionally configure token expiry in `config.yaml` (default: 300 seconds):
+
+```yaml
+guardrails:
+  token_expiry_seconds: 300
+```
+
+### Audit Log
+
+All guarded tool interactions are logged as JSON-lines to a shared audit log at:
+
+```
+~/.oci-logan-mcp/logs/audit.log
+```
+
+Each entry records:
+
+- **who** — the username (`--user` flag or `LOGAN_USER`)
+- **what** — tool name and arguments
+- **when** — UTC timestamp
+- **outcome** — `confirmed`, `confirmation_failed`, `token_expired`, `confirmation_unavailable`, etc.
+
+This gives administrators a full history of which users attempted or executed destructive operations.
+
+### Fail-Closed Design
+
+- **No secret set** → guarded tools return `confirmation_unavailable` and point the user to `setup_confirmation_secret`
+- **Invalid/corrupt secret file** → guarded tools return `confirmation_unavailable` with recovery guidance
+- **Wrong secret** → `confirmation_failed`
+- **Token reuse** → rejected (single-use)
+- **Token expired** → rejected
+- **Resource mismatch** (token for A used on B) → rejected
+- **Arguments changed** → rejected
+
 ## Development
 
 ### Running Tests
@@ -268,6 +355,8 @@ python run_tests.py
 
 | Version | Summary |
 |---|---|
+| **0.5.0** | **Dashboard creation:** Programmatic OCI Management Dashboard creation with proper LA widget wiring, 2-column grid layout, scope filter integration (`parametersMap` with `$(dashboard.params.*)` references), and dashboard delete/update with cleanup. Visualization types: bar, line, pie, table, area, treemap, heatmap, histogram. |
+| **0.4.0** | **Alarms & safety:** OCI-native autonomous alerts from Log Analytics queries (metric extraction + OCI Monitoring alarms + ONS notifications). Two-factor confirmation for destructive operations with per-user hashed secrets, audit logging, and secret redaction in all log output. |
 | **0.3.0** | Multi-user learning: per-user query storage, preference tracking, shared query promotion with sensitive data sanitization, thread-safe file locking. |
 | **0.2.0** | Cluster query accuracy fix, compact cluster output formatting, compartment persistence, startup responsiveness (deferred schema refresh), `--setup` and `--user` CLI flags, Windows setup guide. |
 | **0.1.0** | Initial release: 24 MCP tools, query execution, schema exploration, visualization, export, cross-compartment queries, caching, rate limiting, query auto-save. |

@@ -70,6 +70,33 @@ class OCILogAnalyticsClient:
         self._compartment_id = settings.log_analytics.default_compartment_id
 
     @property
+    def monitoring_client(self):
+        """Lazy accessor for OCI Monitoring client."""
+        if not hasattr(self, "_monitoring_client") or self._monitoring_client is None:
+            self._monitoring_client = oci.monitoring.MonitoringClient(
+                config=self._config, signer=self._signer
+            )
+        return self._monitoring_client
+
+    @property
+    def dashx_client(self):
+        """Lazy accessor for OCI Management Dashboard client."""
+        if not hasattr(self, "_dashx_client") or self._dashx_client is None:
+            self._dashx_client = oci.management_dashboard.DashxApisClient(
+                config=self._config, signer=self._signer
+            )
+        return self._dashx_client
+
+    @property
+    def ons_client(self):
+        """Lazy accessor for OCI Notification Control Plane client."""
+        if not hasattr(self, "_ons_client") or self._ons_client is None:
+            self._ons_client = oci.ons.NotificationControlPlaneClient(
+                config=self._config, signer=self._signer
+            )
+        return self._ons_client
+
+    @property
     def namespace(self) -> str:
         """Get current Log Analytics namespace."""
         return self._namespace
@@ -78,6 +105,14 @@ class OCILogAnalyticsClient:
     def namespace(self, value: str) -> None:
         """Set Log Analytics namespace."""
         self._namespace = value
+
+    @property
+    def tenancy_id(self) -> str:
+        """Get tenancy ID from config or signer."""
+        tid = self._config.get("tenancy", "")
+        if not tid and hasattr(self._signer, "tenancy_id"):
+            tid = self._signer.tenancy_id
+        return tid or ""
 
     @property
     def compartment_id(self) -> str:
@@ -407,6 +442,7 @@ class OCILogAnalyticsClient:
                     "display_name": getattr(s, "display_name", ""),
                     "task_type": getattr(s, "task_type", ""),
                     "lifecycle_state": getattr(s, "lifecycle_state", ""),
+                    "freeform_tags": getattr(s, "freeform_tags", {}) or {},
                 }
                 for s in _get_items(response.data)
             ]
@@ -430,6 +466,7 @@ class OCILogAnalyticsClient:
             "display_name": getattr(data, "display_name", ""),
             "query": getattr(data, "saved_search_query", ""),
             "lifecycle_state": getattr(data, "lifecycle_state", ""),
+            "_action": getattr(data, "action", None),  # expose for backing MSS lookup
         }
 
     async def list_compartments(self) -> List[Dict[str, Any]]:
@@ -493,3 +530,312 @@ class OCILogAnalyticsClient:
         self._rate_limiter.reset()
 
         return response.data.namespace_name
+
+    # ── Scheduled Task methods ─────────────────────────────────────────────
+
+    async def create_scheduled_task(self, details) -> Dict[str, Any]:
+        """Create a scheduled task in Log Analytics."""
+        await self._rate_limiter.acquire()
+        try:
+            response = self._la_client.create_scheduled_task(
+                namespace_name=self._namespace,
+                create_scheduled_task_details=details,
+            )
+            self._rate_limiter.reset()
+            data = response.data
+            return {"id": data.id, "display_name": getattr(data, "display_name", ""),
+                    "freeform_tags": getattr(data, "freeform_tags", {}) or {}}
+        except oci.exceptions.ServiceError as e:
+            if e.status == 429:
+                await self._rate_limiter.handle_rate_limit()
+                return await self.create_scheduled_task(details)
+            raise
+
+    async def update_scheduled_task(self, task_id: str, details) -> Dict[str, Any]:
+        """Update a scheduled task in Log Analytics."""
+        await self._rate_limiter.acquire()
+        try:
+            response = self._la_client.update_scheduled_task(
+                namespace_name=self._namespace,
+                scheduled_task_id=task_id,
+                update_scheduled_task_details=details,
+            )
+            self._rate_limiter.reset()
+            data = response.data
+            return {"id": data.id, "display_name": getattr(data, "display_name", "")}
+        except oci.exceptions.ServiceError as e:
+            if e.status == 429:
+                await self._rate_limiter.handle_rate_limit()
+                return await self.update_scheduled_task(task_id, details)
+            raise
+
+    async def delete_scheduled_task(self, task_id: str) -> None:
+        """Delete a scheduled task from Log Analytics."""
+        await self._rate_limiter.acquire()
+        try:
+            self._la_client.delete_scheduled_task(
+                namespace_name=self._namespace,
+                scheduled_task_id=task_id,
+            )
+            self._rate_limiter.reset()
+        except oci.exceptions.ServiceError as e:
+            if e.status == 429:
+                await self._rate_limiter.handle_rate_limit()
+                return await self.delete_scheduled_task(task_id)
+            raise
+
+    # ── Alarm methods ──────────────────────────────────────────────────────
+
+    async def create_alarm(self, details) -> Dict[str, Any]:
+        """Create an OCI Monitoring alarm."""
+        await self._rate_limiter.acquire()
+        try:
+            response = self.monitoring_client.create_alarm(create_alarm_details=details)
+            self._rate_limiter.reset()
+            data = response.data
+            return {"id": data.id, "display_name": getattr(data, "display_name", ""),
+                    "lifecycle_state": getattr(data, "lifecycle_state", ""),
+                    "freeform_tags": getattr(data, "freeform_tags", {}) or {}}
+        except oci.exceptions.ServiceError as e:
+            if e.status == 429:
+                await self._rate_limiter.handle_rate_limit()
+                return await self.create_alarm(details)
+            raise
+
+    async def get_alarm(self, alarm_id: str) -> Dict[str, Any]:
+        """Get a specific OCI Monitoring alarm."""
+        await self._rate_limiter.acquire()
+        try:
+            response = self.monitoring_client.get_alarm(alarm_id=alarm_id)
+            self._rate_limiter.reset()
+            data = response.data
+            return {"id": data.id, "display_name": getattr(data, "display_name", ""),
+                    "lifecycle_state": getattr(data, "lifecycle_state", ""),
+                    "severity": getattr(data, "severity", ""),
+                    "is_enabled": getattr(data, "is_enabled", True),
+                    "destinations": getattr(data, "destinations", []),
+                    "query": getattr(data, "query", ""),
+                    "freeform_tags": getattr(data, "freeform_tags", {}) or {}}
+        except oci.exceptions.ServiceError as e:
+            if e.status == 429:
+                await self._rate_limiter.handle_rate_limit()
+                return await self.get_alarm(alarm_id)
+            raise
+
+    async def list_alarms(self, compartment_id=None) -> List[Dict[str, Any]]:
+        """List OCI Monitoring alarms (auto-paginates)."""
+        await self._rate_limiter.acquire()
+        cid = compartment_id or self._compartment_id
+        try:
+            response = list_call_get_all_results(
+                self.monitoring_client.list_alarms,
+                compartment_id=cid,
+            )
+            self._rate_limiter.reset()
+            return [
+                {"id": a.id, "display_name": getattr(a, "display_name", ""),
+                 "lifecycle_state": getattr(a, "lifecycle_state", ""),
+                 "severity": getattr(a, "severity", ""),
+                 "freeform_tags": getattr(a, "freeform_tags", {}) or {}}
+                for a in _get_items(response.data)
+            ]
+        except oci.exceptions.ServiceError as e:
+            if e.status == 429:
+                await self._rate_limiter.handle_rate_limit()
+                return await self.list_alarms(compartment_id)
+            raise
+
+    async def update_alarm(self, alarm_id: str, details) -> Dict[str, Any]:
+        """Update an OCI Monitoring alarm."""
+        await self._rate_limiter.acquire()
+        try:
+            response = self.monitoring_client.update_alarm(
+                alarm_id=alarm_id, update_alarm_details=details
+            )
+            self._rate_limiter.reset()
+            data = response.data
+            return {"id": data.id, "display_name": getattr(data, "display_name", ""),
+                    "freeform_tags": getattr(data, "freeform_tags", {}) or {}}
+        except oci.exceptions.ServiceError as e:
+            if e.status == 429:
+                await self._rate_limiter.handle_rate_limit()
+                return await self.update_alarm(alarm_id, details)
+            raise
+
+    async def delete_alarm(self, alarm_id: str) -> None:
+        """Delete an OCI Monitoring alarm."""
+        await self._rate_limiter.acquire()
+        try:
+            self.monitoring_client.delete_alarm(alarm_id=alarm_id)
+            self._rate_limiter.reset()
+        except oci.exceptions.ServiceError as e:
+            if e.status == 429:
+                await self._rate_limiter.handle_rate_limit()
+                return await self.delete_alarm(alarm_id)
+            raise
+
+    async def get_topic(self, topic_id: str) -> Dict[str, Any]:
+        """Get an ONS notification topic."""
+        await self._rate_limiter.acquire()
+        try:
+            response = self.ons_client.get_topic(topic_id=topic_id)
+            self._rate_limiter.reset()
+            data = response.data
+            return {"id": data.topic_id, "name": getattr(data, "name", ""),
+                    "lifecycle_state": getattr(data, "lifecycle_state", "")}
+        except oci.exceptions.ServiceError as e:
+            if e.status == 429:
+                await self._rate_limiter.handle_rate_limit()
+                return await self.get_topic(topic_id)
+            raise
+
+    # ── Management Saved Search methods ───────────────────────────────────
+
+    async def create_management_saved_search(self, details) -> Dict[str, Any]:
+        """Create a Management Dashboard saved search."""
+        await self._rate_limiter.acquire()
+        try:
+            response = self.dashx_client.create_management_saved_search(
+                create_management_saved_search_details=details
+            )
+            self._rate_limiter.reset()
+            data = response.data
+            return {"id": data.id, "display_name": getattr(data, "display_name", ""),
+                    "freeform_tags": getattr(data, "freeform_tags", {}) or {}}
+        except oci.exceptions.ServiceError as e:
+            if e.status == 429:
+                await self._rate_limiter.handle_rate_limit()
+                return await self.create_management_saved_search(details)
+            raise
+
+    async def update_management_saved_search(self, search_id: str, details) -> Dict[str, Any]:
+        """Update a Management Dashboard saved search."""
+        await self._rate_limiter.acquire()
+        try:
+            response = self.dashx_client.update_management_saved_search(
+                management_saved_search_id=search_id,
+                update_management_saved_search_details=details,
+            )
+            self._rate_limiter.reset()
+            data = response.data
+            return {"id": data.id, "display_name": getattr(data, "display_name", "")}
+        except oci.exceptions.ServiceError as e:
+            if e.status == 429:
+                await self._rate_limiter.handle_rate_limit()
+                return await self.update_management_saved_search(search_id, details)
+            raise
+
+    async def delete_management_saved_search(self, search_id: str) -> None:
+        """Delete a Management Dashboard saved search."""
+        await self._rate_limiter.acquire()
+        try:
+            self.dashx_client.delete_management_saved_search(
+                management_saved_search_id=search_id
+            )
+            self._rate_limiter.reset()
+        except oci.exceptions.ServiceError as e:
+            if e.status == 429:
+                await self._rate_limiter.handle_rate_limit()
+                return await self.delete_management_saved_search(search_id)
+            raise
+
+    # ── Dashboard methods ──────────────────────────────────────────────────
+
+    async def create_management_dashboard(self, details) -> Dict[str, Any]:
+        """Create a Management Dashboard."""
+        await self._rate_limiter.acquire()
+        try:
+            response = self.dashx_client.create_management_dashboard(
+                create_management_dashboard_details=details
+            )
+            self._rate_limiter.reset()
+            data = response.data
+            return {"id": data.id, "display_name": getattr(data, "display_name", "")}
+        except oci.exceptions.ServiceError as e:
+            if e.status == 429:
+                await self._rate_limiter.handle_rate_limit()
+                return await self.create_management_dashboard(details)
+            raise
+
+    async def list_management_dashboards(self, compartment_id=None) -> List[Dict[str, Any]]:
+        """List Management Dashboards (auto-paginates)."""
+        await self._rate_limiter.acquire()
+        cid = compartment_id or self._compartment_id
+        try:
+            response = list_call_get_all_results(
+                self.dashx_client.list_management_dashboards,
+                compartment_id=cid,
+            )
+            self._rate_limiter.reset()
+            return [
+                {"id": d.id, "display_name": getattr(d, "display_name", ""),
+                 "description": getattr(d, "description", ""),
+                 "lifecycle_state": getattr(d, "lifecycle_state", "")}
+                for d in _get_items(response.data)
+            ]
+        except oci.exceptions.ServiceError as e:
+            if e.status == 429:
+                await self._rate_limiter.handle_rate_limit()
+                return await self.list_management_dashboards(compartment_id)
+            raise
+
+    async def get_management_dashboard(self, dashboard_id: str) -> Dict[str, Any]:
+        """Get a specific Management Dashboard including its tiles."""
+        await self._rate_limiter.acquire()
+        try:
+            response = self.dashx_client.get_management_dashboard(
+                management_dashboard_id=dashboard_id
+            )
+            self._rate_limiter.reset()
+            data = response.data
+            tiles = []
+            for t in getattr(data, "tiles", []) or []:
+                tiles.append({
+                    "display_name": getattr(t, "display_name", ""),
+                    "saved_search_id": getattr(t, "saved_search_id", ""),
+                    "row": getattr(t, "row", 0),
+                    "column": getattr(t, "column", 0),
+                    "height": getattr(t, "height", 4),
+                    "width": getattr(t, "width", 6),
+                })
+            return {"id": data.id, "display_name": getattr(data, "display_name", ""),
+                    "description": getattr(data, "description", ""),
+                    "tiles": tiles,
+                    "_etag": getattr(response, "etag", None)}
+        except oci.exceptions.ServiceError as e:
+            if e.status == 429:
+                await self._rate_limiter.handle_rate_limit()
+                return await self.get_management_dashboard(dashboard_id)
+            raise
+
+    async def update_management_dashboard(self, dashboard_id: str, details, if_match=None) -> Dict[str, Any]:
+        """Update a Management Dashboard."""
+        await self._rate_limiter.acquire()
+        kwargs = {"management_dashboard_id": dashboard_id,
+                  "update_management_dashboard_details": details}
+        if if_match:
+            kwargs["if_match"] = if_match
+        try:
+            response = self.dashx_client.update_management_dashboard(**kwargs)
+            self._rate_limiter.reset()
+            data = response.data
+            return {"id": data.id, "display_name": getattr(data, "display_name", "")}
+        except oci.exceptions.ServiceError as e:
+            if e.status == 429:
+                await self._rate_limiter.handle_rate_limit()
+                return await self.update_management_dashboard(dashboard_id, details, if_match)
+            raise
+
+    async def delete_management_dashboard(self, dashboard_id: str) -> None:
+        """Delete a Management Dashboard."""
+        await self._rate_limiter.acquire()
+        try:
+            self.dashx_client.delete_management_dashboard(
+                management_dashboard_id=dashboard_id
+            )
+            self._rate_limiter.reset()
+        except oci.exceptions.ServiceError as e:
+            if e.status == 429:
+                await self._rate_limiter.handle_rate_limit()
+                return await self.delete_management_dashboard(dashboard_id)
+            raise
