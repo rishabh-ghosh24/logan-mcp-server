@@ -919,11 +919,18 @@ class MCPHandlers:
             description=args["description"],
             category=args.get("category", "general"),
             tags=args.get("tags"),
+            force=args.get("force", False),
+            rename_to=args.get("rename_to"),
         )
+        if "collision_warning" in saved:
+            return [{"type": "text", "text": json.dumps({
+                "status": "collision",
+                **saved,
+            }, indent=2, default=str)}]
         return [{"type": "text", "text": json.dumps({
             "status": "saved",
             "query": saved,
-            "message": f"Query '{args['name']}' saved. It will be available in future sessions.",
+            "message": f"Query '{saved['name']}' saved. It will be available in future sessions.",
         }, indent=2, default=str)}]
 
     async def _update_tenancy_context(self, args: Dict) -> List[Dict]:

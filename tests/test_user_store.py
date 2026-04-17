@@ -272,3 +272,130 @@ class TestEntryId:
         final = yaml.safe_load(queries_file.read_text())
         disk_ids = sorted(q["entry_id"] for q in final["queries"])
         assert disk_ids == sorted(results["t1"])
+
+
+class TestCollisionPolicy:
+    def test_personal_personal_same_name_updates(self, tmp_path):
+        """Personal ↔ personal: updates in place (existing behavior)."""
+        store = UserStore(base_dir=tmp_path, user_id="alice")
+        first = store.save_query(name="q1", query="*", description="d1")
+        second = store.save_query(name="q1", query="* | head 5", description="d2")
+        assert second["entry_id"] == first["entry_id"]
+        assert second["query"] == "* | head 5"
+
+    def test_collision_with_builtin_returns_warning(self, tmp_path):
+        """Saving with a builtin name returns collision_warning, no write."""
+        store = UserStore(base_dir=tmp_path, user_id="alice")
+        result = store.save_query(
+            name="errors_last_hour",
+            query="* | head 1",
+            description="mine",
+        )
+        assert "collision_warning" in result
+        assert result["collision_warning"]["conflicts_with"] == "builtin"
+        # Verify nothing was written to user's YAML
+        assert store.list_queries() == []
+
+    def test_collision_with_shared_returns_warning(self, tmp_path):
+        import yaml
+        shared_dir = tmp_path / "shared"
+        shared_dir.mkdir()
+        (shared_dir / "promoted_queries.yaml").write_text(yaml.dump({
+            "queries": [{"name": "community_q", "query": "* shared", "description": "from community"}]
+        }))
+        store = UserStore(base_dir=tmp_path, user_id="alice")
+        result = store.save_query(
+            name="community_q",
+            query="* | head 1",
+            description="mine",
+        )
+        assert "collision_warning" in result
+        assert result["collision_warning"]["conflicts_with"] == "shared"
+
+    def test_collision_case_insensitive(self, tmp_path):
+        """'ERRORS_LAST_HOUR' collides with builtin 'errors_last_hour'."""
+        store = UserStore(base_dir=tmp_path, user_id="alice")
+        result = store.save_query(
+            name="ERRORS_LAST_HOUR",
+            query="* | head 1",
+            description="mine",
+        )
+        assert "collision_warning" in result
+
+    def test_force_overrides_collision(self, tmp_path):
+        """force=True writes despite collision."""
+        store = UserStore(base_dir=tmp_path, user_id="alice")
+        result = store.save_query(
+            name="errors_last_hour",
+            query="* | my_override",
+            description="mine",
+            force=True,
+        )
+        assert "collision_warning" not in result
+        assert result["name"] == "errors_last_hour"
+        assert len(store.list_queries()) == 1
+
+    def test_rename_to_avoids_collision(self, tmp_path):
+        """rename_to='<new>' saves under the new name when clear."""
+        store = UserStore(base_dir=tmp_path, user_id="alice")
+        result = store.save_query(
+            name="errors_last_hour",
+            query="* | my_version",
+            description="mine",
+            rename_to="my_errors_last_hour",
+        )
+        assert "collision_warning" not in result
+        assert result["name"] == "my_errors_last_hour"
+
+    def test_rename_to_still_checks_collision_on_new_name(self, tmp_path):
+        """rename_to='<builtin_name>' still triggers collision on the new name."""
+        store = UserStore(base_dir=tmp_path, user_id="alice")
+        result = store.save_query(
+            name="safe_name",
+            query="*",
+            description="d",
+            rename_to="errors_last_hour",
+        )
+        assert "collision_warning" in result
+
+
+def test_save_query_race_against_concurrent_promote(tmp_path):
+    """promote_all publishes 'popular_query' to shared; then save_query sees the collision."""
+    import threading
+    import yaml
+    from oci_logan_mcp.promote import promote_all
+
+    store = UserStore(base_dir=tmp_path, user_id="alice")
+    # Seed a query that will be promoted
+    for i in range(1):
+        result = store.save_query(
+            name="popular_query",
+            query="'Error' | stats count",
+            description="promotable",
+            interest_score=5,
+        )
+
+    # Manually boost to meet promotion threshold
+    qpath = tmp_path / "users" / "alice" / "learned_queries.yaml"
+    data = yaml.safe_load(qpath.read_text())
+    data["queries"][0]["success_count"] = 100
+    data["queries"][0]["failure_count"] = 10
+    qpath.write_text(yaml.dump(data))
+
+    # Promote first
+    promote_all(tmp_path)
+
+    # Verify the shared file has popular_query
+    shared_data = yaml.safe_load((tmp_path / "shared" / "promoted_queries.yaml").read_text())
+    shared_names = [q["name"] for q in shared_data.get("queries", [])]
+    assert "popular_query" in shared_names
+
+    # Bob tries to save under the same name
+    store_bob = UserStore(base_dir=tmp_path, user_id="bob")
+    result = store_bob.save_query(
+        name="popular_query",
+        query="* | different",
+        description="mine",
+    )
+    assert "collision_warning" in result
+    assert result["collision_warning"]["conflicts_with"] == "shared"

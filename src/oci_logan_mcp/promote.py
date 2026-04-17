@@ -3,13 +3,15 @@
 from __future__ import annotations
 
 import logging
+import threading
 from copy import deepcopy
 from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any, Dict, List, Optional
 
-from .file_lock import atomic_yaml_read, atomic_yaml_write
+from .file_lock import atomic_yaml_read, atomic_yaml_write, locked_file
 from .sanitize import sanitize_query_text
+from .user_store import SHARED_CATALOG_LOCK_NAME
 
 logger = logging.getLogger(__name__)
 
@@ -91,21 +93,27 @@ def promote_all(base_dir: Path) -> Dict[str, Any]:
     promoted.sort(key=lambda q: q.get("interest_score", 0), reverse=True)
     promoted = promoted[:MAX_PROMOTED]
 
-    # Load existing shared, merge (keep higher quality version)
-    existing_shared = atomic_yaml_read(shared_dir / "promoted_queries.yaml", default={"queries": []})
-    existing_map = {q["query"].strip(): q for q in existing_shared.get("queries", [])}
-    for q in promoted:
-        existing_map[q["query"].strip()] = q  # New promotion overwrites
+    # Acquire shared-catalog lock before writing (serializes against _check_collision reads)
+    shared_lock_path = shared_dir / SHARED_CATALOG_LOCK_NAME
+    shared_lock_path.touch(exist_ok=True)
+    thread_lock = threading.RLock()
 
-    final = list(existing_map.values())
-    final.sort(key=lambda q: q.get("interest_score", 0), reverse=True)
-    final = final[:MAX_PROMOTED]
+    with locked_file(shared_lock_path, thread_lock):
+        # Load existing shared, merge (keep higher quality version)
+        existing_shared = atomic_yaml_read(shared_dir / "promoted_queries.yaml", default={"queries": []})
+        existing_map = {q["query"].strip(): q for q in existing_shared.get("queries", [])}
+        for q in promoted:
+            existing_map[q["query"].strip()] = q  # New promotion overwrites
 
-    atomic_yaml_write(shared_dir / "promoted_queries.yaml", {
-        "version": 1,
-        "last_promoted": datetime.now(timezone.utc).isoformat(),
-        "queries": final,
-    })
+        final = list(existing_map.values())
+        final.sort(key=lambda q: q.get("interest_score", 0), reverse=True)
+        final = final[:MAX_PROMOTED]
+
+        atomic_yaml_write(shared_dir / "promoted_queries.yaml", {
+            "version": 1,
+            "last_promoted": datetime.now(timezone.utc).isoformat(),
+            "queries": final,
+        })
 
     logger.info(f"Promoted {len(promoted)} queries from {user_count} users")
     return {"promoted": len(promoted), "scanned_users": user_count}

@@ -435,7 +435,10 @@ def get_tools() -> List[Dict[str, Any]]:
                 "Trigger when the user explicitly says things like 'save this query', "
                 "'remember these from this session', 'keep the good ones', or similar. "
                 "The save is infrastructure — the user won't see a list of saved queries; "
-                "they'll just notice better query suggestions over time."
+                "they'll just notice better query suggestions over time. "
+                "If the name collides with a built-in or community query, a collision_warning "
+                "is returned — retry with force: true to override or rename_to: '<new_name>' "
+                "to choose a different name."
             ),
             "inputSchema": {
                 "type": "object",
@@ -461,6 +464,15 @@ def get_tools() -> List[Dict[str, Any]]:
                         "type": "array",
                         "items": {"type": "string"},
                         "description": "Optional tags for searchability",
+                    },
+                    "force": {
+                        "type": "boolean",
+                        "description": "If true, save even if the name collides with a built-in or community (shared) query. Default false.",
+                        "default": False,
+                    },
+                    "rename_to": {
+                        "type": "string",
+                        "description": "If provided, save under this name instead (useful to avoid a collision).",
                     },
                 },
                 "required": ["name", "query", "description"],

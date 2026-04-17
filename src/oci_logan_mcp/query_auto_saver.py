@@ -101,6 +101,9 @@ class QueryAutoSaver:
                 tags=["auto-saved"],
                 interest_score=score,
             )
+            # If collision with builtin/shared, silently skip
+            if "collision_warning" in saved:
+                return None
             logger.info(f"Auto-saved query: {name} (score={score})")
             return saved
 

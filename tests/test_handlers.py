@@ -378,6 +378,45 @@ class TestMemoryHandlers:
         assert queries[0]["name"] == "error_count"
 
     @pytest.mark.asyncio
+    async def test_save_learned_query_surfaces_collision_warning(self, handlers, mock_user_store):
+        """When save_query returns a collision_warning, handler should surface it as status=collision."""
+        result = await handlers._save_learned_query({
+            "name": "errors_last_hour",  # builtin name — should collide
+            "query": "* | head 1",
+            "description": "my copy",
+        })
+        data = json.loads(result[0]["text"])
+        assert data["status"] == "collision"
+        assert "collision_warning" in data
+        # Nothing should have been saved
+        assert mock_user_store.list_queries() == []
+
+    @pytest.mark.asyncio
+    async def test_save_learned_query_force_flag_passed_through(self, handlers, mock_user_store):
+        """force=True should be passed through so the save succeeds despite collision."""
+        result = await handlers._save_learned_query({
+            "name": "errors_last_hour",
+            "query": "* | head 1",
+            "description": "my override",
+            "force": True,
+        })
+        data = json.loads(result[0]["text"])
+        assert data["status"] == "saved"
+
+    @pytest.mark.asyncio
+    async def test_save_learned_query_rename_to_passed_through(self, handlers, mock_user_store):
+        """rename_to should be passed through and the entry saved under the new name."""
+        result = await handlers._save_learned_query({
+            "name": "errors_last_hour",
+            "query": "* | head 1",
+            "description": "my version",
+            "rename_to": "my_errors_last_hour",
+        })
+        data = json.loads(result[0]["text"])
+        assert data["status"] == "saved"
+        assert data["query"]["name"] == "my_errors_last_hour"
+
+    @pytest.mark.asyncio
     async def test_update_tenancy_context_notes(self, handlers, mock_context_manager):
         """Should add notes to tenancy context."""
         result = await handlers._update_tenancy_context({

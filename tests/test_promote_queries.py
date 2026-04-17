@@ -81,3 +81,14 @@ class TestPromoteAll:
         shared_dir = tmp_path / "shared"
         shared = atomic_yaml_read(shared_dir / "promoted_queries.yaml", default={})
         assert len(shared.get("queries", [])) == 0
+
+    def test_promote_all_creates_shared_catalog_lock(self, tmp_path):
+        """promote_all should create shared/catalog.lock as part of its write protocol."""
+        user_dir = tmp_path / "users" / "alice"
+        user_dir.mkdir(parents=True)
+        atomic_yaml_write(user_dir / "learned_queries.yaml", {
+            "version": 1,
+            "queries": [_make_query(interest_score=4, success_count=8, failure_count=2)],
+        })
+        promote_all(tmp_path)
+        assert (tmp_path / "shared" / "catalog.lock").exists()
