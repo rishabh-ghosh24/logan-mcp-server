@@ -296,6 +296,27 @@ class MCPHandlers:
             "query": entry.query,
         }
 
+    def _catalog_entry_to_list_dict(self, entry: "CatalogEntry") -> Dict[str, Any]:
+        """Serialize a CatalogEntry to the list_learned_queries shape.
+        Unlike _catalog_entry_to_dict (which is minimal for the templates resource),
+        this includes provenance and metrics so users can see what's theirs vs shared.
+        """
+        return {
+            "name": entry.name,
+            "query": entry.query,
+            "description": entry.description,
+            "category": entry.category,
+            "tags": entry.tags,
+            "source": entry.source.value,  # "personal" | "shared" | "builtin" | "starter"
+            "interest_score": entry.interest_score,
+            "success_count": entry.success_count,
+            "failure_count": entry.failure_count,
+            "use_count": entry.use_count,
+            "created_at": entry.created_at,
+            "last_used": entry.last_used,
+            "promoted_at": entry.promoted_at,
+        }
+
     # Tool implementations
 
     async def _list_log_sources(self, args: Dict) -> List[Dict]:
@@ -950,17 +971,31 @@ class MCPHandlers:
         }, indent=2, default=str)}]
 
     async def _list_learned_queries(self, args: Dict) -> List[Dict]:
-        """List previously saved learned queries."""
-        if self.user_store:
+        """List previously saved learned queries (merged personal + shared + builtin + starter)."""
+        category_filter = args.get("category")
+        tag_filter = args.get("tag")
+
+        if self.catalog is not None and self.user_store is not None:
+            entries = self.catalog.for_my_queries_view(user_id=self.user_store.user_id)
+            # Apply filters
+            if category_filter and category_filter != "all":
+                entries = [e for e in entries if e.category == category_filter]
+            if tag_filter:
+                entries = [e for e in entries if tag_filter in e.tags]
+            # Serialize to the same dict shape as before
+            queries = [self._catalog_entry_to_list_dict(e) for e in entries]
+        elif self.user_store:
+            # Legacy fallback (path retained until Task 9)
             queries = self.user_store.list_merged_queries(
-                category=args.get("category"),
-                tag=args.get("tag"),
+                category=category_filter,
+                tag=tag_filter,
             )
         else:
             queries = self.context_manager.list_learned_queries(
-                category=args.get("category"),
-                tag=args.get("tag"),
+                category=category_filter,
+                tag=tag_filter,
             )
+
         return [{"type": "text", "text": json.dumps({
             "count": len(queries),
             "queries": queries,
