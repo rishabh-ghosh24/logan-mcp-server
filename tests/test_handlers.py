@@ -501,6 +501,89 @@ class TestResourceRead:
         with pytest.raises(ValueError, match="Unknown resource"):
             await handlers.handle_resource_read("loganalytics://unknown")
 
+    @pytest.mark.asyncio
+    async def test_query_templates_resource_includes_shared(self, tmp_path):
+        """After rewiring, the query-templates resource returns builtin + shared entries
+        (personal and starter excluded per for_templates_resource precedence)."""
+        import yaml
+        from oci_logan_mcp.user_store import UserStore
+        from oci_logan_mcp.preferences import PreferenceStore
+        from oci_logan_mcp.secret_store import SecretStore
+        from oci_logan_mcp.audit import AuditLogger
+
+        # Seed shared/promoted_queries.yaml
+        shared_dir = tmp_path / "shared"
+        shared_dir.mkdir()
+        (shared_dir / "promoted_queries.yaml").write_text(yaml.dump({
+            "queries": [{"name": "my_shared_query", "query": "* shared",
+                         "description": "promoted from users"}]
+        }))
+
+        # Build handler with base_dir=tmp_path so catalog reads from tmp_path
+        user_store = UserStore(base_dir=tmp_path, user_id="testuser")
+        user_dir = tmp_path / "users" / "testuser"
+        user_dir.mkdir(parents=True, exist_ok=True)
+        pref_store = PreferenceStore(user_dir=user_dir)
+        secret_store = SecretStore(tmp_path / "secret.yaml")
+        audit = AuditLogger(tmp_path / "audit")
+
+        settings = Settings()
+        settings.log_analytics.namespace = "testns"
+        settings.log_analytics.default_compartment_id = "ocid1.compartment.default"
+        settings.query.max_results = 1000
+        settings.query.default_time_range = "last_1_hour"
+
+        from unittest.mock import MagicMock, AsyncMock
+        oci_client = MagicMock()
+        oci_client.namespace = "testns"
+        oci_client.compartment_id = "ocid1.compartment.default"
+        oci_client._config = {"tenancy": "ocid1.tenancy.test"}
+        cache = MagicMock()
+        cache.get = MagicMock(return_value=None)
+        cache.set = MagicMock()
+        query_logger = MagicMock()
+        query_logger.get_recent_queries = MagicMock(return_value=[])
+        ctx = MagicMock()
+        ctx.get_tenancy_context = MagicMock(return_value={"namespace": "testns"})
+
+        handler = MCPHandlers(
+            settings=settings,
+            oci_client=oci_client,
+            cache=cache,
+            query_logger=query_logger,
+            context_manager=ctx,
+            user_store=user_store,
+            preference_store=pref_store,
+            secret_store=secret_store,
+            audit_logger=audit,
+        )
+
+        result = await handler.handle_resource_read("loganalytics://query-templates")
+        names = {t["name"] for t in result["templates"]}
+        assert "my_shared_query" in names, "shared query should appear in templates resource"
+        # Still has builtins
+        assert "errors_last_hour" in names, "builtin query should still appear"
+        # Response shape unchanged
+        assert "templates" in result
+        assert isinstance(result["templates"], list)
+        for t in result["templates"]:
+            assert "name" in t
+            assert "query" in t
+            assert "description" in t
+
+    @pytest.mark.asyncio
+    async def test_query_templates_resource_shape_preserved(self, handlers):
+        """Pin the exact response shape so a future refactor doesn't break MCP clients."""
+        result = await handlers.handle_resource_read("loganalytics://query-templates")
+        # Top-level: exactly one key "templates" whose value is a list
+        assert set(result.keys()) == {"templates"}
+        assert isinstance(result["templates"], list)
+        # Every entry: at minimum name, query, description as strings
+        for t in result["templates"]:
+            assert isinstance(t.get("name"), str)
+            assert isinstance(t.get("query"), str)
+            assert isinstance(t.get("description"), str)
+
 
 # ---------------------------------------------------------------------------
 # Find Compartment Tests

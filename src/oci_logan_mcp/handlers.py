@@ -263,6 +263,10 @@ class MCPHandlers:
         if uri == "loganalytics://schema":
             return await self.schema_manager.get_full_schema()
         elif uri == "loganalytics://query-templates":
+            if self.catalog is not None:
+                entries = self.catalog.for_templates_resource()
+                return {"templates": [self._catalog_entry_to_dict(e) for e in entries]}
+            # Legacy fallback when user_store / catalog unavailable
             builtin = get_query_templates()
             return {
                 "templates": self.context_manager.get_all_templates(
@@ -279,6 +283,15 @@ class MCPHandlers:
             return get_reference_docs()
         else:
             raise ValueError(f"Unknown resource: {uri}")
+
+    def _catalog_entry_to_dict(self, entry: Any) -> Dict[str, Any]:
+        """Serialize a CatalogEntry to the query-templates resource wire format.
+        Keep keys minimal and stable — MCP clients depend on this shape."""
+        return {
+            "name": entry.name,
+            "description": entry.description,
+            "query": entry.query,
+        }
 
     # Tool implementations
 
