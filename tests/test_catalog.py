@@ -180,3 +180,75 @@ def test_catalog_personal_entry_includes_metrics(tmp_path):
     entries = catalog.load_personal(user_id="bob")
     assert len(entries) == 1
     assert entries[0].interest_score == 5
+
+
+def test_for_my_queries_personal_wins_over_shared(tmp_path):
+    # Seed shared with q1
+    shared_dir = tmp_path / "shared"
+    shared_dir.mkdir()
+    (shared_dir / "promoted_queries.yaml").write_text(yaml.dump({
+        "queries": [{"name": "q1", "query": "* shared", "description": "shared version"}]
+    }))
+    # Seed personal with q1 (different query)
+    store = UserStore(base_dir=tmp_path, user_id="alice")
+    store.save_query(name="q1", query="* personal", description="personal version")
+
+    catalog = UnifiedCatalog(base_dir=tmp_path)
+    merged = catalog.for_my_queries_view(user_id="alice")
+    q1 = [e for e in merged if e.name == "q1"]
+    assert len(q1) == 1
+    assert q1[0].source == SourceType.PERSONAL
+    assert q1[0].query == "* personal"
+
+
+def test_for_templates_resource_excludes_personal(tmp_path):
+    store = UserStore(base_dir=tmp_path, user_id="alice")
+    store.save_query(name="my_personal_query", query="*", description="d")
+
+    catalog = UnifiedCatalog(base_dir=tmp_path)
+    merged = catalog.for_templates_resource()
+    assert not any(e.source == SourceType.PERSONAL for e in merged)
+    assert not any(e.name == "my_personal_query" for e in merged)
+    # Builtin should still be there
+    assert any(e.source == SourceType.BUILTIN for e in merged)
+
+
+def test_for_templates_resource_shared_does_not_shadow_builtin(tmp_path):
+    """builtin > shared precedence: if shared has a name colliding with a builtin,
+    the builtin wins and the shared entry is dropped."""
+    shared_dir = tmp_path / "shared"
+    shared_dir.mkdir()
+    (shared_dir / "promoted_queries.yaml").write_text(yaml.dump({
+        "queries": [{"name": "errors_last_hour", "query": "* shared override",
+                     "description": "should not win"}]
+    }))
+    catalog = UnifiedCatalog(base_dir=tmp_path)
+    merged = catalog.for_templates_resource()
+    elh = [e for e in merged if e.name.lower() == "errors_last_hour"]
+    assert len(elh) == 1
+    assert elh[0].source == SourceType.BUILTIN
+
+
+def test_for_onboarding_returns_starters_only(tmp_path):
+    catalog = UnifiedCatalog(base_dir=tmp_path)
+    entries = catalog.for_onboarding()
+    assert len(entries) > 0
+    assert all(e.source == SourceType.STARTER for e in entries)
+
+
+def test_merge_by_name_case_insensitive(tmp_path):
+    """Case-insensitive name collision: personal 'myquery' shadows shared 'MyQuery'."""
+    shared_dir = tmp_path / "shared"
+    shared_dir.mkdir()
+    (shared_dir / "promoted_queries.yaml").write_text(yaml.dump({
+        "queries": [{"name": "MyQuery", "query": "* shared", "description": "shared"}]
+    }))
+    store = UserStore(base_dir=tmp_path, user_id="alice")
+    store.save_query(name="myquery", query="* personal", description="personal")
+
+    catalog = UnifiedCatalog(base_dir=tmp_path)
+    merged = catalog.for_my_queries_view(user_id="alice")
+    # Only one entry should remain (case-insensitive collision)
+    matching = [e for e in merged if e.name.lower() == "myquery"]
+    assert len(matching) == 1
+    assert matching[0].source == SourceType.PERSONAL

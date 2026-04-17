@@ -132,6 +132,34 @@ def handlers(settings, mock_oci_client, mock_cache, mock_query_logger, mock_cont
 
 
 # ---------------------------------------------------------------------------
+# Catalog Wiring Tests
+# ---------------------------------------------------------------------------
+
+def test_mcp_handlers_exposes_unified_catalog(handlers):
+    """Handler should have a UnifiedCatalog when user_store is provided."""
+    from oci_logan_mcp.catalog import UnifiedCatalog
+    assert isinstance(handlers.catalog, UnifiedCatalog)
+
+
+def test_mcp_handlers_catalog_is_none_without_user_store(
+    settings, mock_oci_client, mock_cache, mock_query_logger, mock_context_manager,
+    mock_secret_store, mock_audit_logger
+):
+    """Handler catalog should be None when no user_store is provided."""
+    handler = MCPHandlers(
+        settings=settings,
+        oci_client=mock_oci_client,
+        cache=mock_cache,
+        query_logger=mock_query_logger,
+        context_manager=mock_context_manager,
+        user_store=None,
+        secret_store=mock_secret_store,
+        audit_logger=mock_audit_logger,
+    )
+    assert handler.catalog is None
+
+
+# ---------------------------------------------------------------------------
 # Tool Routing Tests
 # ---------------------------------------------------------------------------
 

@@ -70,6 +70,12 @@ class MCPHandlers:
         self.alarm_service = AlarmService(oci_client, cache)
         self.dashboard_service = DashboardService(oci_client, cache)
         self.notification_service = NotificationService(settings)
+        # Wire unified query catalog (Task 5b)
+        from .catalog import UnifiedCatalog
+        if user_store is not None:
+            self.catalog = UnifiedCatalog(base_dir=user_store.base_dir)
+        else:
+            self.catalog = None
         self.confirmation_manager = ConfirmationManager(
             secret_store=secret_store,
             token_expiry_seconds=settings.guardrails.token_expiry_seconds,

@@ -7,7 +7,7 @@ import logging
 from dataclasses import dataclass, field
 from enum import Enum
 from pathlib import Path
-from typing import List, Optional
+from typing import Dict, List, Optional
 
 import yaml
 
@@ -160,6 +160,36 @@ class UnifiedCatalog:
         """
         data = atomic_yaml_read(path, default={"queries": []})
         return self._parse_queries(data, source, origin=str(path))
+
+    def for_my_queries_view(self, user_id: str) -> List[CatalogEntry]:
+        """Personal > shared > builtin > starter by name."""
+        return self._merge_by_name([
+            self.load_personal(user_id),
+            self.load_shared(),
+            self.load_builtins(),
+            self.load_starters(),
+        ])
+
+    def for_templates_resource(self) -> List[CatalogEntry]:
+        """builtin > shared. Personal and starter excluded."""
+        return self._merge_by_name([self.load_builtins(), self.load_shared()])
+
+    def for_onboarding(self) -> List[CatalogEntry]:
+        """Starter only (Task 15 will augment with top-N shared community favorites)."""
+        return self.load_starters()
+
+    def _merge_by_name(self, buckets: List[List[CatalogEntry]]) -> List[CatalogEntry]:
+        """Merge entries across sources. Buckets are in priority order (highest first).
+        Name comparison is case-insensitive. On collision, the higher-priority entry
+        wins AND KEEPS ITS OWN METRICS — losing entries are dropped entirely, not merged.
+        """
+        seen: Dict[str, CatalogEntry] = {}
+        for bucket in buckets:
+            for e in bucket:
+                key = e.name.lower()
+                if key not in seen:
+                    seen[key] = e
+        return list(seen.values())
 
     def _load_packaged_yaml(self, filename: str, source: SourceType) -> List[CatalogEntry]:
         """Load queries from a packaged YAML file.
