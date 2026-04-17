@@ -1,7 +1,21 @@
 """Tests for catalog module."""
 
-from oci_logan_mcp.catalog import CatalogEntry, SourceType
+from pathlib import Path
+from oci_logan_mcp.catalog import CatalogEntry, SourceType, UnifiedCatalog
 from oci_logan_mcp.resources import get_query_templates
+
+
+def test_catalog_loads_builtin_and_starter(tmp_path):
+    """UnifiedCatalog loads builtin and starter entries."""
+    catalog = UnifiedCatalog(base_dir=tmp_path)
+
+    entries = catalog.load_builtins()
+    assert len(entries) > 0
+    assert all(e.source == SourceType.BUILTIN for e in entries)
+
+    starters = catalog.load_starters()
+    assert len(starters) > 0
+    assert all(e.source == SourceType.STARTER for e in starters)
 
 
 def test_catalog_entry_minimum_fields():
