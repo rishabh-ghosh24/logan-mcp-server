@@ -1,5 +1,6 @@
 """MCP resource definitions for Log Analytics."""
 
+import functools
 import importlib.resources
 from typing import List, Dict, Any
 
@@ -60,6 +61,7 @@ def get_resources() -> List[Dict[str, Any]]:
     ]
 
 
+@functools.lru_cache(maxsize=1)
 def get_query_templates() -> Dict[str, Any]:
     """Load built-in query templates from packaged YAML.
 

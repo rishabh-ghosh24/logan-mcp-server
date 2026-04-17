@@ -59,3 +59,7 @@ def test_get_query_templates_reads_yaml():
         assert "query" in template
         assert isinstance(template["query"], str)
         assert len(template["query"]) > 0
+
+    # Byte-exact regression guard for at least one template
+    errors = next(t for t in result["templates"] if t["name"] == "errors_last_hour")
+    assert errors["query"] == "'Error' or 'Critical' | timestats span = 1hour count by 'Log Source'"
