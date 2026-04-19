@@ -45,6 +45,12 @@ def main():
         action="store_true",
         help="Reset your confirmation secret for destructive operations",
     )
+    parser.add_argument(
+        "--read-only",
+        action="store_true",
+        help="Disable all mutating tools (alarms, saved searches, dashboards, "
+             "notifications, preference writes). Reads remain allowed.",
+    )
     args = parser.parse_args()
 
     # Reject invalid flag combinations
@@ -73,6 +79,8 @@ def main():
     else:
         if args.user:
             os.environ["LOGAN_USER"] = args.user
+        if args.read_only:
+            os.environ["OCI_LOGAN_MCP_READ_ONLY"] = "1"
         server_main()
 
 
