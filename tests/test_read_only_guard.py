@@ -68,3 +68,60 @@ def test_raise_if_read_only_blocks_mutating_when_enabled():
 
 def test_read_only_error_is_exception_subclass():
     assert issubclass(ReadOnlyError, Exception)
+
+
+def test_all_registered_tools_are_classified():
+    """Every tool dispatched in handle_tool_call must be either in
+    MUTATING_TOOLS or in the known-readers allowlist below.
+
+    If this test fails: you added a new handler. Either add it to
+    MUTATING_TOOLS in read_only_guard.py, or add it to KNOWN_READERS below.
+    """
+    import ast
+    import pathlib
+
+    handlers_src = pathlib.Path("src/oci_logan_mcp/handlers.py").read_text()
+    tree = ast.parse(handlers_src)
+
+    # Locate the `handlers = {...}` Assign statement inside handle_tool_call
+    # specifically — do NOT grab the first dict in the function, which could
+    # match an unrelated literal added later.
+    registered: set[str] = set()
+    for node in ast.walk(tree):
+        if not (isinstance(node, ast.AsyncFunctionDef) and node.name == "handle_tool_call"):
+            continue
+        for sub in ast.walk(node):
+            if (
+                isinstance(sub, ast.Assign)
+                and len(sub.targets) == 1
+                and isinstance(sub.targets[0], ast.Name)
+                and sub.targets[0].id == "handlers"
+                and isinstance(sub.value, ast.Dict)
+            ):
+                for key in sub.value.keys:
+                    if isinstance(key, ast.Constant) and isinstance(key.value, str):
+                        registered.add(key.value)
+                break
+        break
+
+    assert registered, (
+        "Could not locate `handlers = {...}` assignment inside handle_tool_call. "
+        "If the registry was refactored, update this test."
+    )
+
+    KNOWN_READERS = {
+        "list_log_sources", "list_fields", "list_entities", "list_parsers",
+        "list_labels", "list_saved_searches", "list_log_groups",
+        "validate_query", "run_query", "run_saved_search", "run_batch_queries",
+        "visualize", "export_results",
+        "get_current_context", "list_compartments",
+        "test_connection", "find_compartment",
+        "get_query_examples", "get_log_summary",
+        "get_preferences", "list_alerts", "list_dashboards",
+    }
+
+    unclassified = registered - MUTATING_TOOLS - KNOWN_READERS
+    assert not unclassified, (
+        f"Unclassified tools: {sorted(unclassified)}. "
+        "Add each to MUTATING_TOOLS (in read_only_guard.py) or KNOWN_READERS (in this test)."
+    )
