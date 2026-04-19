@@ -1276,3 +1276,40 @@ async def test_non_read_only_still_updates_tenancy_context_for_compartments(
     assert captured["called"] is True
 
 
+# ---------------------------------------------------------------------------
+# Read-only guard integration tests
+# ---------------------------------------------------------------------------
+
+@pytest.mark.asyncio
+async def test_read_only_blocks_mutating_tool(handlers, settings):
+    settings.read_only = True
+    result = await handlers.handle_tool_call("delete_alert", {"alert_id": "ocid1.alert.x"})
+    assert len(result) == 1
+    payload = json.loads(result[0]["text"])
+    assert payload["status"] == "read_only_blocked"
+    assert payload["tool"] == "delete_alert"
+    assert "read-only" in payload["error"].lower()
+
+
+@pytest.mark.asyncio
+async def test_read_only_allows_reader(handlers, settings, monkeypatch):
+    settings.read_only = True
+    # Stub the reader to avoid OCI calls
+    async def fake_list_saved_searches(args):
+        return [{"type": "text", "text": "[]"}]
+    monkeypatch.setattr(handlers, "_list_saved_searches", fake_list_saved_searches)
+    result = await handlers.handle_tool_call("list_saved_searches", {})
+    assert result == [{"type": "text", "text": "[]"}]
+
+
+@pytest.mark.asyncio
+async def test_read_only_disabled_does_not_block(handlers, settings, monkeypatch):
+    settings.read_only = False
+    # Stub a mutator so it doesn't actually hit OCI
+    async def fake_delete_alert(args):
+        return [{"type": "text", "text": "deleted"}]
+    monkeypatch.setattr(handlers, "_delete_alert", fake_delete_alert)
+    # Bypass confirmation gate for this test
+    monkeypatch.setattr(handlers.confirmation_manager, "is_guarded", lambda name: False)
+    result = await handlers.handle_tool_call("delete_alert", {})
+    assert result == [{"type": "text", "text": "deleted"}]

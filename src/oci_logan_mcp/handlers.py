@@ -25,6 +25,7 @@ from .notification_service import NotificationService
 from .confirmation import ConfirmationManager
 from .secret_store import SecretStore
 from .audit import AuditLogger
+from .read_only_guard import ReadOnlyError, raise_if_read_only
 
 if TYPE_CHECKING:
     from .catalog import CatalogEntry
@@ -144,6 +145,21 @@ class MCPHandlers:
             return [{"type": "text", "text": f"Unknown tool: {name}"}]
 
         user_id = self.user_store.user_id
+
+        # --- Read-only guard (runs BEFORE confirmation gate) ---
+        try:
+            raise_if_read_only(name, read_only=self.settings.read_only)
+        except ReadOnlyError as e:
+            if self.audit_logger:
+                self.audit_logger.log(
+                    user=user_id, tool=name, args=arguments,
+                    outcome="read_only_blocked",
+                )
+            return [{"type": "text", "text": json.dumps({
+                "status": "read_only_blocked",
+                "tool": name,
+                "error": str(e),
+            }, indent=2)}]
 
         # --- Confirmation gate for guarded operations ---
         if self.confirmation_manager.is_guarded(name):
