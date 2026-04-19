@@ -156,6 +156,59 @@ def test_promote_handles_name_collision_cross_user(tmp_path):
     assert bob_data["queries"][0].get("promotion_status") == "rejected: name_collision_cross_user"
 
 
+def test_promoted_at_stable_when_entry_unchanged(tmp_path):
+    """Re-running promote_all with no changes must preserve promoted_at on each
+    shared entry — the field reflects last meaningful change, not last scan."""
+    store = UserStore(base_dir=tmp_path, user_id="alice")
+    store.save_query(name="stable_q", query="* | head 10", description="d", interest_score=5)
+    qpath = tmp_path / "users" / "alice" / "learned_queries.yaml"
+    data = yaml.safe_load(qpath.read_text())
+    data["queries"][0]["success_count"] = 10
+    qpath.write_text(yaml.dump(data))
+
+    promote_all(tmp_path)
+    shared1 = yaml.safe_load((tmp_path / "shared" / "promoted_queries.yaml").read_text())
+    ts1 = shared1["queries"][0]["promoted_at"]
+
+    import time
+    time.sleep(0.05)  # ensure 'now' would differ if we weren't preserving
+
+    promote_all(tmp_path)
+    shared2 = yaml.safe_load((tmp_path / "shared" / "promoted_queries.yaml").read_text())
+    ts2 = shared2["queries"][0]["promoted_at"]
+
+    assert ts1 == ts2, f"promoted_at changed on no-op re-run: {ts1} -> {ts2}"
+
+
+def test_promoted_at_refreshed_when_metrics_change(tmp_path):
+    """When a shared entry's aggregated metrics change (e.g., new success runs),
+    promoted_at must be refreshed to reflect the update."""
+    store = UserStore(base_dir=tmp_path, user_id="alice")
+    store.save_query(name="updating_q", query="* | head 5", description="d", interest_score=5)
+    qpath = tmp_path / "users" / "alice" / "learned_queries.yaml"
+    data = yaml.safe_load(qpath.read_text())
+    data["queries"][0]["success_count"] = 10
+    qpath.write_text(yaml.dump(data))
+
+    promote_all(tmp_path)
+    shared1 = yaml.safe_load((tmp_path / "shared" / "promoted_queries.yaml").read_text())
+    ts1 = shared1["queries"][0]["promoted_at"]
+
+    import time
+    time.sleep(0.05)
+
+    # Bump success_count — aggregated metrics now differ
+    data = yaml.safe_load(qpath.read_text())
+    data["queries"][0]["success_count"] = 20
+    qpath.write_text(yaml.dump(data))
+
+    promote_all(tmp_path)
+    shared2 = yaml.safe_load((tmp_path / "shared" / "promoted_queries.yaml").read_text())
+    ts2 = shared2["queries"][0]["promoted_at"]
+
+    assert ts1 != ts2, "promoted_at should refresh when aggregated metrics change"
+
+
 def test_promote_persists_user_count_on_shared_entry(tmp_path):
     """Shared entries record how many distinct users contributed, so consumers
     can read popularity from the shared catalog without re-scanning per-user

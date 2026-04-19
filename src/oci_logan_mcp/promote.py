@@ -52,6 +52,19 @@ def sanitize_for_sharing(query: Dict[str, Any]) -> Optional[Dict[str, Any]]:
     return q
 
 
+_SHARED_CONTENT_FIELDS = (
+    "name", "query", "description", "category", "tags",
+    "interest_score", "success_count", "failure_count", "user_count",
+)
+
+
+def _shared_entry_content_equal(prior: Dict[str, Any], new: Dict[str, Any]) -> bool:
+    """Compare meaningful content fields between a prior shared entry and a
+    freshly-sanitized one. Ignores promoted_at, source, and any legacy fields
+    not in the current shared schema."""
+    return all(prior.get(f) == new.get(f) for f in _SHARED_CONTENT_FIELDS)
+
+
 def _write_back_status(user_dir: Path, status_updates: Dict[str, Dict[str, Any]]) -> None:
     """Write promotion status/reason back to a user's learned_queries.yaml.
 
@@ -275,6 +288,13 @@ def promote_all(base_dir: Path) -> Dict[str, Any]:
             # contradicts the per-user state.
             for stale_key in [k for k in existing_by_canonical if k[0] == name_lower and k != ck]:
                 del existing_by_canonical[stale_key]
+            # Preserve existing promoted_at when the meaningful content is
+            # unchanged, so the field reflects last meaningful update (not
+            # last scan). Lets consumers distinguish stagnant shared catalogs
+            # from actively-churning ones.
+            prior = existing_by_canonical.get(ck)
+            if prior is not None and _shared_entry_content_equal(prior, p):
+                p["promoted_at"] = prior.get("promoted_at", p["promoted_at"])
             existing_by_canonical[ck] = p
         final = list(existing_by_canonical.values())
         final.sort(key=lambda q: q.get("interest_score", 0), reverse=True)
