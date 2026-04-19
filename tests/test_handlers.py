@@ -1151,3 +1151,128 @@ async def test_get_query_examples_filter_by_category(tmp_path):
     assert "category" in body or "error" in body
 
 
+# ---------------------------------------------------------------------------
+# Tenancy-context auto-capture suppression under read-only (Task 2.5)
+# ---------------------------------------------------------------------------
+
+@pytest.mark.asyncio
+async def test_read_only_skips_tenancy_context_update_for_log_sources(
+    handlers, settings, monkeypatch
+):
+    settings.read_only = True
+    captured = {"called": False}
+
+    async def fake_get_log_sources(compartment_id=None):
+        return [{"name": "linux_syslog"}]
+
+    monkeypatch.setattr(handlers.schema_manager, "get_log_sources", fake_get_log_sources)
+    monkeypatch.setattr(
+        handlers.context_manager,
+        "update_log_sources",
+        lambda sources: captured.__setitem__("called", True),
+    )
+
+    result = await handlers.handle_tool_call("list_log_sources", {})
+    assert "linux_syslog" in result[0]["text"]
+    assert captured["called"] is False
+
+
+@pytest.mark.asyncio
+async def test_non_read_only_still_updates_tenancy_context_for_log_sources(
+    handlers, settings, monkeypatch
+):
+    settings.read_only = False
+    captured = {"called": False}
+
+    async def fake_get_log_sources(compartment_id=None):
+        return [{"name": "linux_syslog"}]
+
+    monkeypatch.setattr(handlers.schema_manager, "get_log_sources", fake_get_log_sources)
+    monkeypatch.setattr(
+        handlers.context_manager,
+        "update_log_sources",
+        lambda sources: captured.__setitem__("called", True),
+    )
+
+    await handlers.handle_tool_call("list_log_sources", {})
+    assert captured["called"] is True
+
+
+@pytest.mark.asyncio
+async def test_read_only_skips_tenancy_context_update_for_fields(
+    handlers, settings, monkeypatch
+):
+    settings.read_only = True
+    captured = {"called": False}
+
+    async def fake_get_fields(source_name=None):
+        return []
+
+    monkeypatch.setattr(handlers.schema_manager, "get_fields", fake_get_fields)
+    monkeypatch.setattr(
+        handlers.context_manager,
+        "update_confirmed_fields",
+        lambda fields: captured.__setitem__("called", True),
+    )
+
+    await handlers.handle_tool_call("list_fields", {})
+    assert captured["called"] is False
+
+
+@pytest.mark.asyncio
+async def test_non_read_only_still_updates_tenancy_context_for_fields(
+    handlers, settings, monkeypatch
+):
+    settings.read_only = False
+    captured = {"called": False}
+
+    async def fake_get_fields(source_name=None):
+        return []
+
+    monkeypatch.setattr(handlers.schema_manager, "get_fields", fake_get_fields)
+    monkeypatch.setattr(
+        handlers.context_manager,
+        "update_confirmed_fields",
+        lambda fields: captured.__setitem__("called", True),
+    )
+
+    await handlers.handle_tool_call("list_fields", {})
+    assert captured["called"] is True
+
+
+@pytest.mark.asyncio
+async def test_read_only_skips_tenancy_context_update_for_compartments(
+    handlers, settings, monkeypatch
+):
+    settings.read_only = True
+    captured = {"called": False}
+
+    handlers.oci_client.list_compartments = AsyncMock(return_value=[])
+    monkeypatch.setattr(
+        handlers.context_manager,
+        "update_compartments",
+        lambda compartments: captured.__setitem__("called", True),
+    )
+
+    await handlers.handle_tool_call("list_compartments", {})
+    assert captured["called"] is False
+
+
+@pytest.mark.asyncio
+async def test_non_read_only_still_updates_tenancy_context_for_compartments(
+    handlers, settings, monkeypatch
+):
+    settings.read_only = False
+    captured = {"called": False}
+
+    handlers.oci_client.list_compartments = AsyncMock(return_value=[])
+    monkeypatch.setattr(
+        handlers.context_manager,
+        "update_compartments",
+        lambda compartments: captured.__setitem__("called", True),
+    )
+
+    await handlers.handle_tool_call("list_compartments", {})
+    assert captured["called"] is True
+
+

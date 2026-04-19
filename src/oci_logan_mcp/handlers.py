@@ -290,8 +290,9 @@ class MCPHandlers:
         sources = await self.schema_manager.get_log_sources(
             compartment_id=args.get("compartment_id")
         )
-        # Auto-capture to tenancy context
-        self.context_manager.update_log_sources(sources)
+        # Auto-capture to tenancy context (suppressed in read-only mode)
+        if not self.settings.read_only:
+            self.context_manager.update_log_sources(sources)
         return [{"type": "text", "text": json.dumps(sources, indent=2)}]
 
     async def _list_fields(self, args: Dict) -> List[Dict]:
@@ -307,8 +308,9 @@ class MCPHandlers:
             }
             for f in fields
         ]
-        # Auto-capture to tenancy context
-        self.context_manager.update_confirmed_fields(field_dicts)
+        # Auto-capture to tenancy context (suppressed in read-only mode)
+        if not self.settings.read_only:
+            self.context_manager.update_confirmed_fields(field_dicts)
         return [{"type": "text", "text": json.dumps(field_dicts, indent=2)}]
 
     async def _list_entities(self, args: Dict) -> List[Dict]:
@@ -623,8 +625,9 @@ class MCPHandlers:
     async def _list_compartments(self, args: Dict) -> List[Dict]:
         """List compartments."""
         compartments = await self.oci_client.list_compartments()
-        # Auto-capture to tenancy context
-        self.context_manager.update_compartments(compartments)
+        # Auto-capture to tenancy context (suppressed in read-only mode)
+        if not self.settings.read_only:
+            self.context_manager.update_compartments(compartments)
         return [{"type": "text", "text": json.dumps(compartments, indent=2)}]
 
     async def _test_connection(self, args: Dict) -> List[Dict]:
