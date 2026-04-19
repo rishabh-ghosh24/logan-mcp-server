@@ -383,8 +383,8 @@ Comprehensive list of features brainstormed by Agent A (monitoring/observability
 
 ### N1 — Multi-step investigation recorder
 - **Conviction:** 🔥 · **Size:** S · **Disposition:** P0-core (trimmed)
-- **What (P0):** `record_investigation(session_id, name)` captures the tool-call chain for an agent-supplied investigation id and persists it as a named playbook; `list_playbooks`, `get_playbook`, `delete_playbook` round out P0. Record + catalogue only — no replay.
-- **Deferred to P1:** replay, auto-parameterization, `dry_run`, capture_as chaining.
+- **What (P0):** `record_investigation(name, since, until)` captures the current process's N6 audit events inside the given time window and persists them as a named playbook; `list_playbooks`, `get_playbook`, `delete_playbook` round out P0. Record + catalogue only — no replay. Time-window capture instead of a client-supplied `session_id` because N6 P0 only guarantees a process-scoped session id.
+- **Deferred to P1:** replay, auto-parameterization, `dry_run`, capture_as chaining, optional `session_id` parameter (unlocked by N6 P1 client-supplied session ids).
 
 ### N2 — Suggested next query
 - **Conviction:** 🔥 · **Size:** M · **Disposition:** P0-core

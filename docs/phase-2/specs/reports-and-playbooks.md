@@ -278,7 +278,7 @@ redaction:
 
 - All new and existing tests pass.
 - End-to-end demo works: alarm OCID → `investigate_incident` → `generate_incident_report` → `deliver_report(channels=["telegram", "email"])` lands PDF in Telegram and email notification.
-- Playbook record → replay roundtrip works with canned data.
+- Playbook record → list → get → delete roundtrip works against captured audit events (no replay — replay is P1).
 - Stretch G1 either shipped (with documented config examples in README) or deferred with PR-description rationale.
 - README updated with: investigation workflow guide, sample Telegram/email config, G1 config example (if shipped).
 - Acceptance-criteria checklist marked done in PR description.
