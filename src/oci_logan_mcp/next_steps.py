@@ -15,6 +15,8 @@ from __future__ import annotations
 from dataclasses import dataclass, field
 from typing import Any, Dict, List
 
+LARGE_RESULT_THRESHOLD = 1000
+
 
 @dataclass
 class NextStep:
@@ -44,7 +46,18 @@ def suggest(query: str, result: Dict[str, Any]) -> List[NextStep]:
 
     out: List[NextStep] = []
     out.extend(_h_empty_result(query, rows, columns))
+    out.extend(_h_large_result(query, rows, columns))
     return out
+
+
+def _h_large_result(query: str, rows: list, columns: list) -> List[NextStep]:
+    if len(rows) >= LARGE_RESULT_THRESHOLD:
+        return [NextStep(
+            tool_name="run_query",
+            suggested_args={"query": query, "time_range": "last_15_min"},
+            reason=f"Result has {len(rows)} rows — try a tighter/narrower time window.",
+        )]
+    return []
 
 
 def _h_empty_result(query: str, rows: list, columns: list) -> List[NextStep]:
