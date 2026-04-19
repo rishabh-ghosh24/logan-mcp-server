@@ -20,3 +20,10 @@ def test_suggest_never_raises_on_malformed_result():
     assert suggest("*", {}) == []
     assert suggest("*", {"data": None}) == []
     assert suggest("*", {"data": {"rows": None}}) == []
+
+
+def test_empty_result_suggests_validate_query():
+    result = {"data": {"rows": [], "columns": [{"name": "Time"}]}, "metadata": {}}
+    steps = suggest("'Log Source' = 'nonexistent'", result)
+    tools = [s.tool_name for s in steps]
+    assert "validate_query" in tools

@@ -42,5 +42,16 @@ def suggest(query: str, result: Dict[str, Any]) -> List[NextStep]:
     if not isinstance(rows, list) or not isinstance(columns, list):
         return []
 
-    # Heuristics appended below in subsequent tasks.
+    out: List[NextStep] = []
+    out.extend(_h_empty_result(query, rows, columns))
+    return out
+
+
+def _h_empty_result(query: str, rows: list, columns: list) -> List[NextStep]:
+    if len(rows) == 0 and len(columns) > 0:
+        return [NextStep(
+            tool_name="validate_query",
+            suggested_args={"query": query},
+            reason="Query returned zero rows — validate syntax or loosen filters.",
+        )]
     return []
