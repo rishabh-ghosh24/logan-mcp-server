@@ -156,6 +156,44 @@ def test_promote_handles_name_collision_cross_user(tmp_path):
     assert bob_data["queries"][0].get("promotion_status") == "rejected: name_collision_cross_user"
 
 
+def test_promote_persists_user_count_on_shared_entry(tmp_path):
+    """Shared entries record how many distinct users contributed, so consumers
+    can read popularity from the shared catalog without re-scanning per-user
+    YAMLs."""
+    for user_id in ["alice", "bob", "carol"]:
+        store = UserStore(base_dir=tmp_path, user_id=user_id)
+        store.save_query(
+            name="popular_pattern",
+            query="'Error' | stats count by 'Host'",
+            description="common",
+            interest_score=3,
+        )
+        qpath = tmp_path / "users" / user_id / "learned_queries.yaml"
+        data = yaml.safe_load(qpath.read_text())
+        data["queries"][0]["success_count"] = 5
+        qpath.write_text(yaml.dump(data))
+
+    promote_all(tmp_path)
+
+    shared = yaml.safe_load((tmp_path / "shared" / "promoted_queries.yaml").read_text())
+    assert len(shared["queries"]) == 1
+    assert shared["queries"][0]["user_count"] == 3
+
+
+def test_single_user_promotion_records_user_count_one(tmp_path):
+    """Single-user promotion still records user_count=1."""
+    store = UserStore(base_dir=tmp_path, user_id="alice")
+    store.save_query(name="solo_q", query="* | head 10", description="d", interest_score=5)
+    qpath = tmp_path / "users" / "alice" / "learned_queries.yaml"
+    data = yaml.safe_load(qpath.read_text())
+    data["queries"][0]["success_count"] = 10
+    qpath.write_text(yaml.dump(data))
+
+    promote_all(tmp_path)
+    shared = yaml.safe_load((tmp_path / "shared" / "promoted_queries.yaml").read_text())
+    assert shared["queries"][0]["user_count"] == 1
+
+
 def test_promote_writes_back_status_to_personal(tmp_path):
     """After promote_all, each scanned personal entry has promotion_status set."""
     store = UserStore(base_dir=tmp_path, user_id="alice")

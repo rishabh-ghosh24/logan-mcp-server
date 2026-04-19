@@ -182,6 +182,7 @@ def promote_all(base_dir: Path) -> Dict[str, Any]:
             sanitized["success_count"] = total_success
             sanitized["failure_count"] = total_failure
             sanitized["interest_score"] = interest
+            sanitized["user_count"] = uc
             promote_candidates[canonical_key] = {
                 "sanitized": sanitized,
                 "bucket": bucket,
