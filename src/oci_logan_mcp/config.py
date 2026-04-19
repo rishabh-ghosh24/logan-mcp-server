@@ -92,6 +92,23 @@ class NotificationsConfig:
 
 
 @dataclass
+class CostConfig:
+    cost_per_gb_usd: float = 0.05
+    eta_throughput_mbps: float = 50.0
+    eta_high_threshold_seconds: float = 60.0
+    probe_ttl_seconds: int = 900
+    filter_selectivity_discount: float = 0.2
+
+
+@dataclass
+class BudgetConfig:
+    enabled: bool = True
+    max_queries_per_session: int = 100
+    max_bytes_per_session: int = 10 * 1024**3
+    max_cost_usd_per_session: float = 5.00
+
+
+@dataclass
 class Settings:
     """Main settings container."""
 
@@ -102,6 +119,8 @@ class Settings:
     logging: LoggingConfig = field(default_factory=LoggingConfig)
     guardrails: GuardrailsConfig = field(default_factory=GuardrailsConfig)
     notifications: NotificationsConfig = field(default_factory=NotificationsConfig)
+    cost: CostConfig = field(default_factory=CostConfig)
+    budget: BudgetConfig = field(default_factory=BudgetConfig)
     read_only: bool = False
 
     def to_dict(self) -> dict:
@@ -145,6 +164,19 @@ class Settings:
                     "bot_token": self.notifications.telegram.bot_token,
                     "default_chat_id": self.notifications.telegram.default_chat_id,
                 },
+            },
+            "cost": {
+                "cost_per_gb_usd": self.cost.cost_per_gb_usd,
+                "eta_throughput_mbps": self.cost.eta_throughput_mbps,
+                "eta_high_threshold_seconds": self.cost.eta_high_threshold_seconds,
+                "probe_ttl_seconds": self.cost.probe_ttl_seconds,
+                "filter_selectivity_discount": self.cost.filter_selectivity_discount,
+            },
+            "budget": {
+                "enabled": self.budget.enabled,
+                "max_queries_per_session": self.budget.max_queries_per_session,
+                "max_bytes_per_session": self.budget.max_bytes_per_session,
+                "max_cost_usd_per_session": self.budget.max_cost_usd_per_session,
             },
         }
 
@@ -242,6 +274,33 @@ def _parse_config(data: Dict[str, Any]) -> Settings:
             ),
             token_expiry_seconds=guardrails_data.get(
                 "token_expiry_seconds", settings.guardrails.token_expiry_seconds
+            ),
+        )
+
+    if cost_data := data.get("cost"):
+        settings.cost = CostConfig(
+            cost_per_gb_usd=cost_data.get("cost_per_gb_usd", settings.cost.cost_per_gb_usd),
+            eta_throughput_mbps=cost_data.get("eta_throughput_mbps", settings.cost.eta_throughput_mbps),
+            eta_high_threshold_seconds=cost_data.get(
+                "eta_high_threshold_seconds", settings.cost.eta_high_threshold_seconds
+            ),
+            probe_ttl_seconds=cost_data.get("probe_ttl_seconds", settings.cost.probe_ttl_seconds),
+            filter_selectivity_discount=cost_data.get(
+                "filter_selectivity_discount", settings.cost.filter_selectivity_discount
+            ),
+        )
+
+    if budget_data := data.get("budget"):
+        settings.budget = BudgetConfig(
+            enabled=budget_data.get("enabled", settings.budget.enabled),
+            max_queries_per_session=budget_data.get(
+                "max_queries_per_session", settings.budget.max_queries_per_session
+            ),
+            max_bytes_per_session=budget_data.get(
+                "max_bytes_per_session", settings.budget.max_bytes_per_session
+            ),
+            max_cost_usd_per_session=budget_data.get(
+                "max_cost_usd_per_session", settings.budget.max_cost_usd_per_session
             ),
         )
 
