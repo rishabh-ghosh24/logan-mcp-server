@@ -137,3 +137,39 @@ def test_successful_rows_do_not_suggest_error_pivot():
     }
     steps = suggest("*", result)
     assert not any(s.tool_name == "pivot_on_entity" for s in steps)
+
+
+def test_time_bucket_spike_suggests_diff_windows():
+    rows = [
+        ["2026-04-20T09:00:00Z", 10],
+        ["2026-04-20T09:05:00Z", 12],
+        ["2026-04-20T09:10:00Z", 9],
+        ["2026-04-20T09:15:00Z", 11],
+        ["2026-04-20T09:20:00Z", 100],
+        ["2026-04-20T09:25:00Z", 10],
+    ]
+    result = {
+        "data": {"rows": rows, "columns": [{"name": "Time"}, {"name": "Count"}]},
+        "metadata": {},
+    }
+    steps = suggest("* | timestats count as Count span=5m", result)
+    assert any(s.tool_name == "diff_time_windows" for s in steps)
+
+
+def test_flat_time_series_no_spike_suggestion():
+    rows = [["t" + str(i), 10 + (i % 3)] for i in range(10)]
+    result = {
+        "data": {"rows": rows, "columns": [{"name": "Time"}, {"name": "Count"}]},
+        "metadata": {},
+    }
+    steps = suggest("* | timestats count", result)
+    assert not any(s.tool_name == "diff_time_windows" for s in steps)
+
+
+def test_non_timeseries_ignored_by_spike_heuristic():
+    result = {
+        "data": {"rows": [["a", 1], ["b", 9999]], "columns": [{"name": "Host"}, {"name": "Count"}]},
+        "metadata": {},
+    }
+    steps = suggest("*", result)
+    assert not any(s.tool_name == "diff_time_windows" for s in steps)

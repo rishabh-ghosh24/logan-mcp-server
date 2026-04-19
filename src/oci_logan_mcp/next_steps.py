@@ -13,6 +13,7 @@ Design invariants:
 from __future__ import annotations
 
 import re
+import statistics
 from dataclasses import dataclass, field
 from typing import Any, Dict, List
 
@@ -24,6 +25,8 @@ _STATUS_FIELD_NAMES = {"status", "status code", "statuscode", "http status", "re
 _SEVERITY_FIELD_NAMES = {"severity", "level", "log level"}
 _ENTITY_FIELD_NAMES = {"host", "hostname", "entity", "instance", "service", "pod"}
 _ERROR_STRINGS = {"error", "fail", "failed", "failure", "exception", "critical", "fatal"}
+
+SPIKE_RATIO = 3.0
 
 
 @dataclass
@@ -57,7 +60,70 @@ def suggest(query: str, result: Dict[str, Any]) -> List[NextStep]:
     out.extend(_h_large_result(query, rows, columns))
     out.extend(_h_request_id(query, rows, columns))
     out.extend(_h_error_rows(query, rows, columns))
+    out.extend(_h_time_spike(query, rows, columns))
     return out
+
+
+def _is_time_col(col) -> bool:
+    if not isinstance(col, dict):
+        return False
+    name = (col.get("name") or "").strip().lower()
+    return name in {"time", "start time", "timestamp", "_time"}
+
+
+def _find_numeric_col(columns: list, skip_idx: int):
+    for i, col in enumerate(columns):
+        if i == skip_idx or not isinstance(col, dict):
+            continue
+        dtype = (col.get("dataType") or col.get("type") or "").lower()
+        if dtype in {"int", "integer", "long", "double", "float", "number"}:
+            return i
+    return None
+
+
+def _h_time_spike(query: str, rows: list, columns: list) -> List[NextStep]:
+    if len(rows) < 4:
+        return []
+    time_idx = next((i for i, c in enumerate(columns) if _is_time_col(c)), None)
+    if time_idx is None:
+        return []
+    count_idx = _find_numeric_col(columns, skip_idx=time_idx)
+    if count_idx is None:
+        count_idx = 1 if len(columns) > 1 else None
+    if count_idx is None:
+        return []
+
+    values = []
+    for row in rows:
+        if not isinstance(row, list) or count_idx >= len(row) or time_idx >= len(row):
+            continue
+        v = row[count_idx]
+        try:
+            values.append((row[time_idx], float(v)))
+        except (TypeError, ValueError):
+            continue
+    if len(values) < 4:
+        return []
+
+    max_ts, max_val = max(values, key=lambda x: x[1])
+    others = [v for ts, v in values if ts != max_ts]
+    if not others:
+        return []
+    median = statistics.median(others)
+    if median <= 0:
+        return []
+    if max_val < SPIKE_RATIO * median:
+        return []
+
+    return [NextStep(
+        tool_name="diff_time_windows",
+        suggested_args={
+            "query": query,
+            "spike_bucket": str(max_ts),
+            "baseline": "same_hour_last_week",
+        },
+        reason=f"Bucket at {max_ts} is {max_val:.0f} vs. median {median:.0f} — compare to last week.",
+    )]
 
 
 def _find_col(columns: list, candidates: set) -> tuple:
