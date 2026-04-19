@@ -209,6 +209,37 @@ def test_promoted_at_refreshed_when_metrics_change(tmp_path):
     assert ts1 != ts2, "promoted_at should refresh when aggregated metrics change"
 
 
+def test_promoted_at_refreshed_when_description_changes(tmp_path):
+    """Description is a non-metric content field; editing it must refresh
+    promoted_at. Protects _SHARED_CONTENT_FIELDS membership against drift:
+    if 'description' were dropped from the comparison tuple, this test fails."""
+    store = UserStore(base_dir=tmp_path, user_id="alice")
+    store.save_query(name="desc_q", query="* | head 3", description="original",
+                     interest_score=5)
+    qpath = tmp_path / "users" / "alice" / "learned_queries.yaml"
+    data = yaml.safe_load(qpath.read_text())
+    data["queries"][0]["success_count"] = 10
+    qpath.write_text(yaml.dump(data))
+
+    promote_all(tmp_path)
+    shared1 = yaml.safe_load((tmp_path / "shared" / "promoted_queries.yaml").read_text())
+    ts1 = shared1["queries"][0]["promoted_at"]
+
+    import time
+    time.sleep(0.05)
+
+    data = yaml.safe_load(qpath.read_text())
+    data["queries"][0]["description"] = "updated wording"
+    qpath.write_text(yaml.dump(data))
+
+    promote_all(tmp_path)
+    shared2 = yaml.safe_load((tmp_path / "shared" / "promoted_queries.yaml").read_text())
+    ts2 = shared2["queries"][0]["promoted_at"]
+
+    assert ts1 != ts2, "promoted_at should refresh when description changes"
+    assert shared2["queries"][0]["description"] == "updated wording"
+
+
 def test_promote_persists_user_count_on_shared_entry(tmp_path):
     """Shared entries record how many distinct users contributed, so consumers
     can read popularity from the shared catalog without re-scanning per-user
