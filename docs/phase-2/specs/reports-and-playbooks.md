@@ -22,9 +22,9 @@ Close the investigation loop. After A1 produces a first-cut investigation, turn 
 
 ## Acceptance criteria for the branch
 
-- `record_investigation(session_id, name)` saves the current session's tool chain as a named replayable playbook.
-- `generate_incident_report(investigation)` produces a structured Markdown report.
-- `deliver_report(report, channels=["telegram", "email"])` generates a PDF and ships it via Telegram + ONS.
+- `record_investigation(name, since, until)` captures the current process's N6 audit events in the given time window and persists them as a named, listable playbook (catalogue only — no replay in P0).
+- `generate_incident_report(investigation)` takes an A1 `InvestigationReport` and produces a structured Markdown report.
+- `deliver_report(report, channels=["telegram", "email"])` generates a PDF, sends it to Telegram via `sendDocument`, and publishes an inline-Markdown summary (no attachment, no link) to ONS email.
 - Stretch: PII redaction policy, when enabled via config, masks matching fields on outbound.
 - All existing tests pass.
 
@@ -38,9 +38,10 @@ Capture the tool-call chain of an investigation so it can be listed, exported, a
 ### Tool interface (P0)
 ```
 record_investigation(
-  session_id: str,                       # REQUIRED — agent-chosen investigation id; no "current" default
   name: str,
   description: str | None = None,
+  since: datetime | None = None,        # default: server process start
+  until: datetime | None = None,        # default: now
 ) -> PlaybookId
 
 list_playbooks() -> list[PlaybookMetadata]
@@ -50,7 +51,7 @@ get_playbook(playbook_id: str) -> Playbook  # full step list + metadata
 delete_playbook(playbook_id: str) -> None
 ```
 
-> **Why `session_id` is required and has no `"current"` default:** the server's process-scoped session id (N6) is a debugging grouping, not an investigation boundary. N1 treats the investigation boundary as agent-defined data — the caller passes the id it intends to record under, and the server simply filters audit events by that id at record-time.
+> **Why time-window based, not session-id based:** N6 P0 only guarantees a process-scoped `session_id` on audit entries and explicitly defers client-supplied session ids to P1. With that contract, N1 cannot ask a caller to pass an "investigation id" — there is no way for the audit stream to carry one. Instead, N1 filters the current process's audit events by time window. The caller sets the investigation boundary by choosing `since`/`until`. When client-supplied session ids land in N6 P1, N1 gains an optional `session_id` parameter as a drop-in upgrade.
 
 ### Data model (P0)
 ```
@@ -61,7 +62,8 @@ Playbook {
   owner: str,
   created_at: datetime,
   steps: list[Step],
-  source_session_id: str,
+  source_process_session_id: str,       # the N6 process-scoped id recorded at capture time
+  window: {since: datetime, until: datetime},
 }
 Step {
   tool: str,
@@ -75,17 +77,19 @@ No `parameters` list, no `$param_name` substitution, no `capture_as` chaining in
 
 ### Files (P0)
 - Create: `src/oci_logan_mcp/playbook_store.py` — persistent playbook storage (SQLite).
-- Create: `src/oci_logan_mcp/playbook_recorder.py` — reads N6 audit events filtered by `session_id` and assembles a `Playbook`.
+- Create: `src/oci_logan_mcp/playbook_recorder.py` — reads N6 audit events for the current process, filters by `[since, until]`, and assembles a `Playbook`.
 - Modify: `src/oci_logan_mcp/tools.py` — register 4 P0 tools.
 - Create: `tests/test_playbook_store.py`.
 - Create: `tests/test_playbook_recorder.py`.
 
 ### Test outline (P0)
-1. Test: record a 3-call session (via explicit `session_id`) → playbook has 3 steps in order with correct tool names and args.
-2. Test: record against an unknown `session_id` → playbook has zero steps and records a warning in metadata.
-3. Test: `list_playbooks` returns created playbooks in reverse-chronological order.
-4. Test: `get_playbook` round-trips the full data model.
-5. Test: `delete_playbook` removes it from `list_playbooks` and returns 404 on subsequent `get_playbook`.
+1. Test: 3 audit events in the window → playbook has 3 steps in order with correct tool names and args.
+2. Test: zero audit events in the window → playbook is recorded with zero steps and a warning in metadata.
+3. Test: events outside the window are excluded (one before `since`, one after `until`).
+4. Test: default `since`/`until` captures the full process lifetime without error.
+5. Test: `list_playbooks` returns created playbooks in reverse-chronological order.
+6. Test: `get_playbook` round-trips the full data model.
+7. Test: `delete_playbook` removes it from `list_playbooks` and returns 404 on subsequent `get_playbook`.
 
 ### Dependencies
 - **Hard on N6** session-id + per-tool-invoked capture from `feat/agent-guardrails` (already merged when this branch starts).
@@ -95,6 +99,7 @@ No `parameters` list, no `$param_name` substitution, no `capture_as` chaining in
 - Auto-parameterization (time ranges, entities, sources).
 - `capture_as` chaining between steps.
 - `dry_run` resolved-step preview.
+- Optional `session_id` parameter on `record_investigation` (unlocked once N6 P1 delivers client-supplied session ids).
 
 ---
 
@@ -153,8 +158,7 @@ generate_incident_report(
 5. Test: LLM failure → template fallback produces a usable report (no crash).
 
 ### Dependencies
-- A1 output shape (investigation) from `feat/triage-toolkit`.
-- N1 playbook-run output.
+- A1 output shape (`InvestigationReport`) from `feat/triage-toolkit`. **No N1 dependency in P0** — N1 replay is P1, so N3 reads straight from A1's return value.
 
 ---
 

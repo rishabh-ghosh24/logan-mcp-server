@@ -462,7 +462,7 @@ Append to `tests/test_handlers.py` (use the existing `handlers` / `settings` fix
 @pytest.mark.asyncio
 async def test_read_only_blocks_mutating_tool(handlers, settings):
     settings.read_only = True
-    result = await handlers.handle_tool_call("delete_alert", {"alarm_id": "ocid1.alarm.x"})
+    result = await handlers.handle_tool_call("delete_alert", {"alert_id": "ocid1.alert.x"})
     assert len(result) == 1
     payload = json.loads(result[0]["text"])
     assert payload["status"] == "read_only_blocked"
