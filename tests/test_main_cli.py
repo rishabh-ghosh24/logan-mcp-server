@@ -2,7 +2,6 @@
 
 import os
 import sys
-from unittest.mock import patch
 
 
 def test_read_only_flag_sets_env_var(monkeypatch):
@@ -35,3 +34,21 @@ def test_no_read_only_flag_leaves_env_unset(monkeypatch):
     main_mod.main()
 
     assert captured["env"] is None
+
+
+def test_read_only_with_setup_is_rejected(monkeypatch):
+    from oci_logan_mcp import __main__ as main_mod
+    import pytest
+    monkeypatch.setattr(sys, "argv", ["oci-logan-mcp", "--read-only", "--setup"])
+    with pytest.raises(SystemExit) as exc:
+        main_mod.main()
+    assert exc.value.code != 0
+
+
+def test_read_only_with_promote_is_rejected(monkeypatch):
+    from oci_logan_mcp import __main__ as main_mod
+    import pytest
+    monkeypatch.setattr(sys, "argv", ["oci-logan-mcp", "--read-only", "--promote-and-exit"])
+    with pytest.raises(SystemExit) as exc:
+        main_mod.main()
+    assert exc.value.code != 0

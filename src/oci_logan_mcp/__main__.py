@@ -64,6 +64,8 @@ def main():
         parser.error("--reset-secret requires --user")
     if args.reset_secret and (args.setup or args.promote_and_exit):
         parser.error("--reset-secret cannot be combined with --setup or --promote-and-exit")
+    if args.read_only and (args.setup or args.promote_and_exit or args.reset_secret):
+        parser.error("--read-only only applies to server startup; cannot be combined with --setup, --promote-and-exit, or --reset-secret")
 
     if args.reset_secret:
         if args.user:
