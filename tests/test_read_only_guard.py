@@ -80,7 +80,9 @@ def test_all_registered_tools_are_classified():
     import ast
     import pathlib
 
-    handlers_src = pathlib.Path("src/oci_logan_mcp/handlers.py").read_text()
+    handlers_src = (
+        pathlib.Path(__file__).parent.parent / "src" / "oci_logan_mcp" / "handlers.py"
+    ).read_text()
     tree = ast.parse(handlers_src)
 
     # Locate the `handlers = {...}` Assign statement inside handle_tool_call
