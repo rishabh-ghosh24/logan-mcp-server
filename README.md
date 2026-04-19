@@ -269,6 +269,30 @@ oci-logan-mcp --setup
 
 ## Destructive Operation Safety
 
+### Read-only mode
+
+Start the server without any ability to mutate OCI resources or external systems:
+
+```bash
+oci-logan-mcp --read-only
+# or
+OCI_LOGAN_MCP_READ_ONLY=1 oci-logan-mcp
+```
+
+In read-only mode the following tools return a `read_only_blocked` error instead
+of executing:
+
+- `create_alert`, `update_alert`, `delete_alert`
+- `create_saved_search`, `update_saved_search`, `delete_saved_search`
+- `create_dashboard`, `add_dashboard_tile`, `delete_dashboard`
+- `send_to_slack`, `send_to_telegram`
+- `set_compartment`, `set_namespace`, `update_tenancy_context`
+- `save_learned_query`, `remember_preference`, `setup_confirmation_secret`
+
+All query, validation, listing, visualization and `export_results` tools remain
+available. Use this mode when giving an untrusted agent, a newcomer, or an
+automated process access to the server.
+
 All delete and update operations on OCI resources (alerts, dashboards, saved searches) are protected by **two-factor server-side confirmation**. This prevents any MCP client — Claude, Codex, or others — from accidentally modifying or destroying resources.
 
 ### Guarded Tools
