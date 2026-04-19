@@ -13,14 +13,8 @@ from oci_logan_mcp.user_store import UserStore
 
 @pytest.fixture
 def mock_context_manager():
-    """Create a mock ContextManager with the methods QueryAutoSaver uses."""
-    cm = MagicMock()
-    cm.record_query_usage.return_value = False  # query not yet saved
-    cm.list_learned_queries.return_value = []   # no existing queries
-    cm.save_learned_query.return_value = {
-        "name": "test", "query": "test", "use_count": 1
-    }
-    return cm
+    """Create a mock ContextManager (passed through but not used for query storage)."""
+    return MagicMock()
 
 
 @pytest.fixture
@@ -226,15 +220,21 @@ class TestAutoSaveIntegration:
         assert "[auto-saved]" in queries[0]["description"]
         assert "auto-saved" in queries[0]["tags"]
 
-    def test_auto_save_never_breaks_execution(self, mock_context_manager, tmp_path):
+    def test_auto_save_never_breaks_execution(self, auto_saver, mock_user_store):
         """Auto-save errors must be swallowed, never crash query execution."""
-        # Create an auto_saver with user_store=None to test context_manager fallback
-        mock_context_manager.record_query_usage.side_effect = RuntimeError("boom")
-        saver = QueryAutoSaver(mock_context_manager, user_store=None)
+        # Simulate user_store.record_usage raising unexpectedly
+        original = mock_user_store.record_usage
+        mock_user_store.record_usage = lambda q: (_ for _ in ()).throw(RuntimeError("boom"))
         q = "'Log Source' != null | stats count by 'Log Source' | sort -count | head 10"
         # Should not raise
-        result = saver.process_successful_query(q, DUMMY_RESULT)
+        result = auto_saver.process_successful_query(q, DUMMY_RESULT)
         assert result is None  # gracefully returned None
+        mock_user_store.record_usage = original  # restore
+
+    def test_requires_user_store(self, mock_context_manager):
+        """QueryAutoSaver must fail fast if user_store is not provided."""
+        with pytest.raises(TypeError):
+            QueryAutoSaver(mock_context_manager)  # missing required arg
 
     def test_save_called_with_correct_query(self, auto_saver, mock_user_store):
         q = "  'Log Source' = 'OCI Audit Logs' | stats count by 'Status' | sort -Count  "

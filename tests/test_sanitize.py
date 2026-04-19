@@ -50,3 +50,14 @@ class TestSanitizePattern:
     def test_rejects_empty(self):
         assert sanitize_pattern("") is None
         assert sanitize_pattern("   ") is None
+
+
+class TestNormalizeQueryText:
+    def test_normalize_query_text_collapses_whitespace(self):
+        from oci_logan_mcp.sanitize import normalize_query_text
+        assert normalize_query_text("  * |  stats  count  ") == "* | stats count"
+        assert normalize_query_text("'Error'\n|\tstats count") == "'Error' | stats count"
+
+    def test_normalize_query_text_preserves_case(self):
+        from oci_logan_mcp.sanitize import normalize_query_text
+        assert normalize_query_text("'ERROR' | stats COUNT") == "'ERROR' | stats COUNT"

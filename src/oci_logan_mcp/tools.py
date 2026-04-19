@@ -431,9 +431,14 @@ def get_tools() -> List[Dict[str, Any]]:
         {
             "name": "save_learned_query",
             "description": (
-                "Save a working query for future reference. Call this after a query "
-                "succeeds and proves useful. The query will be persisted across sessions "
-                "and available as a template in future conversations."
+                "Save a query so future LLM suggestions will prefer this working pattern. "
+                "Trigger when the user explicitly says things like 'save this query', "
+                "'remember these from this session', 'keep the good ones', or similar. "
+                "The save is infrastructure — the user won't see a list of saved queries; "
+                "they'll just notice better query suggestions over time. "
+                "If the name collides with a built-in or community query, a collision_warning "
+                "is returned — retry with force: true to override or rename_to: '<new_name>' "
+                "to choose a different name."
             ),
             "inputSchema": {
                 "type": "object",
@@ -460,30 +465,17 @@ def get_tools() -> List[Dict[str, Any]]:
                         "items": {"type": "string"},
                         "description": "Optional tags for searchability",
                     },
+                    "force": {
+                        "type": "boolean",
+                        "description": "If true, save even if the name collides with a built-in or community (shared) query. Default false.",
+                        "default": False,
+                    },
+                    "rename_to": {
+                        "type": "string",
+                        "description": "If provided, save under this name instead (useful to avoid a collision).",
+                    },
                 },
                 "required": ["name", "query", "description"],
-            },
-        },
-        {
-            "name": "list_learned_queries",
-            "description": (
-                "List all previously saved learned queries. These are queries that "
-                "were saved from successful executions in past sessions. Filter by "
-                "category or tag."
-            ),
-            "inputSchema": {
-                "type": "object",
-                "properties": {
-                    "category": {
-                        "type": "string",
-                        "description": "Filter by category",
-                        "enum": ["security", "errors", "performance", "network", "audit", "general", "all"],
-                    },
-                    "tag": {
-                        "type": "string",
-                        "description": "Filter by tag",
-                    },
-                },
             },
         },
         {
@@ -518,20 +510,6 @@ def get_tools() -> List[Dict[str, Any]]:
                         "description": "Fields confirmed to work in this environment",
                     },
                 },
-            },
-        },
-        {
-            "name": "delete_learned_query",
-            "description": "Delete a previously saved learned query by name.",
-            "inputSchema": {
-                "type": "object",
-                "properties": {
-                    "name": {
-                        "type": "string",
-                        "description": "Name of the learned query to delete",
-                    },
-                },
-                "required": ["name"],
             },
         },
         # Preference Tools

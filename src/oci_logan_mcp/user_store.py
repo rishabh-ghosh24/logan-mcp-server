@@ -7,16 +7,56 @@ import os
 import re
 import shutil
 import threading
+import uuid
 from copy import deepcopy
 from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any, Dict, List, Optional
+
+import yaml
 
 from .file_lock import atomic_yaml_read, atomic_yaml_write, locked_file
 
 logger = logging.getLogger(__name__)
 
 MAX_QUERIES_PER_USER = 200
+SHARED_CATALOG_LOCK_NAME = "catalog.lock"
+
+
+def _needs_entry_id_backfill(data: Dict[str, Any]) -> bool:
+    return any(not q.get("entry_id") for q in data.get("queries", []))
+
+
+def _apply_entry_id_backfill(data: Dict[str, Any]) -> bool:
+    """Assign UUIDs to any entry missing entry_id. Returns True if modified."""
+    modified = False
+    for q in data.get("queries", []):
+        if not q.get("entry_id"):
+            q["entry_id"] = uuid.uuid4().hex
+            modified = True
+    return modified
+
+
+def ensure_entry_ids(queries_path: Path, lock_path: Path) -> Dict[str, Any]:
+    """Load a learned_queries.yaml, backfilling entry_id for any legacy rows.
+
+    Backfill is idempotent and persisted under the user's queries.lock using the
+    double-check pattern (read-check-lock-reread-recheck-write) so concurrent
+    readers don't assign divergent UUIDs. Returns the final (possibly patched)
+    data dict.
+
+    Shared between UserStore._load and promote.promote_all's phase-1 scan so
+    pre-1.2.0 files get IDs on their first encounter, regardless of entry point.
+    """
+    data = atomic_yaml_read(queries_path, default={"version": 1, "queries": []})
+    if not _needs_entry_id_backfill(data):
+        return data
+    thread_lock = threading.RLock()
+    with locked_file(lock_path, thread_lock):
+        data = atomic_yaml_read(queries_path, default={"version": 1, "queries": []})
+        if _apply_entry_id_backfill(data):
+            atomic_yaml_write(queries_path, data)
+    return data
 
 
 class UserStore:
@@ -37,6 +77,9 @@ class UserStore:
         self._lock_path = self._user_dir / "queries.lock"
         self._thread_lock = threading.RLock()
         self._shared_dir = base_dir / "shared"
+        self._shared_lock_path = self._shared_dir / SHARED_CATALOG_LOCK_NAME
+        # Ensure shared_dir exists so lock file can be created
+        self._shared_dir.mkdir(parents=True, exist_ok=True)
 
     def _migrate_legacy(self, base_dir: Path) -> None:
         """One-time migration: copy legacy context/learned_queries.yaml to user dir."""
@@ -54,16 +97,24 @@ class UserStore:
         category: str = "general",
         tags: Optional[List[str]] = None,
         interest_score: int = 0,
+        force: bool = False,
+        rename_to: Optional[str] = None,
     ) -> Dict[str, Any]:
-        """Save or update a learned query."""
+        """Save or update a learned query.
+
+        Returns the saved entry dict, or a dict with 'collision_warning' key if
+        the name (case-insensitive) collides with a builtin or shared entry and
+        force=False was not specified.
+        """
+        effective_name = rename_to if rename_to else name
         now = datetime.now(timezone.utc).isoformat()
         with locked_file(self._lock_path, self._thread_lock):
             data = self._load()
             queries = data.get("queries", [])
 
-            # Dedup by name
+            # Personal ↔ personal: update in place by name (bypass collision check)
             for q in queries:
-                if q["name"] == name:
+                if q["name"] == effective_name:
                     q["query"] = query
                     q["description"] = description
                     q["category"] = category
@@ -74,20 +125,55 @@ class UserStore:
                     self._save(data)
                     return deepcopy(q)
 
-            # Dedup by query text
+            # Personal ↔ personal: update in place by query text. If this would
+            # rename the stored entry to a builtin/shared name, enforce the
+            # collision policy on the destination — rename_to must not silently
+            # shadow a protected name just because the query text happens to
+            # match an existing personal entry.
             for q in queries:
                 if q["query"].strip() == query.strip():
-                    q["name"] = name
+                    if q["name"] != effective_name and not force:
+                        collision = self._check_collision(effective_name)
+                        if collision:
+                            return {
+                                "collision_warning": {
+                                    "conflicts_with": collision,
+                                    "name": effective_name,
+                                    "message": (
+                                        f"A {collision} query with name '{effective_name}' already exists. "
+                                        f"Pass force=True to override, or rename_to='<new_name>' to use a different name."
+                                    ),
+                                }
+                            }
+                    q["name"] = effective_name
                     q["description"] = description
+                    q["category"] = category
+                    q["tags"] = tags or q.get("tags", [])
                     q["last_used"] = now
                     q["use_count"] = q.get("use_count", 0) + 1
                     q["interest_score"] = max(q.get("interest_score", 0), interest_score)
                     self._save(data)
                     return deepcopy(q)
 
-            # New entry
+            # New entry — run collision check against builtin + shared under shared lock
+            if not force:
+                collision = self._check_collision(effective_name)
+                if collision:
+                    return {
+                        "collision_warning": {
+                            "conflicts_with": collision,
+                            "name": effective_name,
+                            "message": (
+                                f"A {collision} query with name '{effective_name}' already exists. "
+                                f"Pass force=True to override, or rename_to='<new_name>' to use a different name."
+                            ),
+                        }
+                    }
+
+            # Create new entry
             entry = {
-                "name": name,
+                "entry_id": uuid.uuid4().hex,
+                "name": effective_name,
                 "query": query.strip(),
                 "description": description,
                 "category": category,
@@ -109,6 +195,39 @@ class UserStore:
             data["queries"] = queries
             self._save(data)
             return deepcopy(entry)
+
+    def _check_collision(self, name: str) -> Optional[str]:
+        """Check if name (case-insensitive) collides with a builtin or shared entry.
+
+        Returns 'builtin' or 'shared' if collision found, None otherwise.
+        Acquires shared/catalog.lock to serialize against promote_all writes.
+
+        Caller must already hold self._lock_path (user's queries.lock).
+        Lock order: queries.lock → shared/catalog.lock (never reversed).
+        """
+        name_lower = name.lower()
+        with locked_file(self._shared_lock_path, self._thread_lock):
+            # Check shared promoted_queries.yaml (after any in-flight promotion)
+            shared_data = atomic_yaml_read(
+                self._shared_dir / "promoted_queries.yaml",
+                default={"queries": []},
+            )
+            for q in shared_data.get("queries", []):
+                if q.get("name", "").lower() == name_lower:
+                    return "shared"
+
+            # Check builtin (immutable at runtime, no lock needed)
+            try:
+                import importlib.resources
+                data_file = importlib.resources.files("oci_logan_mcp") / "data" / "builtin_queries.yaml"
+                raw = data_file.read_text(encoding="utf-8")
+                builtin_data = yaml.safe_load(raw) or {}
+                for q in builtin_data.get("queries", []):
+                    if q.get("name", "").lower() == name_lower:
+                        return "builtin"
+            except Exception:
+                pass  # If builtins fail to load, don't block saves
+        return None
 
     def list_queries(
         self, category: Optional[str] = None, tag: Optional[str] = None
@@ -195,7 +314,7 @@ class UserStore:
         return deepcopy(data.get("queries", []))
 
     def _load(self) -> Dict[str, Any]:
-        return atomic_yaml_read(self._queries_path, default={"version": 1, "queries": []})
+        return ensure_entry_ids(self._queries_path, self._lock_path)
 
     def _save(self, data: Dict[str, Any]) -> None:
         data["last_updated"] = datetime.now(timezone.utc).isoformat()

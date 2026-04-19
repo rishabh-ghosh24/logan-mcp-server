@@ -134,7 +134,7 @@ Click **Save**, then start a new Codex session to connect.
 | **Export** | `export_results` | Export query results to CSV or JSON |
 | **Manage scope** | `set_compartment`, `set_namespace`, `find_compartment`, `list_compartments` | Switch compartments, query across tenancy |
 | **Validate** | `validate_query`, `get_query_examples` | Check syntax, get curated starter examples by category (included with install) |
-| **Remember** | `save_learned_query`, `list_learned_queries`, `get_preferences`, `remember_preference` | Save queries, learn field preferences and time ranges per log source |
+| **Remember** | `save_learned_query`, `get_preferences`, `remember_preference` | Save queries for improved future suggestions, learn field preferences and time ranges per log source |
 | **Monitor** | `test_connection`, `get_current_context`, `get_log_summary` | Check connectivity, see current config, view log volume |
 
 ## Multi-User Learning
@@ -174,11 +174,28 @@ args = ["-i", "~/.ssh/your-key", "-o", "StrictHostKeyChecking=no", "-o", "Server
 
 Each user's queries and preferences are stored under `~/.oci-logan-mcp/users/<username>/`. When a second user connects with a different name, they get their own isolated storage.
 
+### Promoted query learning
+
+Queries saved via `save_learned_query` (or auto-saved when the server detects a successful complex query) contribute to each user's personal learned catalog. The promotion pipeline evaluates personal queries against quality thresholds and promotes the best ones to a shared catalog visible to all users of the server.
+
+**How promotion works:**
+
+- The shared catalog feeds the `query-templates` MCP resource and the `get_query_examples` onboarding surface (top-N community favorites appear alongside curated starter examples)
+- Promotion is invisible to end users — they just get progressively better LLM suggestions over time as the shared catalog grows
+- Sensitive data (OCIDs, IPs, emails, secrets) is automatically redacted before promotion
+
+**Promotion thresholds:**
+
+| Scenario | interest_score | success_rate |
+|---|---|---|
+| Single-user query | >= 4 | >= 0.8 |
+| Multi-user query (same query saved by multiple users) | >= 3 | >= 0.7 |
+
+**Collision policy:** If a query name matches an existing builtin or community entry, `save_learned_query` returns a `collision_warning`. Supply `force=true` to overwrite or `rename_to` to save under a different name.
+
 ### Promoting shared templates
 
-Queries are promoted based on interest score and success rate — not use count. A complex query (interest score >= 4) that works is valuable even if used once. Sensitive data (OCIDs, IPs, emails, secrets) is automatically redacted before promotion.
-
-**Important:** Promotion is a single-writer admin task, not something each user session runs. Run it from one place (cron, manually, etc.) to avoid conflicts.
+Promotion is a single-writer admin task — not something each user session runs. Run it from one place (cron, manually, etc.) to avoid conflicts.
 
 ```bash
 # Run once manually
@@ -186,12 +203,9 @@ oci-logan-mcp --promote-and-exit
 
 # With explicit base directory
 oci-logan-mcp --promote-and-exit --base-dir /home/opc/.oci-logan-mcp
-
-# Automate with cron (recommended) — every 2 hours
-crontab -e
-# Add this line:
-0 */2 * * * cd /path/to/logan-mcp-server && source venv/bin/activate && oci-logan-mcp --promote-and-exit --base-dir /home/opc/.oci-logan-mcp >> /var/log/logan-promote.log 2>&1
 ```
+
+For scheduled automation see [`docs/cron-scheduling.md`](docs/cron-scheduling.md).
 
 ## Deploying on an OCI VM
 
@@ -352,6 +366,31 @@ python run_tests.py
 ```
 
 ## Version History
+
+### 1.2.0 (2026-04-17)
+
+#### Internal architecture
+- Unified query catalog across builtin templates, starter examples, personal learned queries, and shared promoted queries. Single `UnifiedCatalog` module with surface-specific precedence rules.
+- Stable `entry_id` (UUID4) on every personal learned query with legacy backfill migration.
+- Cross-user promotion dedup now uses canonical key `(name.lower(), normalized_query_text)` — fixes the multi-user aggregation bug where two users saving the same query were counted separately.
+- Shared-catalog lock (`shared/catalog.lock`) protects promoted-queries writes from racing with concurrent user saves.
+
+#### User-visible
+- `save_learned_query` gains optional `force` and `rename_to` parameters for resolving collisions with built-in or community queries.
+- Onboarding (`get_query_examples`) now includes top-N community favorites alongside starter examples.
+- Scheduled promotion guide at `docs/cron-scheduling.md`.
+
+#### Removed
+- `list_learned_queries` MCP tool — learning is now invisible infrastructure.
+- `delete_learned_query` MCP tool — orphaned without list.
+- `ContextManager.{save,list,delete}_learned_query`, `get_all_templates`, and `record_query_usage` — replaced by `UserStore` + `UnifiedCatalog`.
+- `src/oci_logan_mcp/templates/query_templates.yaml` — unwired dead file.
+
+#### Behavior changes
+- `QueryAutoSaver` now requires `user_store` (no fallback to ContextManager).
+- Servers running without user_store configured will fail fast at startup.
+
+---
 
 | Version | Summary |
 |---|---|

@@ -1,4 +1,4 @@
-"""Persistent context and memory management for cross-session learning."""
+"""Persistent context and memory management for cross-session tenancy data."""
 
 import logging
 import os
@@ -16,16 +16,13 @@ logger = logging.getLogger(__name__)
 # Default context directory
 CONTEXT_DIR = Path.home() / ".oci-logan-mcp" / "context"
 
-# Maximum number of learned queries to keep
-MAX_LEARNED_QUERIES = 200
-
 
 class ContextManager:
-    """Manages persistent tenancy context and learned queries.
+    """Manages persistent tenancy context.
 
-    Provides cross-session memory by persisting tenancy metadata,
-    discovered schema data, and working queries to YAML files
-    under ~/.oci-logan-mcp/context/.
+    Provides cross-session memory by persisting tenancy metadata and
+    discovered schema data to YAML files under ~/.oci-logan-mcp/context/.
+    Learned query storage is handled by UserStore (v0.5+).
     """
 
     def __init__(self, settings: Settings, context_dir: Optional[Path] = None):
@@ -34,15 +31,12 @@ class ContextManager:
         self.context_dir.mkdir(parents=True, exist_ok=True)
 
         self._context_file = self.context_dir / "tenancy_context.yaml"
-        self._queries_file = self.context_dir / "learned_queries.yaml"
 
         # In-memory state loaded from disk
         self._tenancy_context: Dict[str, Any] = {}
-        self._learned_queries: List[Dict[str, Any]] = []
 
         # Load from disk at startup
         self._load_tenancy_context()
-        self._load_learned_queries()
 
     # ----------------------------------------------------------------
     # Loading
@@ -65,24 +59,6 @@ class ContextManager:
         except Exception as e:
             logger.warning(f"Failed to load tenancy context: {e}, using defaults")
             self._tenancy_context = self._default_context()
-
-    def _load_learned_queries(self) -> None:
-        """Load learned queries from YAML file."""
-        if not self._queries_file.exists():
-            self._learned_queries = []
-            return
-
-        try:
-            with open(self._queries_file) as f:
-                data = yaml.safe_load(f)
-            if isinstance(data, dict) and isinstance(data.get("queries"), list):
-                self._learned_queries = data["queries"]
-            else:
-                logger.warning("Corrupt learned queries file, starting empty")
-                self._learned_queries = []
-        except Exception as e:
-            logger.warning(f"Failed to load learned queries: {e}, starting empty")
-            self._learned_queries = []
 
     def _default_context(self) -> Dict[str, Any]:
         """Return default empty tenancy context."""
@@ -110,15 +86,6 @@ class ContextManager:
         """Save tenancy context to YAML file atomically."""
         self._tenancy_context["last_updated"] = datetime.utcnow().isoformat()
         self._atomic_yaml_write(self._context_file, self._tenancy_context)
-
-    def _save_learned_queries(self) -> None:
-        """Save learned queries to YAML file atomically."""
-        data = {
-            "version": 1,
-            "last_updated": datetime.utcnow().isoformat(),
-            "queries": self._learned_queries,
-        }
-        self._atomic_yaml_write(self._queries_file, data)
 
     def _atomic_yaml_write(self, filepath: Path, data: Any) -> None:
         """Write YAML data atomically (write to temp file, then rename)."""
@@ -315,141 +282,3 @@ class ContextManager:
         logger.info(f"Schema refresh complete: {counts}")
         return counts
 
-    # ----------------------------------------------------------------
-    # Learned Query Operations
-    # ----------------------------------------------------------------
-
-    def save_learned_query(
-        self,
-        name: str,
-        query: str,
-        description: str,
-        category: str = "general",
-        tags: Optional[List[str]] = None,
-    ) -> Dict[str, Any]:
-        """Save a working query for future reference.
-
-        Deduplicates by name (updates existing) and by query text
-        (updates if same query exists under a different name).
-        """
-        now = datetime.utcnow().isoformat()
-        normalized_query = query.strip()
-
-        # Check for existing by name
-        for existing in self._learned_queries:
-            if existing["name"] == name:
-                existing["query"] = normalized_query
-                existing["description"] = description
-                existing["category"] = category
-                existing["tags"] = tags or existing.get("tags", [])
-                existing["last_used"] = now
-                existing["use_count"] = existing.get("use_count", 0) + 1
-                self._save_learned_queries()
-                return existing
-
-        # Check for existing by query text
-        for existing in self._learned_queries:
-            if existing["query"].strip() == normalized_query:
-                existing["name"] = name
-                existing["description"] = description
-                existing["category"] = category
-                existing["tags"] = tags or existing.get("tags", [])
-                existing["last_used"] = now
-                existing["use_count"] = existing.get("use_count", 0) + 1
-                self._save_learned_queries()
-                return existing
-
-        # New query
-        entry = {
-            "name": name,
-            "description": description,
-            "query": normalized_query,
-            "category": category,
-            "tags": tags or [],
-            "created_at": now,
-            "last_used": now,
-            "use_count": 1,
-        }
-        self._learned_queries.append(entry)
-
-        # Enforce max limit
-        if len(self._learned_queries) > MAX_LEARNED_QUERIES:
-            self._learned_queries.sort(
-                key=lambda q: (q.get("use_count", 0), q.get("last_used", "")),
-            )
-            self._learned_queries = self._learned_queries[-MAX_LEARNED_QUERIES:]
-
-        self._save_learned_queries()
-        return entry
-
-    def list_learned_queries(
-        self,
-        category: Optional[str] = None,
-        tag: Optional[str] = None,
-    ) -> List[Dict[str, Any]]:
-        """List learned queries, optionally filtered by category or tag."""
-        queries = self._learned_queries
-
-        if category and category != "all":
-            queries = [q for q in queries if q.get("category") == category]
-
-        if tag:
-            queries = [q for q in queries if tag in q.get("tags", [])]
-
-        return queries
-
-    def delete_learned_query(self, name: str) -> bool:
-        """Delete a learned query by name. Returns True if deleted."""
-        original_count = len(self._learned_queries)
-        self._learned_queries = [
-            q for q in self._learned_queries if q["name"] != name
-        ]
-        if len(self._learned_queries) < original_count:
-            self._save_learned_queries()
-            return True
-        return False
-
-    def record_query_usage(self, query: str) -> bool:
-        """Bump use_count and last_used for a matching learned query.
-
-        Returns True if a matching query was found and updated, False otherwise.
-        """
-        normalized = query.strip()
-        for existing in self._learned_queries:
-            if existing["query"].strip() == normalized:
-                existing["use_count"] = existing.get("use_count", 0) + 1
-                existing["last_used"] = datetime.utcnow().isoformat()
-                self._save_learned_queries()
-                return True
-        return False
-
-    # ----------------------------------------------------------------
-    # Template Merging
-    # ----------------------------------------------------------------
-
-    def get_all_templates(
-        self, builtin_templates: List[Dict[str, Any]]
-    ) -> List[Dict[str, Any]]:
-        """Merge built-in templates with learned queries.
-
-        Learned queries are appended after built-in templates,
-        marked with source='learned'. Built-in templates are
-        marked with source='builtin'.
-        """
-        # Mark built-in templates
-        merged = []
-        builtin_queries = set()
-        for t in builtin_templates:
-            entry = dict(t)
-            entry["source"] = "builtin"
-            merged.append(entry)
-            builtin_queries.add(t.get("query", "").strip())
-
-        # Append learned queries (skip duplicates of built-in)
-        for q in self._learned_queries:
-            if q["query"].strip() not in builtin_queries:
-                entry = dict(q)
-                entry["source"] = "learned"
-                merged.append(entry)
-
-        return merged

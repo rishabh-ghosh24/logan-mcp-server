@@ -78,13 +78,8 @@ def mock_context_manager():
     ctx.update_log_sources = MagicMock(return_value="5 total (0 new)")
     ctx.update_confirmed_fields = MagicMock(return_value="10 total (0 new)")
     ctx.update_compartments = MagicMock(return_value="3 total (0 new)")
-    ctx.save_learned_query = MagicMock(return_value={"name": "test", "use_count": 1})
-    ctx.list_learned_queries = MagicMock(return_value=[])
-    ctx.delete_learned_query = MagicMock(return_value=True)
-    ctx.record_query_usage = MagicMock()
     ctx.add_note = MagicMock()
     ctx.get_tenancy_context = MagicMock(return_value={"namespace": "testns"})
-    ctx.get_all_templates = MagicMock(return_value=[])
     return ctx
 
 
@@ -132,6 +127,18 @@ def handlers(settings, mock_oci_client, mock_cache, mock_query_logger, mock_cont
 
 
 # ---------------------------------------------------------------------------
+# Catalog Wiring Tests
+# ---------------------------------------------------------------------------
+
+def test_mcp_handlers_exposes_unified_catalog(handlers):
+    """Handler should have a UnifiedCatalog when user_store is provided."""
+    from oci_logan_mcp.catalog import UnifiedCatalog
+    assert isinstance(handlers.catalog, UnifiedCatalog)
+
+
+
+
+# ---------------------------------------------------------------------------
 # Tool Routing Tests
 # ---------------------------------------------------------------------------
 
@@ -157,8 +164,8 @@ class TestToolRouting:
             "get_current_context", "list_compartments", "test_connection",
             "find_compartment", "get_query_examples", "get_log_summary",
             "setup_confirmation_secret",
-            "save_learned_query", "list_learned_queries",
-            "update_tenancy_context", "delete_learned_query",
+            "save_learned_query",
+            "update_tenancy_context",
             "get_preferences", "remember_preference",
         ]
         # Invoke handle_tool_call to initialize the handlers dict
@@ -371,31 +378,43 @@ class TestMemoryHandlers:
         assert queries[0]["name"] == "error_count"
 
     @pytest.mark.asyncio
-    async def test_list_learned_queries(self, handlers, mock_user_store):
-        """Should return list of learned queries."""
-        mock_user_store.save_query(
-            name="q1", query="* | head 10", description="test", category="general"
-        )
-        result = await handlers._list_learned_queries({"category": "all"})
+    async def test_save_learned_query_surfaces_collision_warning(self, handlers, mock_user_store):
+        """When save_query returns a collision_warning, handler should surface it as status=collision."""
+        result = await handlers._save_learned_query({
+            "name": "errors_last_hour",  # builtin name — should collide
+            "query": "* | head 1",
+            "description": "my copy",
+        })
         data = json.loads(result[0]["text"])
-        assert data["count"] == 1
+        assert data["status"] == "collision"
+        assert "collision_warning" in data
+        # Nothing should have been saved
+        assert mock_user_store.list_queries() == []
 
     @pytest.mark.asyncio
-    async def test_delete_learned_query_found(self, handlers, mock_user_store):
-        """Should delete and return success status."""
-        mock_user_store.save_query(
-            name="q1", query="test", description="test", category="general"
-        )
-        result = await handlers._delete_learned_query({"name": "q1"})
+    async def test_save_learned_query_force_flag_passed_through(self, handlers, mock_user_store):
+        """force=True should be passed through so the save succeeds despite collision."""
+        result = await handlers._save_learned_query({
+            "name": "errors_last_hour",
+            "query": "* | head 1",
+            "description": "my override",
+            "force": True,
+        })
         data = json.loads(result[0]["text"])
-        assert data["status"] == "deleted"
+        assert data["status"] == "saved"
 
     @pytest.mark.asyncio
-    async def test_delete_learned_query_not_found(self, handlers, mock_user_store):
-        """Should return not_found when query doesn't exist."""
-        result = await handlers._delete_learned_query({"name": "nonexistent"})
+    async def test_save_learned_query_rename_to_passed_through(self, handlers, mock_user_store):
+        """rename_to should be passed through and the entry saved under the new name."""
+        result = await handlers._save_learned_query({
+            "name": "errors_last_hour",
+            "query": "* | head 1",
+            "description": "my version",
+            "rename_to": "my_errors_last_hour",
+        })
         data = json.loads(result[0]["text"])
-        assert data["status"] == "not_found"
+        assert data["status"] == "saved"
+        assert data["query"]["name"] == "my_errors_last_hour"
 
     @pytest.mark.asyncio
     async def test_update_tenancy_context_notes(self, handlers, mock_context_manager):
@@ -472,6 +491,90 @@ class TestResourceRead:
         """Should raise ValueError for unknown resource URI."""
         with pytest.raises(ValueError, match="Unknown resource"):
             await handlers.handle_resource_read("loganalytics://unknown")
+
+    @pytest.mark.asyncio
+    async def test_query_templates_resource_includes_shared(self, tmp_path):
+        """After rewiring, the query-templates resource returns builtin + shared entries
+        (personal and starter excluded per for_templates_resource precedence)."""
+        import yaml
+        from oci_logan_mcp.user_store import UserStore
+        from oci_logan_mcp.preferences import PreferenceStore
+        from oci_logan_mcp.secret_store import SecretStore
+        from oci_logan_mcp.audit import AuditLogger
+
+        # Seed shared/promoted_queries.yaml
+        shared_dir = tmp_path / "shared"
+        shared_dir.mkdir()
+        (shared_dir / "promoted_queries.yaml").write_text(yaml.dump({
+            "queries": [{"name": "my_shared_query", "query": "* shared",
+                         "description": "promoted from users"}]
+        }))
+
+        # Build handler with base_dir=tmp_path so catalog reads from tmp_path
+        user_store = UserStore(base_dir=tmp_path, user_id="testuser")
+        user_dir = tmp_path / "users" / "testuser"
+        user_dir.mkdir(parents=True, exist_ok=True)
+        pref_store = PreferenceStore(user_dir=user_dir)
+        secret_store = SecretStore(tmp_path / "secret.yaml")
+        audit = AuditLogger(tmp_path / "audit")
+
+        settings = Settings()
+        settings.log_analytics.namespace = "testns"
+        settings.log_analytics.default_compartment_id = "ocid1.compartment.default"
+        settings.query.max_results = 1000
+        settings.query.default_time_range = "last_1_hour"
+
+        from unittest.mock import MagicMock, AsyncMock
+        oci_client = MagicMock()
+        oci_client.namespace = "testns"
+        oci_client.compartment_id = "ocid1.compartment.default"
+        oci_client._config = {"tenancy": "ocid1.tenancy.test"}
+        cache = MagicMock()
+        cache.get = MagicMock(return_value=None)
+        cache.set = MagicMock()
+        query_logger = MagicMock()
+        query_logger.get_recent_queries = MagicMock(return_value=[])
+        ctx = MagicMock()
+        ctx.get_tenancy_context = MagicMock(return_value={"namespace": "testns"})
+
+        handler = MCPHandlers(
+            settings=settings,
+            oci_client=oci_client,
+            cache=cache,
+            query_logger=query_logger,
+            context_manager=ctx,
+            user_store=user_store,
+            preference_store=pref_store,
+            secret_store=secret_store,
+            audit_logger=audit,
+        )
+
+        result = await handler.handle_resource_read("loganalytics://query-templates")
+        names = {t["name"] for t in result["templates"]}
+        assert "my_shared_query" in names, "shared query should appear in templates resource"
+        # Still has builtins
+        assert "errors_last_hour" in names, "builtin query should still appear"
+        # Response shape unchanged
+        assert "templates" in result
+        assert isinstance(result["templates"], list)
+        for t in result["templates"]:
+            assert "name" in t
+            assert "query" in t
+            assert "description" in t
+
+    @pytest.mark.asyncio
+    async def test_query_templates_resource_shape_preserved(self, handlers):
+        """Pin the exact response shape so a future refactor doesn't break MCP clients."""
+        result = await handlers.handle_resource_read("loganalytics://query-templates")
+        # Top-level: exactly one key "templates" whose value is a list
+        assert set(result.keys()) == {"templates"}
+        assert isinstance(result["templates"], list)
+        # Every entry: exactly name, query, description as strings
+        for t in result["templates"]:
+            assert set(t.keys()) == {"name", "description", "query"}
+            assert isinstance(t["name"], str)
+            assert isinstance(t["query"], str)
+            assert isinstance(t["description"], str)
 
 
 # ---------------------------------------------------------------------------
@@ -971,3 +1074,80 @@ class TestAuditLogging:
         assert "confirmation_requested" in outcomes
         assert "confirmed" in outcomes
         assert "executed" in outcomes
+
+
+# ---------------------------------------------------------------------------
+# get_query_examples via UnifiedCatalog (Task 8)
+# ---------------------------------------------------------------------------
+
+def _make_handler_with_catalog(tmp_path):
+    """Helper: build MCPHandlers with a real UserStore + UnifiedCatalog at tmp_path."""
+    from unittest.mock import MagicMock
+    from oci_logan_mcp.user_store import UserStore
+    from oci_logan_mcp.preferences import PreferenceStore
+    from oci_logan_mcp.secret_store import SecretStore
+    from oci_logan_mcp.audit import AuditLogger
+
+    user_store = UserStore(base_dir=tmp_path, user_id="testuser")
+    user_dir = tmp_path / "users" / "testuser"
+    user_dir.mkdir(parents=True, exist_ok=True)
+    pref_store = PreferenceStore(user_dir=user_dir)
+    secret_store = SecretStore(tmp_path / "secret.yaml")
+    audit = AuditLogger(tmp_path / "audit")
+
+    settings = Settings()
+    settings.log_analytics.namespace = "testns"
+    settings.log_analytics.default_compartment_id = "ocid1.compartment.default"
+    settings.query.max_results = 1000
+    settings.query.default_time_range = "last_1_hour"
+
+    oci_client = MagicMock()
+    oci_client.namespace = "testns"
+    oci_client.compartment_id = "ocid1.compartment.default"
+    oci_client._config = {"tenancy": "ocid1.tenancy.test"}
+    cache = MagicMock()
+    cache.get = MagicMock(return_value=None)
+    cache.set = MagicMock()
+    query_logger = MagicMock()
+    query_logger.get_recent_queries = MagicMock(return_value=[])
+    ctx = MagicMock()
+    ctx.get_tenancy_context = MagicMock(return_value={"namespace": "testns"})
+
+    return MCPHandlers(
+        settings=settings,
+        oci_client=oci_client,
+        cache=cache,
+        query_logger=query_logger,
+        context_manager=ctx,
+        user_store=user_store,
+        preference_store=pref_store,
+        secret_store=secret_store,
+        audit_logger=audit,
+    )
+
+
+@pytest.mark.asyncio
+async def test_get_query_examples_uses_catalog(tmp_path):
+    """After rewiring, get_query_examples sources from UnifiedCatalog."""
+    handler = _make_handler_with_catalog(tmp_path)
+    result = await handler._get_query_examples({"category": "all"})
+    body = json.loads(result[0]["text"])
+    assert "categories" in body
+    assert "examples" in body
+    assert isinstance(body["examples"], dict)
+    # Entries grouped by category — each entry has exactly name/query/description
+    for cat, entries in body["examples"].items():
+        for e in entries:
+            assert set(e.keys()) == {"name", "query", "description"}
+
+
+@pytest.mark.asyncio
+async def test_get_query_examples_filter_by_category(tmp_path):
+    """Category filter works through catalog."""
+    handler = _make_handler_with_catalog(tmp_path)
+    result = await handler._get_query_examples({"category": "basic"})
+    body = json.loads(result[0]["text"])
+    # Either returns the category entries or an error if category unknown — shape matches existing behavior
+    assert "category" in body or "error" in body
+
+

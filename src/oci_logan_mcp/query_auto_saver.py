@@ -2,19 +2,17 @@
 
 Runs transparently — no LLM involvement required.  Every successful query is
 scored for "interestingness"; those above the threshold are persisted via
-ContextManager.save_learned_query() and available to any future LLM/IDE session.
+UserStore.save_query() and available to any future LLM/IDE session.
 """
 
 from __future__ import annotations
 
 import logging
 import re
-from typing import Any, Dict, Optional, Tuple, TYPE_CHECKING
+from typing import Any, Dict, Optional, Tuple
 
 from .context_manager import ContextManager
-
-if TYPE_CHECKING:
-    from .user_store import UserStore
+from .user_store import UserStore
 
 logger = logging.getLogger(__name__)
 
@@ -65,7 +63,7 @@ class QueryAutoSaver:
     def __init__(
         self,
         context_manager: ContextManager,
-        user_store: Optional["UserStore"] = None,
+        user_store: UserStore,
     ) -> None:
         self.context_manager = context_manager
         self.user_store = user_store
@@ -83,10 +81,7 @@ class QueryAutoSaver:
         """
         try:
             # 1. Already saved? → bump use_count only
-            if self.user_store:
-                if self.user_store.record_usage(query):
-                    return None
-            elif self.context_manager.record_query_usage(query):
+            if self.user_store.record_usage(query):
                 return None
 
             # 2. Trivial? → skip
@@ -97,24 +92,18 @@ class QueryAutoSaver:
             # 3. Generate metadata from query text
             name, description, category = self._generate_metadata(query)
 
-            # 4. Save via user_store (preferred) or context_manager (fallback)
-            if self.user_store:
-                saved = self.user_store.save_query(
-                    name=name,
-                    query=query.strip(),
-                    description=f"[auto-saved] {description}",
-                    category=category,
-                    tags=["auto-saved"],
-                    interest_score=score,
-                )
-            else:
-                saved = self.context_manager.save_learned_query(
-                    name=name,
-                    query=query.strip(),
-                    description=f"[auto-saved] {description}",
-                    category=category,
-                    tags=["auto-saved"],
-                )
+            # 4. Save via user_store
+            saved = self.user_store.save_query(
+                name=name,
+                query=query.strip(),
+                description=f"[auto-saved] {description}",
+                category=category,
+                tags=["auto-saved"],
+                interest_score=score,
+            )
+            # If collision with builtin/shared, silently skip
+            if "collision_warning" in saved:
+                return None
             logger.info(f"Auto-saved query: {name} (score={score})")
             return saved
 
@@ -275,14 +264,7 @@ class QueryAutoSaver:
 
     def _unique_name(self, base_name: str) -> str:
         """Ensure name doesn't collide with existing learned queries."""
-        if self.user_store:
-            existing_names = {
-                q["name"] for q in self.user_store.list_queries()
-            }
-        else:
-            existing_names = {
-                q["name"] for q in self.context_manager.list_learned_queries()
-            }
+        existing_names = {q["name"] for q in self.user_store.list_queries()}
         if base_name not in existing_names:
             return base_name
 
