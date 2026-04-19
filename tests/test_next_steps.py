@@ -173,3 +173,33 @@ def test_non_timeseries_ignored_by_spike_heuristic():
     }
     steps = suggest("*", result)
     assert not any(s.tool_name == "diff_time_windows" for s in steps)
+
+
+import pytest
+
+
+@pytest.mark.asyncio
+async def test_query_engine_attaches_next_steps():
+    """Smoke test: execute() output carries next_steps list."""
+    from unittest.mock import AsyncMock, MagicMock
+    from oci_logan_mcp.query_engine import QueryEngine
+
+    oci_client = MagicMock()
+    oci_client.compartment_id = "comp-1"
+    oci_client.query = AsyncMock(return_value={
+        "rows": [], "columns": [{"name": "Time"}],
+    })
+    cache = MagicMock()
+    cache.get = MagicMock(return_value=None)
+    cache.set = MagicMock()
+    qlog = MagicMock()
+
+    engine = QueryEngine(oci_client, cache, qlog)
+    result = await engine.execute(
+        query="* | head 1",
+        time_range="last_1_hour",
+        use_cache=False,
+    )
+    assert "next_steps" in result
+    assert isinstance(result["next_steps"], list)
+    assert any(s["tool_name"] == "validate_query" for s in result["next_steps"])

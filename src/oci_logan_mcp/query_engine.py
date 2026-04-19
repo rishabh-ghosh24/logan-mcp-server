@@ -8,6 +8,7 @@ from .client import OCILogAnalyticsClient
 from .cache import CacheManager
 from .query_logger import QueryLogger
 from .time_parser import parse_time_range
+from .next_steps import suggest as _suggest_next_steps
 
 
 class QueryEngine:
@@ -47,7 +48,7 @@ class QueryEngine:
         if use_cache:
             cached = self.cache.get(cache_key)
             if cached:
-                return {
+                response = {
                     "source": "cache",
                     "data": cached,
                     "metadata": {
@@ -58,6 +59,8 @@ class QueryEngine:
                         "include_subcompartments": include_subcompartments,
                     },
                 }
+                response["next_steps"] = [s.to_dict() for s in _suggest_next_steps(query, response)]
+                return response
 
         # Execute query
         start_time = datetime.now()
@@ -85,7 +88,7 @@ class QueryEngine:
                 success=True,
             )
 
-            return {
+            response = {
                 "source": "live",
                 "data": result,
                 "metadata": {
@@ -97,6 +100,8 @@ class QueryEngine:
                     "execution_time_seconds": execution_time,
                 },
             }
+            response["next_steps"] = [s.to_dict() for s in _suggest_next_steps(query, response)]
+            return response
 
         except Exception as e:
             execution_time = (datetime.now() - start_time).total_seconds()
