@@ -86,6 +86,8 @@ Three themed feature branches off `main`, plus this docs branch. One branch open
 2. `feat/triage-toolkit` ships second. Primitives (A2, A4) build before A1; J1/J2 ship in parallel since they share ingestion plumbing.
 3. `feat/reports-and-playbooks` ships last — consumes A1 output, so A1 must be merged first.
 
+**Branches are delivery lanes, not batching buckets.** Each feature on a themed branch merges to `main` as its own small PR — the branch name is a narrative grouping for reviewers and for roadmap tracking, not a mega-PR that accumulates all of its features before merging. Rationale: review burden scales with PR size; small PRs keep review quality high, reduce conflict risk with parallel docs work, and keep `main` releasable at feature granularity. A themed branch is "done" when the last of its features has merged — not when a single squash lands.
+
 ---
 
 ## 6. Sequencing inside P0

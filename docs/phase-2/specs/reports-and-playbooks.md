@@ -33,28 +33,26 @@ Close the investigation loop. After A1 produces a first-cut investigation, turn 
 ## N1 — Investigation recorder (playbooks)
 
 ### Purpose
-Capture the tool-call chain of an ad-hoc investigation and replay it as a named playbook. The agent's investigation becomes a reusable runbook.
+Capture the tool-call chain of an investigation so it can be listed, exported, and later (P1) replayed. P0 is deliberately a **record / catalogue / export** feature — not a replay engine. That trim keeps N1 honest for solo-dev P0; replay + auto-parameterization are a separate P1 feature once the data model has proved itself.
 
-### Tool interface
+### Tool interface (P0)
 ```
 record_investigation(
-  session_id: str = "current",
+  session_id: str,                       # REQUIRED — agent-chosen investigation id; no "current" default
   name: str,
   description: str | None = None,
-  parameterize: bool = True,  # auto-extract values to replay-time params
 ) -> PlaybookId
 
-replay_investigation(
-  playbook_id: str,
-  params: dict | None = None,
-  dry_run: bool = False,
-) -> InvestigationReport
-
 list_playbooks() -> list[PlaybookMetadata]
+
+get_playbook(playbook_id: str) -> Playbook  # full step list + metadata
+
 delete_playbook(playbook_id: str) -> None
 ```
 
-### Data model
+> **Why `session_id` is required and has no `"current"` default:** the server's process-scoped session id (N6) is a debugging grouping, not an investigation boundary. N1 treats the investigation boundary as agent-defined data — the caller passes the id it intends to record under, and the server simply filters audit events by that id at record-time.
+
+### Data model (P0)
 ```
 Playbook {
   id: str,
@@ -63,55 +61,52 @@ Playbook {
   owner: str,
   created_at: datetime,
   steps: list[Step],
-  parameters: list[Parameter],  # auto-extracted values: time ranges, entities, sources
   source_session_id: str,
 }
 Step {
   tool: str,
-  args: dict,  # param references as $param_name
-  capture_as: str | None,  # variable name for downstream steps
+  args: dict,           # literal args as captured
+  ts: datetime,
+  outcome: str,
 }
 ```
 
-### Parameterization heuristic
-- **Time ranges** → always become params.
-- **Entity values** (hosts, users, request IDs) → params if they appear as literal strings in args.
-- **Sources, compartments** → optional params (default = same as capture time).
+No `parameters` list, no `$param_name` substitution, no `capture_as` chaining in P0. Record what happened, verbatim.
 
-### Files
+### Files (P0)
 - Create: `src/oci_logan_mcp/playbook_store.py` — persistent playbook storage (SQLite).
-- Create: `src/oci_logan_mcp/playbook_engine.py` — record + replay logic.
-- Modify: `src/oci_logan_mcp/audit.py` — ensure session events are queryable by session_id (shared with N6).
-- Modify: `src/oci_logan_mcp/tools.py` — register 4 tools.
+- Create: `src/oci_logan_mcp/playbook_recorder.py` — reads N6 audit events filtered by `session_id` and assembles a `Playbook`.
+- Modify: `src/oci_logan_mcp/tools.py` — register 4 P0 tools.
 - Create: `tests/test_playbook_store.py`.
-- Create: `tests/test_playbook_engine.py`.
+- Create: `tests/test_playbook_recorder.py`.
 
-### Test outline
-1. Test: record a 3-step session → playbook has 3 steps with correct tools.
-2. Test: replay with same params reproduces output on canned data.
-3. Test: replay with different time_range param reruns against new window.
-4. Test: `dry_run=True` returns the resolved step list without executing.
-5. Test: delete_playbook removes it from list.
-6. Test: auto-parameterization extracts a time range and an entity value from a recorded session.
+### Test outline (P0)
+1. Test: record a 3-call session (via explicit `session_id`) → playbook has 3 steps in order with correct tool names and args.
+2. Test: record against an unknown `session_id` → playbook has zero steps and records a warning in metadata.
+3. Test: `list_playbooks` returns created playbooks in reverse-chronological order.
+4. Test: `get_playbook` round-trips the full data model.
+5. Test: `delete_playbook` removes it from `list_playbooks` and returns 404 on subsequent `get_playbook`.
 
 ### Dependencies
-- **Hard on N6 transcript plumbing** from `feat/agent-guardrails` (already merged when this branch starts).
+- **Hard on N6** session-id + per-tool-invoked capture from `feat/agent-guardrails` (already merged when this branch starts).
+
+### Deferred to P1
+- `replay_investigation(playbook_id, params, dry_run)`.
+- Auto-parameterization (time ranges, entities, sources).
+- `capture_as` chaining between steps.
+- `dry_run` resolved-step preview.
 
 ---
 
 ## N3 — Auto-generate incident report
 
 ### Purpose
-Synthesize an A1 investigation (or a replayed playbook, or a user-curated selection of queries) into a human-readable report.
+Synthesize an A1 investigation into a human-readable report.
 
-### Tool interface
+### Tool interface (P0)
 ```
 generate_incident_report(
-  source: {
-    investigation: InvestigationReport | None,  # output of A1
-    playbook_run: PlaybookRunResult | None,      # output of N1 replay
-    session_id: str | None,                      # fallback: synthesize from session transcript
-  },
+  investigation: InvestigationReport,   # required — output of A1
   format: "markdown" | "html" = "markdown",
   include_sections: list[str] | None = None,  # default: all
   summary_length: "short" | "standard" | "detailed" = "standard",
@@ -123,6 +118,12 @@ generate_incident_report(
   artifacts: list[{name, type, inline_data_or_path}],  # charts, tables as attachments
 }
 ```
+
+> **P0 source is investigation-only.** `playbook_run` is deferred because N1 P0 does not replay. `session_id`-based synthesis is deferred because the server has no real per-investigation session boundary in P0 (see N6). Both return when their backing features land in P1.
+
+### Deferred to P1
+- `source.playbook_run` — requires N1 replay.
+- `source.session_id` — requires a true per-investigation session boundary, not the process-scoped grouping N6 provides in P0.
 
 ### Report sections (default)
 1. **Executive summary** (3–5 sentences).
@@ -179,14 +180,18 @@ deliver_report(
 }
 ```
 
-### PDF generation
-- Use `weasyprint` or `reportlab` (prefer `weasyprint` — Markdown → HTML → PDF is cleaner).
-- Styling: single simple CSS file, no branding flexibility in P0.
-- Max PDF size: 50 MB (Telegram hard limit; email via ONS typically accepts less — validate and truncate with warning).
+### Acceptance contract (PDF)
+- Produces a valid PDF for any Markdown report N3 emits.
+- Respects a 50 MB cap (Telegram hard limit; reject with a clear error before attempting upload if exceeded).
+- Single simple CSS file; no branding flexibility in P0.
 
-### Delivery
-- **Telegram:** extend existing `notification_service.py` (or whatever hosts `send_to_telegram`) with an `attach_file` pathway. Bot API supports `sendDocument` with attachments.
-- **Email via ONS:** existing ONS integration (used by alarms). Attachment handling: ONS notifications don't natively attach files — instead, upload PDF to Object Storage, include pre-authenticated URL in the notification body. Optional; ship without attachments if Object Storage path not configured (include pre-authenticated URL is stretch inside this feature).
+### Delivery (P0)
+- **Telegram:** extend existing `notification_service.py` (or whatever hosts `send_to_telegram`) with an `attach_file` pathway. Bot API supports `sendDocument` with attachments. **Full PDF goes here.**
+- **Email via ONS:** ONS notifications don't natively attach files. P0 email body contains an **inline Markdown/plaintext summary** of the report (exec summary + top findings), nothing more. No attachment. No link. If the user wants the full PDF by email, that's a P1 follow-up that adds Object Storage + a pre-authenticated URL.
+
+### Deferred to P1
+- Object Storage bucket + PAR URL for email PDF delivery.
+- Branding / custom CSS / custom templates.
 
 ### Files
 - Create: `src/oci_logan_mcp/report_pdf.py` — Markdown → PDF.
@@ -199,14 +204,18 @@ deliver_report(
 
 ### Test outline
 1. Test: Markdown input → PDF generated with expected page count.
-2. Test: delivery to Telegram mocks out `sendDocument`, verifies correct arguments.
-3. Test: delivery to email publishes an ONS notification with body containing link.
+2. Test: delivery to Telegram mocks out `sendDocument`, verifies file + caption arguments.
+3. Test: delivery to email publishes an ONS notification whose body contains the inline summary section (exec summary + top findings); no link, no attachment reference.
 4. Test: `channels=["telegram", "email"]` delivers to both; one failure doesn't block the other.
 5. Test: PDF > 50MB is rejected with a clear error before calling Telegram.
+6. Test: email body under a configurable `max_email_body_chars` (default 8000) — longer summaries are truncated with a trailing "…(truncated)" marker.
 
 ### Dependencies
 - N3 report output.
 - Existing Telegram and ONS integrations.
+
+### Implementation note (not part of acceptance)
+For the PDF engine, prefer a backend whose dependency chain installs cleanly on the target deploy surface. WeasyPrint produces the best Markdown-derived output but pulls cairo/pango/gdk-pixbuf — evaluate install pain before committing. A pure-Python or `wkhtmltopdf`-wrapper alternative is acceptable if it meets the acceptance contract above. Pick one during implementation; do not expose the choice in the tool interface.
 
 ---
 
