@@ -1,5 +1,6 @@
 """Configuration dataclasses and file loading for OCI Log Analytics MCP Server."""
 
+import logging
 import os
 from dataclasses import dataclass, field
 from pathlib import Path
@@ -295,7 +296,6 @@ def _apply_env_overrides(settings: Settings) -> Settings:
         elif normalized in ("0", "false", "no", "off"):
             settings.read_only = False
         else:
-            import logging
             logging.getLogger(__name__).warning(
                 "Unrecognized OCI_LOGAN_MCP_READ_ONLY=%r; expected one of "
                 "1/true/yes/on or 0/false/no/off. Leaving read_only unchanged.",
