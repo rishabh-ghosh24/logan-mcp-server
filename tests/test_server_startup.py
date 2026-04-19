@@ -314,6 +314,36 @@ class TestRunStartupOrder:
 
         server._refresh_schema_background.assert_awaited_once()
 
+    @pytest.mark.asyncio
+    async def test_run_skips_schema_refresh_in_read_only_mode(self, server):
+        """run() must not start _refresh_schema_background when read_only=True,
+        even if ENABLE_STARTUP_SCHEMA_REFRESH is on — the background path writes
+        to the shared tenancy-context YAML, which violates the read-only promise.
+        """
+        from oci_logan_mcp.config import Settings
+
+        async def mock_initialize_core():
+            server.oci_client = MagicMock()
+            server.settings = Settings(read_only=True)
+
+        server.initialize_core = mock_initialize_core
+        server._refresh_schema_background = AsyncMock()
+        server.server = MagicMock()
+        server.server.run = AsyncMock()
+        server.server.create_initialization_options = MagicMock()
+        server._keepalive_loop = AsyncMock()
+
+        with patch('oci_logan_mcp.server.ENABLE_STARTUP_SCHEMA_REFRESH', True), \
+             patch('oci_logan_mcp.server.stdio_server') as mock_stdio:
+            cm = MagicMock()
+            cm.__aenter__ = AsyncMock(return_value=(MagicMock(), MagicMock()))
+            cm.__aexit__ = AsyncMock(return_value=False)
+            mock_stdio.return_value = cm
+
+            await server.run()
+
+        server._refresh_schema_background.assert_not_called()
+
 
 class TestSetupCLIFlag:
     """Tests for --setup CLI flag."""

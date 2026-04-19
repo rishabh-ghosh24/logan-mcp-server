@@ -320,7 +320,7 @@ class OCILogAnalyticsMCPServer:
         logger.info("Starting MCP server on stdio...")
         async with stdio_server() as (read_stream, write_stream):
             schema_task = None
-            if self.oci_client and ENABLE_STARTUP_SCHEMA_REFRESH:
+            if self.oci_client and ENABLE_STARTUP_SCHEMA_REFRESH and not (self.settings and self.settings.read_only):
                 schema_task = asyncio.create_task(self._refresh_schema_background())
             elif self.oci_client:
                 logger.info(
