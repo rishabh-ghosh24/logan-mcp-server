@@ -85,3 +85,163 @@ def test_override_skips_check(tracker):
     tracker.record(actual_bytes=100, actual_cost_usd=0.01)
     tracker.record(actual_bytes=100, actual_cost_usd=0.01)
     tracker.check(estimated_bytes=100, estimated_cost_usd=0.01, override=True)
+
+
+@pytest.mark.asyncio
+async def test_budget_preflight_blocks_on_cache_miss():
+    from unittest.mock import AsyncMock, MagicMock
+    from oci_logan_mcp.query_engine import QueryEngine
+    from oci_logan_mcp.query_estimator import QueryEstimator
+    from oci_logan_mcp.budget_tracker import BudgetTracker, BudgetLimits, BudgetExceededError
+    from oci_logan_mcp.config import Settings
+
+    settings = Settings()
+    oci_client = MagicMock()
+    oci_client.compartment_id = "c"
+    oci_client.query = AsyncMock(return_value={"rows": [[1_000_000]], "columns": []})
+    estimator = QueryEstimator(oci_client, settings)
+
+    limits = BudgetLimits(
+        enabled=True,
+        max_queries_per_session=5,
+        max_bytes_per_session=100,
+        max_cost_usd_per_session=100.0,
+    )
+    tracker = BudgetTracker("s", limits)
+
+    engine = QueryEngine(
+        oci_client,
+        MagicMock(get=MagicMock(return_value=None), set=MagicMock()),
+        MagicMock(),
+        estimator=estimator, budget_tracker=tracker,
+    )
+
+    with pytest.raises(BudgetExceededError):
+        await engine.execute(query="'Log Source' = 'Linux Syslog'", time_range="last_1_hour")
+    assert oci_client.query.await_count == 1
+
+
+@pytest.mark.asyncio
+async def test_budget_does_not_charge_on_cache_hit():
+    from unittest.mock import AsyncMock, MagicMock
+    from oci_logan_mcp.query_engine import QueryEngine
+    from oci_logan_mcp.query_estimator import QueryEstimator
+    from oci_logan_mcp.budget_tracker import BudgetTracker, BudgetLimits
+    from oci_logan_mcp.config import Settings
+
+    settings = Settings()
+    oci_client = MagicMock()
+    oci_client.compartment_id = "c"
+    oci_client.query = AsyncMock()
+    estimator = QueryEstimator(oci_client, settings)
+
+    limits = BudgetLimits(enabled=True, max_queries_per_session=1,
+                          max_bytes_per_session=1, max_cost_usd_per_session=0.01)
+    tracker = BudgetTracker("s", limits)
+    tracker.record(actual_bytes=0, actual_cost_usd=0.0)
+
+    cached = {"result": {"rows": [], "columns": []},
+              "estimate": {"estimated_bytes": 999, "estimated_rows": None,
+                           "estimated_cost_usd": 1.0, "estimated_eta_seconds": 0.0,
+                           "confidence": "medium", "rationale": ""}}
+    cache = MagicMock(get=MagicMock(return_value=cached), set=MagicMock())
+
+    engine = QueryEngine(oci_client, cache, MagicMock(),
+                         estimator=estimator, budget_tracker=tracker)
+    resp = await engine.execute(query="'Log Source' = 'x'", time_range="last_1_hour")
+    assert resp["source"] == "cache"
+    assert oci_client.query.await_count == 0
+    assert tracker.snapshot().queries == 1
+
+
+@pytest.mark.asyncio
+async def test_budget_records_on_successful_live():
+    from unittest.mock import AsyncMock, MagicMock
+    from oci_logan_mcp.query_engine import QueryEngine
+    from oci_logan_mcp.query_estimator import QueryEstimator
+    from oci_logan_mcp.budget_tracker import BudgetTracker, BudgetLimits
+    from oci_logan_mcp.config import Settings
+
+    settings = Settings()
+    oci_client = MagicMock()
+    oci_client.compartment_id = "c"
+    oci_client.query = AsyncMock(side_effect=[
+        {"rows": [[1000]], "columns": []},
+        {"rows": [["a"]], "columns": [{"name": "X"}]},
+    ])
+    estimator = QueryEstimator(oci_client, settings)
+    tracker = BudgetTracker("s", BudgetLimits())
+
+    engine = QueryEngine(
+        oci_client,
+        MagicMock(get=MagicMock(return_value=None), set=MagicMock()),
+        MagicMock(),
+        estimator=estimator, budget_tracker=tracker,
+    )
+    await engine.execute(query="'Log Source' = 'x'", time_range="last_1_hour")
+
+    snap = tracker.snapshot()
+    assert snap.queries == 1
+    assert snap.bytes >= 0
+
+
+@pytest.mark.asyncio
+async def test_batch_queries_do_not_consume_budget_in_p0():
+    from unittest.mock import AsyncMock, MagicMock
+    from oci_logan_mcp.query_engine import QueryEngine
+    from oci_logan_mcp.query_estimator import QueryEstimator
+    from oci_logan_mcp.budget_tracker import BudgetTracker, BudgetLimits
+    from oci_logan_mcp.config import Settings
+
+    settings = Settings()
+    oci_client = MagicMock()
+    oci_client.compartment_id = "c"
+    oci_client.query = AsyncMock(return_value={"rows": [], "columns": []})
+    estimator = QueryEstimator(oci_client, settings)
+    tracker = BudgetTracker("s", BudgetLimits())
+
+    cache = MagicMock(get=MagicMock(return_value=None), set=MagicMock())
+    engine = QueryEngine(oci_client, cache, MagicMock(),
+                         estimator=estimator, budget_tracker=tracker)
+
+    await engine.execute_batch([
+        {"query": "a", "time_range": "last_1_hour"},
+        {"query": "b", "time_range": "last_1_hour"},
+    ])
+    snap = tracker.snapshot()
+    assert snap.queries == 0, (
+        "P0 spec: run_batch_queries is unbudgeted."
+    )
+
+
+@pytest.mark.asyncio
+async def test_query_engine_override_bypasses_budget():
+    from unittest.mock import AsyncMock, MagicMock
+    from oci_logan_mcp.query_engine import QueryEngine
+    from oci_logan_mcp.query_estimator import QueryEstimator
+    from oci_logan_mcp.budget_tracker import BudgetTracker, BudgetLimits
+    from oci_logan_mcp.config import Settings
+
+    settings = Settings()
+    oci_client = MagicMock()
+    oci_client.compartment_id = "c"
+    oci_client.query = AsyncMock(side_effect=[
+        {"rows": [[1_000_000]], "columns": []},
+        {"rows": [], "columns": [{"name": "Time"}]},
+    ])
+    estimator = QueryEstimator(oci_client, settings)
+    tracker = BudgetTracker("s", BudgetLimits(
+        enabled=True, max_queries_per_session=1,
+        max_bytes_per_session=1, max_cost_usd_per_session=0.01,
+    ))
+    engine = QueryEngine(
+        oci_client, MagicMock(get=MagicMock(return_value=None), set=MagicMock()),
+        MagicMock(), estimator=estimator, budget_tracker=tracker,
+    )
+
+    resp = await engine.execute(
+        query="'Log Source' = 'x'", time_range="last_1_hour",
+        use_cache=False, budget_override=True,
+    )
+    assert resp["source"] == "live"
+    assert tracker.snapshot().queries == 1

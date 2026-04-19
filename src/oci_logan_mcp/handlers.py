@@ -162,7 +162,8 @@ class MCPHandlers:
             }, indent=2)}]
 
         # --- Confirmation gate for guarded operations ---
-        if self.confirmation_manager.is_guarded(name):
+        guarded_call = self.confirmation_manager.is_guarded_call(name, arguments)
+        if guarded_call:
             clean_args = {
                 k: v for k, v in arguments.items()
                 if k not in (
@@ -223,7 +224,7 @@ class MCPHandlers:
 
         try:
             result = await handler(arguments)
-            if self.confirmation_manager.is_guarded(name) and self.audit_logger:
+            if guarded_call and self.audit_logger:
                 summary = result[0]["text"][:200] if result else ""
                 self.audit_logger.log(
                     user=user_id, tool=name, args=arguments,
@@ -232,7 +233,7 @@ class MCPHandlers:
             return result
         except Exception as e:
             logger.exception(f"Error in tool {name}")
-            if self.confirmation_manager.is_guarded(name) and self.audit_logger:
+            if guarded_call and self.audit_logger:
                 self.audit_logger.log(
                     user=user_id, tool=name, args=arguments,
                     outcome="execution_failed", error=str(e),
@@ -394,6 +395,7 @@ class MCPHandlers:
     async def _run_query(self, args: Dict) -> List[Dict]:
         """Execute a query."""
         compartment_id, include_subs = self._resolve_scope(args)
+        budget_override = args.pop("budget_override", False)
 
         logger.info(f"run_query: include_subcompartments={include_subs}, compartment_id={compartment_id}, args={args}")
 
@@ -406,6 +408,7 @@ class MCPHandlers:
                 max_results=args.get("max_results"),
                 include_subcompartments=include_subs,
                 compartment_id=compartment_id,
+                budget_override=budget_override,
             )
         except Exception:
             # Track failure before re-raising

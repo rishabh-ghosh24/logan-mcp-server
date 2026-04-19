@@ -55,6 +55,12 @@ class ConfirmationManager:
         """Return True if the tool requires confirmation."""
         return tool_name in GUARDED_TOOLS
 
+    def is_guarded_call(self, tool_name: str, arguments: dict) -> bool:
+        """Context-aware guard check. For run_query, checks budget_override flag."""
+        if tool_name == "run_query":
+            return bool(arguments.get("budget_override"))
+        return tool_name in GUARDED_TOOLS
+
     def availability_status(self) -> str:
         """Return confirmation secret state: available, missing, or invalid."""
         if not self._secret_store.has_secret():

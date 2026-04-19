@@ -108,3 +108,128 @@ async def test_filter_discount_reduces_bytes(estimator, oci_client):
     oci_client.query.return_value = {"rows": [[1000]], "columns": []}
     est_filter = await estimator.estimate("'Log Source' = 'x' and severity = 'ERROR'", "last_1_hour")
     assert est_filter.estimated_bytes < est_no_filter.estimated_bytes
+
+
+@pytest.mark.asyncio
+async def test_run_query_carries_flat_estimate_fields_on_live():
+    from unittest.mock import AsyncMock, MagicMock
+    from oci_logan_mcp.query_engine import QueryEngine
+    from oci_logan_mcp.query_estimator import QueryEstimator
+    from oci_logan_mcp.config import Settings
+
+    settings = Settings()
+    oci_client = MagicMock()
+    oci_client.compartment_id = "c"
+    oci_client.query = AsyncMock()
+    oci_client.query.side_effect = [
+        {"rows": [[500]], "columns": []},
+        {"rows": [], "columns": [{"name": "Time"}]},
+    ]
+    estimator = QueryEstimator(oci_client, settings)
+    cache = MagicMock(get=MagicMock(return_value=None), set=MagicMock())
+
+    engine = QueryEngine(oci_client, cache, MagicMock(), estimator=estimator)
+    resp = await engine.execute(
+        query="'Log Source' = 'Linux Syslog'",
+        time_range="last_1_hour",
+    )
+    for key in ("estimated_bytes", "estimated_rows", "estimated_cost_usd",
+                "estimated_eta_seconds", "estimate_confidence", "estimate_rationale"):
+        assert key in resp, f"missing flat field: {key}"
+    assert resp["estimate_confidence"] in {"low", "medium", "high"}
+
+
+@pytest.mark.asyncio
+async def test_cache_hit_replays_estimate_without_probing():
+    from unittest.mock import AsyncMock, MagicMock
+    from oci_logan_mcp.query_engine import QueryEngine
+    from oci_logan_mcp.query_estimator import QueryEstimator
+    from oci_logan_mcp.config import Settings
+
+    settings = Settings()
+    oci_client = MagicMock()
+    oci_client.compartment_id = "c"
+    oci_client.query = AsyncMock()
+
+    estimator = QueryEstimator(oci_client, settings)
+    cached_payload = {
+        "result": {"rows": [["x"]], "columns": [{"name": "Time"}]},
+        "estimate": {
+            "estimated_bytes": 123, "estimated_rows": None,
+            "estimated_cost_usd": 0.01, "estimated_eta_seconds": 0.5,
+            "confidence": "medium", "rationale": "replayed from cache",
+        },
+    }
+    cache = MagicMock(get=MagicMock(return_value=cached_payload), set=MagicMock())
+
+    engine = QueryEngine(oci_client, cache, MagicMock(), estimator=estimator)
+    resp = await engine.execute(
+        query="'Log Source' = 'Linux Syslog'",
+        time_range="last_1_hour",
+    )
+    assert resp["source"] == "cache"
+    assert resp["estimated_bytes"] == 123
+    assert resp["estimate_confidence"] == "medium"
+    assert oci_client.query.await_count == 0
+
+
+@pytest.mark.asyncio
+async def test_next_steps_preserved_on_live_and_cache_paths():
+    from unittest.mock import AsyncMock, MagicMock
+    from oci_logan_mcp.query_engine import QueryEngine
+    from oci_logan_mcp.query_estimator import QueryEstimator
+    from oci_logan_mcp.config import Settings
+
+    settings = Settings()
+    oci_client = MagicMock()
+    oci_client.compartment_id = "c"
+    oci_client.query = AsyncMock(side_effect=[
+        {"rows": [[500]], "columns": []},
+        {"rows": [], "columns": [{"name": "Time"}]},
+    ])
+    estimator = QueryEstimator(oci_client, settings)
+    cache = MagicMock(get=MagicMock(return_value=None), set=MagicMock())
+
+    engine = QueryEngine(oci_client, cache, MagicMock(), estimator=estimator)
+    live = await engine.execute(query="'Log Source' = 'x'", time_range="last_1_hour")
+    assert "next_steps" in live
+    assert isinstance(live["next_steps"], list)
+    assert any(s["tool_name"] == "validate_query" for s in live["next_steps"])
+
+    cached_bundle = {
+        "result": {"rows": [], "columns": [{"name": "Time"}]},
+        "estimate": {"estimated_bytes": 1, "estimated_rows": None,
+                     "estimated_cost_usd": 0.0, "estimated_eta_seconds": 0.0,
+                     "confidence": "medium", "rationale": ""},
+    }
+    cache.get = MagicMock(return_value=cached_bundle)
+    cached = await engine.execute(query="'Log Source' = 'x'", time_range="last_1_hour")
+    assert cached["source"] == "cache"
+    assert "next_steps" in cached
+    assert any(s["tool_name"] == "validate_query" for s in cached["next_steps"])
+
+
+@pytest.mark.asyncio
+async def test_live_path_caches_result_with_estimate_bundle():
+    from unittest.mock import AsyncMock, MagicMock
+    from oci_logan_mcp.query_engine import QueryEngine
+    from oci_logan_mcp.query_estimator import QueryEstimator
+    from oci_logan_mcp.config import Settings
+
+    settings = Settings()
+    oci_client = MagicMock()
+    oci_client.compartment_id = "c"
+    oci_client.query = AsyncMock(side_effect=[
+        {"rows": [[500]], "columns": []},
+        {"rows": [["x"]], "columns": [{"name": "Time"}]},
+    ])
+    estimator = QueryEstimator(oci_client, settings)
+    cache = MagicMock(get=MagicMock(return_value=None), set=MagicMock())
+
+    engine = QueryEngine(oci_client, cache, MagicMock(), estimator=estimator)
+    await engine.execute(query="'Log Source' = 'x'", time_range="last_1_hour")
+
+    assert cache.set.call_count == 1
+    _key, payload = cache.set.call_args.args
+    assert isinstance(payload, dict)
+    assert "result" in payload and "estimate" in payload

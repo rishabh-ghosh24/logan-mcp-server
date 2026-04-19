@@ -142,6 +142,18 @@ def get_tools() -> List[Dict[str, Any]]:
                         "enum": ["default", "tenancy"],
                         "description": "Query scope: 'default' uses your configured compartment, 'tenancy' queries ALL compartments across the entire tenancy. Use 'tenancy' when user asks for logs 'across all compartments', 'entire tenancy', 'organization-wide', etc. When scope='tenancy', include_subcompartments is automatically set to true.",
                     },
+                    "budget_override": {
+                        "type": "boolean",
+                        "description": "If true, bypass the per-session budget check for this query. Requires confirmation_token and confirmation_secret (two-factor). Use only when the user explicitly acknowledges the budget override.",
+                    },
+                    "confirmation_token": {
+                        "type": "string",
+                        "description": "Server-generated token from the confirmation step. Omit on first call.",
+                    },
+                    "confirmation_secret": {
+                        "type": "string",
+                        "description": "Your confirmation secret. Required with token to execute a budget_override. You MUST ask the user for this value each time — NEVER reuse a previously provided secret.",
+                    },
                 },
                 "required": ["query"],
             },
