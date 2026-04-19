@@ -151,7 +151,8 @@ class TestAddTile:
 class TestTileGridLayout:
     def test_computes_positions(self):
         svc = make_svc()
-        positions = svc._compute_tile_positions(3)
+        tiles = [{"width": 12, "height": 4} for _ in range(3)]
+        positions = svc._compute_tile_positions(tiles)
         assert len(positions) == 3
         for p in positions:
             assert "row" in p and "column" in p
