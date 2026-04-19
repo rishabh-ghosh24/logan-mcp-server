@@ -97,3 +97,43 @@ def test_no_id_field_no_suggestion():
     }
     steps = suggest("*", result)
     assert not any(s.tool_name == "trace_request_id" for s in steps)
+
+
+def test_http_5xx_status_suggests_pivot_and_stats():
+    result = {
+        "data": {
+            "rows": [["2026-04-20", "web-01", 500], ["2026-04-20", "web-02", 503]],
+            "columns": [{"name": "Time"}, {"name": "Host"}, {"name": "Status"}],
+        },
+        "metadata": {},
+    }
+    steps = suggest("*", result)
+    tools = [s.tool_name for s in steps]
+    assert "pivot_on_entity" in tools
+    assert "run_query" in tools
+    stats_step = next(s for s in steps if s.tool_name == "run_query" and "stats" in s.reason.lower())
+    assert stats_step is not None
+
+
+def test_severity_field_with_error_value_suggests_pivot():
+    result = {
+        "data": {
+            "rows": [["host-a", "ERROR"], ["host-b", "error"]],
+            "columns": [{"name": "Host"}, {"name": "Severity"}],
+        },
+        "metadata": {},
+    }
+    steps = suggest("*", result)
+    assert any(s.tool_name == "pivot_on_entity" for s in steps)
+
+
+def test_successful_rows_do_not_suggest_error_pivot():
+    result = {
+        "data": {
+            "rows": [["host-a", 200], ["host-b", 201]],
+            "columns": [{"name": "Host"}, {"name": "Status"}],
+        },
+        "metadata": {},
+    }
+    steps = suggest("*", result)
+    assert not any(s.tool_name == "pivot_on_entity" for s in steps)

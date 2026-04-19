@@ -20,6 +20,11 @@ LARGE_RESULT_THRESHOLD = 1000
 
 _ID_FIELD_RE = re.compile(r"(request|trace|correlation|x[-_ ]?request)[-_ ]?id", re.IGNORECASE)
 
+_STATUS_FIELD_NAMES = {"status", "status code", "statuscode", "http status", "response status"}
+_SEVERITY_FIELD_NAMES = {"severity", "level", "log level"}
+_ENTITY_FIELD_NAMES = {"host", "hostname", "entity", "instance", "service", "pod"}
+_ERROR_STRINGS = {"error", "fail", "failed", "failure", "exception", "critical", "fatal"}
+
 
 @dataclass
 class NextStep:
@@ -51,7 +56,63 @@ def suggest(query: str, result: Dict[str, Any]) -> List[NextStep]:
     out.extend(_h_empty_result(query, rows, columns))
     out.extend(_h_large_result(query, rows, columns))
     out.extend(_h_request_id(query, rows, columns))
+    out.extend(_h_error_rows(query, rows, columns))
     return out
+
+
+def _find_col(columns: list, candidates: set) -> tuple:
+    for i, col in enumerate(columns):
+        name = col.get("name") if isinstance(col, dict) else None
+        if name and name.strip().lower() in candidates:
+            return i, name
+    return None, None
+
+
+def _is_error_row(row: list, status_idx, severity_idx) -> bool:
+    if status_idx is not None and status_idx < len(row):
+        val = row[status_idx]
+        if isinstance(val, (int, float)) and 400 <= int(val) < 600:
+            return True
+        if isinstance(val, str) and val.strip().isdigit():
+            try:
+                n = int(val.strip())
+                if 400 <= n < 600:
+                    return True
+            except ValueError:
+                pass
+    if severity_idx is not None and severity_idx < len(row):
+        val = row[severity_idx]
+        if isinstance(val, str) and val.strip().lower() in _ERROR_STRINGS:
+            return True
+    return False
+
+
+def _h_error_rows(query: str, rows: list, columns: list) -> List[NextStep]:
+    status_idx, status_name = _find_col(columns, _STATUS_FIELD_NAMES)
+    severity_idx, severity_name = _find_col(columns, _SEVERITY_FIELD_NAMES)
+    if status_idx is None and severity_idx is None:
+        return []
+
+    has_errors = any(_is_error_row(r, status_idx, severity_idx) for r in rows if isinstance(r, list))
+    if not has_errors:
+        return []
+
+    entity_idx, entity_name = _find_col(columns, _ENTITY_FIELD_NAMES)
+    suggestions: List[NextStep] = []
+    if entity_idx is not None:
+        suggestions.append(NextStep(
+            tool_name="pivot_on_entity",
+            suggested_args={"entity_type": entity_name, "time_range": "last_1_hour"},
+            reason=f"Result contains error rows — pivot on '{entity_name}' to see everything touching each entity.",
+        ))
+    group_field = status_name or severity_name
+    if group_field:
+        suggestions.append(NextStep(
+            tool_name="run_query",
+            suggested_args={"query": f"{query} | stats count by '{group_field}'"},
+            reason=f"Errors present — try stats-by '{group_field}' to see the breakdown.",
+        ))
+    return suggestions
 
 
 def _h_request_id(query: str, rows: list, columns: list) -> List[NextStep]:
