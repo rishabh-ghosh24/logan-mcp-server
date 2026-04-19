@@ -48,3 +48,52 @@ def test_small_result_does_not_suggest_narrower_window():
     steps = suggest("*", result)
     tools = [s.tool_name for s in steps]
     assert "run_query" not in tools
+
+
+def test_request_id_field_suggests_trace():
+    result = {
+        "data": {
+            "rows": [["2026-04-20T10:00:00Z", "abc-123-def"]],
+            "columns": [{"name": "Time"}, {"name": "Request ID"}],
+        },
+        "metadata": {},
+    }
+    steps = suggest("*", result)
+    tools = [s.tool_name for s in steps]
+    assert "trace_request_id" in tools
+
+
+def test_populated_trace_id_field_suggests_trace():
+    result = {
+        "data": {
+            "rows": [["2026-04-20", "my-trace-42"]],
+            "columns": [{"name": "Time"}, {"name": "Trace-ID"}],
+        },
+        "metadata": {},
+    }
+    steps = suggest("*", result)
+    assert any(s.tool_name == "trace_request_id" for s in steps)
+
+
+def test_empty_id_field_does_not_suggest_trace():
+    result = {
+        "data": {
+            "rows": [["2026-04-20", None], ["2026-04-20", ""]],
+            "columns": [{"name": "Time"}, {"name": "Request ID"}],
+        },
+        "metadata": {},
+    }
+    steps = suggest("*", result)
+    assert not any(s.tool_name == "trace_request_id" for s in steps)
+
+
+def test_no_id_field_no_suggestion():
+    result = {
+        "data": {
+            "rows": [["a", "b"]],
+            "columns": [{"name": "Host"}, {"name": "Message"}],
+        },
+        "metadata": {},
+    }
+    steps = suggest("*", result)
+    assert not any(s.tool_name == "trace_request_id" for s in steps)
