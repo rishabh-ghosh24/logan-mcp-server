@@ -5,7 +5,7 @@ a mutating operation. A tool is mutating if it changes state in OCI, on disk
 (user state files), or on an external system (Slack, Telegram).
 
 Any new tool registered in handlers.handle_tool_call must be classified — see
-the drift-catching test in tests/test_handlers.py.
+the drift-catching test in tests/test_read_only_guard.py.
 """
 
 MUTATING_TOOLS: frozenset[str] = frozenset(
