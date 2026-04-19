@@ -101,6 +101,7 @@ class Settings:
     logging: LoggingConfig = field(default_factory=LoggingConfig)
     guardrails: GuardrailsConfig = field(default_factory=GuardrailsConfig)
     notifications: NotificationsConfig = field(default_factory=NotificationsConfig)
+    read_only: bool = False
 
     def to_dict(self) -> dict:
         """Convert settings to dictionary for serialization."""
@@ -286,6 +287,20 @@ def _apply_env_overrides(settings: Settings) -> Settings:
         settings.notifications.telegram.bot_token = v
     if v := os.environ.get("TELEGRAM_CHAT_ID"):
         settings.notifications.telegram.default_chat_id = v
+
+    if (raw := os.environ.get("OCI_LOGAN_MCP_READ_ONLY")) is not None and raw != "":
+        normalized = raw.strip().lower()
+        if normalized in ("1", "true", "yes", "on"):
+            settings.read_only = True
+        elif normalized in ("0", "false", "no", "off"):
+            settings.read_only = False
+        else:
+            import logging
+            logging.getLogger(__name__).warning(
+                "Unrecognized OCI_LOGAN_MCP_READ_ONLY=%r; expected one of "
+                "1/true/yes/on or 0/false/no/off. Leaving read_only unchanged.",
+                raw,
+            )
 
     return settings
 

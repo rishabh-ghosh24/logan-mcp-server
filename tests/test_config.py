@@ -146,3 +146,35 @@ class TestConfirmationConfig:
         settings = load_config(config_file)
         assert settings.guardrails.token_expiry_seconds == 120
 
+
+def test_settings_default_read_only_is_false():
+    from oci_logan_mcp.config import Settings
+    assert Settings().read_only is False
+
+
+def test_env_override_read_only_true(monkeypatch, tmp_path):
+    from oci_logan_mcp.config import load_config
+    monkeypatch.setenv("OCI_LOGAN_MCP_READ_ONLY", "1")
+    settings = load_config(config_path=tmp_path / "no.yaml")
+    assert settings.read_only is True
+
+
+@pytest.mark.parametrize("value,expected", [
+    ("1", True), ("true", True), ("TRUE", True), ("yes", True), ("on", True),
+    ("0", False), ("false", False), ("", False), ("no", False),
+])
+def test_env_override_read_only_parsing(monkeypatch, tmp_path, value, expected):
+    from oci_logan_mcp.config import load_config
+    monkeypatch.setenv("OCI_LOGAN_MCP_READ_ONLY", value)
+    settings = load_config(config_path=tmp_path / "no.yaml")
+    assert settings.read_only is expected
+
+
+def test_env_override_read_only_unrecognized_warns(monkeypatch, tmp_path, caplog):
+    from oci_logan_mcp.config import load_config
+    monkeypatch.setenv("OCI_LOGAN_MCP_READ_ONLY", "yez")
+    with caplog.at_level("WARNING"):
+        settings = load_config(config_path=tmp_path / "no.yaml")
+    assert settings.read_only is False  # default preserved
+    assert any("OCI_LOGAN_MCP_READ_ONLY" in rec.message for rec in caplog.records)
+
