@@ -168,6 +168,24 @@ class MCPHandlers:
 
         user_id = self.user_store.user_id
 
+        # --- Invoked event (fires before every gate) ---
+        if self.audit_logger:
+            clean_args_for_invoked = {
+                k: v for k, v in arguments.items()
+                if k not in (
+                    "confirmation_token",
+                    "confirmation_secret",
+                    "confirmation_secret_confirm",
+                )
+            }
+            try:
+                self.audit_logger.log(
+                    user=user_id, tool=name, args=clean_args_for_invoked,
+                    outcome="invoked",
+                )
+            except Exception as e:
+                logger.warning("invoked audit entry failed: %s", e)
+
         # --- Read-only guard (runs BEFORE confirmation gate) ---
         try:
             raise_if_read_only(name, read_only=self.settings.read_only)

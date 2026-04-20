@@ -1343,3 +1343,61 @@ async def test_get_session_budget_returns_usage(handlers):
     for key in ("queries", "bytes", "cost_usd"):
         assert key in payload["used"]
         assert key in payload["remaining"]
+
+
+# ---------------------------------------------------------------------------
+# Invoked audit event tests (Task N6)
+# ---------------------------------------------------------------------------
+
+@pytest.mark.asyncio
+async def test_invoked_event_fires_for_non_guarded_tool(handlers, tmp_path):
+    """A non-guarded tool call produces an 'invoked' audit entry."""
+    audit_dir = tmp_path / "audit_invoked"
+    audit = AuditLogger(audit_dir)
+    handlers.audit_logger = audit
+
+    await handlers.handle_tool_call("get_current_context", {})
+
+    log_file = audit_dir / "audit.log"
+    assert log_file.is_file()
+    lines = log_file.read_text().strip().splitlines()
+    outcomes = [json.loads(ln)["outcome"] for ln in lines]
+    assert "invoked" in outcomes
+
+
+@pytest.mark.asyncio
+async def test_invoked_event_fires_before_read_only_block(handlers, settings, tmp_path):
+    """A read-only-blocked tool produces both 'invoked' and 'read_only_blocked', in that order."""
+    audit_dir = tmp_path / "audit_ro_invoked"
+    audit = AuditLogger(audit_dir)
+    handlers.audit_logger = audit
+    settings.read_only = True
+
+    await handlers.handle_tool_call("delete_alert", {"alert_id": "ocid1.alarm.x"})
+
+    log_file = audit_dir / "audit.log"
+    assert log_file.is_file()
+    lines = log_file.read_text().strip().splitlines()
+    outcomes = [json.loads(ln)["outcome"] for ln in lines]
+    assert outcomes == ["invoked", "read_only_blocked"]
+
+
+@pytest.mark.asyncio
+async def test_invoked_event_strips_confirmation_secret(handlers, tmp_path):
+    """The 'invoked' entry must not contain confirmation_secret in args."""
+    audit_dir = tmp_path / "audit_secret_strip"
+    audit = AuditLogger(audit_dir)
+    handlers.audit_logger = audit
+
+    await handlers.handle_tool_call(
+        "get_current_context",
+        {"confirmation_secret": "hunter2", "some_arg": "ok"},
+    )
+
+    log_file = audit_dir / "audit.log"
+    lines = log_file.read_text().strip().splitlines()
+    invoked_entries = [json.loads(ln) for ln in lines if json.loads(ln)["outcome"] == "invoked"]
+    assert invoked_entries, "No invoked entry found"
+    args = invoked_entries[0]["args"]
+    assert "confirmation_secret" not in args
+    assert args.get("some_arg") == "ok"
