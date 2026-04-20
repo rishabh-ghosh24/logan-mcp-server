@@ -27,8 +27,9 @@ _STRIP_KEYS = frozenset({
 class AuditLogger:
     """Append-only JSON-lines audit log with rotation and file locking."""
 
-    def __init__(self, log_dir: Path) -> None:
+    def __init__(self, log_dir: Path, session_id: str = "unknown") -> None:
         self._log_dir = log_dir
+        self._session_id = session_id
         self._log_dir.mkdir(parents=True, exist_ok=True)
         try:
             os.chmod(self._log_dir, 0o750)
@@ -51,6 +52,7 @@ class AuditLogger:
         clean_args = {k: v for k, v in args.items() if k not in _STRIP_KEYS}
         entry: Dict[str, Any] = {
             "timestamp": datetime.now(timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ"),
+            "session_id": self._session_id,
             "user": user,
             "pid": os.getpid(),
             "tool": tool,
