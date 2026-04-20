@@ -437,7 +437,7 @@ class MCPHandlers:
     async def _run_query(self, args: Dict) -> List[Dict]:
         """Execute a query."""
         compartment_id, include_subs = self._resolve_scope(args)
-        budget_override = args.pop("budget_override", False)
+        budget_override = bool(args.get("budget_override", False))
 
         logger.info(f"run_query: include_subcompartments={include_subs}, compartment_id={compartment_id}, args={args}")
 
