@@ -116,6 +116,7 @@ def test_all_registered_tools_are_classified():
         "list_labels", "list_saved_searches", "list_log_groups",
         "validate_query", "run_query", "run_saved_search", "run_batch_queries",
         "diff_time_windows",
+        "pivot_on_entity",  # <-- add this
         "visualize", "export_results",
         "get_current_context", "list_compartments",
         "test_connection", "find_compartment",

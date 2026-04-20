@@ -1479,3 +1479,60 @@ class TestDiffTimeWindows:
         # fails here instead of silently degrading A1's budget awareness.
         assert "budget" in payload
         assert isinstance(payload["budget"], dict)
+
+
+class TestPivotOnEntity:
+    @pytest.mark.asyncio
+    async def test_pivot_on_entity_routes_through_handler(self, handlers):
+        """pivot_on_entity tool routes to PivotTool and returns JSON payload."""
+        handlers.pivot_tool.run = AsyncMock(return_value={
+            "entity": {"type": "host", "value": "web-01", "field": "Host"},
+            "by_source": [{"source": "Audit Logs", "rows": [{"Time": "2026-04-20T10:00:00Z"}], "truncated": False}],
+            "cross_source_timeline": [{"timestamp": "2026-04-20T10:00:00Z", "source": "Audit Logs"}],
+            "stats": {"total_events": 1, "sources_matched": 1},
+            "partial": False,
+            "metadata": {},
+        })
+
+        result = await handlers.handle_tool_call(
+            "pivot_on_entity",
+            {
+                "entity_type": "host",
+                "entity_value": "web-01",
+                "time_range": {"time_range": "last_1_hour"},
+            },
+        )
+
+        assert result[0]["type"] == "text"
+        payload = json.loads(result[0]["text"])
+        assert payload["entity"]["value"] == "web-01"
+        assert payload["stats"]["total_events"] == 1
+        handlers.pivot_tool.run.assert_awaited_once_with(
+            entity_type="host",
+            entity_value="web-01",
+            time_range={"time_range": "last_1_hour"},
+            sources=None,
+            max_rows_per_source=100,
+            field_name=None,
+        )
+
+    @pytest.mark.asyncio
+    async def test_pivot_on_entity_budget_exceeded_structured(self, handlers):
+        """BudgetExceededError returns structured payload, not plain text."""
+        from oci_logan_mcp.budget_tracker import BudgetExceededError
+        handlers.pivot_tool.run = AsyncMock(side_effect=BudgetExceededError("cost limit hit"))
+
+        result = await handlers.handle_tool_call(
+            "pivot_on_entity",
+            {
+                "entity_type": "host",
+                "entity_value": "web-01",
+                "time_range": {"time_range": "last_1_hour"},
+            },
+        )
+
+        payload = json.loads(result[0]["text"])
+        assert payload["status"] == "budget_exceeded"
+        assert "cost limit hit" in payload["error"]
+        assert "budget" in payload
+        assert isinstance(payload["budget"], dict)

@@ -238,6 +238,47 @@ def get_tools() -> List[Dict[str, Any]]:
                 "required": ["query", "current_window", "comparison_window"],
             },
         },
+        {
+            "name": "pivot_on_entity",
+            "description": (
+                "Pull everything about an entity (host/user/IP/request-id) across all "
+                "matching log sources in one call. Runs source discovery, then queries "
+                "each source for the entity value. Returns per-source rows and a "
+                "merged, time-ordered cross-source timeline."
+            ),
+            "inputSchema": {
+                "type": "object",
+                "properties": {
+                    "entity_type": {
+                        "type": "string",
+                        "enum": ["host", "user", "request_id", "ip", "custom"],
+                        "description": "Type of entity to pivot on",
+                    },
+                    "entity_value": {
+                        "type": "string",
+                        "description": "Entity value to search for (e.g. 'web-01', 'alice')",
+                    },
+                    "time_range": {
+                        "type": "object",
+                        "description": "Time window: {time_range: '...'} OR {time_start, time_end} (ISO 8601)",
+                    },
+                    "sources": {
+                        "type": "array",
+                        "items": {"type": "string"},
+                        "description": "Optional. Limit to these log sources. If omitted, auto-discovers sources with matching data.",
+                    },
+                    "max_rows_per_source": {
+                        "type": "integer",
+                        "description": "Max rows to return per source. Default: 100",
+                    },
+                    "field_name": {
+                        "type": "string",
+                        "description": "Required when entity_type='custom'. The field name to filter on.",
+                    },
+                },
+                "required": ["entity_type", "entity_value", "time_range"],
+            },
+        },
         # Visualization Tools
         {
             "name": "visualize",

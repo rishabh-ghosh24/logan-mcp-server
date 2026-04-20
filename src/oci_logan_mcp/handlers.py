@@ -27,6 +27,7 @@ from .secret_store import SecretStore
 from .audit import AuditLogger
 from .read_only_guard import ReadOnlyError, raise_if_read_only
 from .diff_tool import DiffTool
+from .pivot_tool import PivotTool
 from .budget_tracker import BudgetExceededError
 
 if TYPE_CHECKING:
@@ -93,6 +94,7 @@ class MCPHandlers:
             budget_tracker=self._budget_tracker,
         )
         self.diff_tool = DiffTool(self.query_engine)
+        self.pivot_tool = PivotTool(self.query_engine)
         self.validator = QueryValidator(self.schema_manager)
         self.visualization = VisualizationEngine()
         self.saved_search = SavedSearchService(oci_client, cache)
@@ -128,6 +130,7 @@ class MCPHandlers:
             "run_saved_search": self._run_saved_search,
             "run_batch_queries": self._run_batch_queries,
             "diff_time_windows": self._diff_time_windows,
+            "pivot_on_entity": self._pivot_on_entity,
             # Visualization
             "visualize": self._visualize,
             # Export
@@ -634,6 +637,30 @@ class MCPHandlers:
                 "budget": self._budget_tracker.snapshot().to_dict(),
             }
             return [{"type": "text", "text": json.dumps(payload, indent=2, default=str)}]
+        return [{"type": "text", "text": json.dumps(result, indent=2, default=str)}]
+
+    async def _pivot_on_entity(self, args: Dict) -> List[Dict]:
+        try:
+            result = await self.pivot_tool.run(
+                entity_type=args["entity_type"],
+                entity_value=args["entity_value"],
+                time_range=args["time_range"],
+                sources=args.get("sources"),
+                max_rows_per_source=args.get("max_rows_per_source", 100),
+                field_name=args.get("field_name"),
+            )
+        except BudgetExceededError as e:
+            payload = {
+                "status": "budget_exceeded",
+                "error": str(e),
+                "partial": None,
+                "budget": self._budget_tracker.snapshot().to_dict(),
+            }
+            return [{"type": "text", "text": json.dumps(payload, indent=2, default=str)}]
+        except ValueError as e:
+            return [{"type": "text", "text": json.dumps(
+                {"status": "error", "error": str(e)}, indent=2
+            )}]
         return [{"type": "text", "text": json.dumps(result, indent=2, default=str)}]
 
     async def _visualize(self, args: Dict) -> List[Dict]:
