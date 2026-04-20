@@ -399,6 +399,24 @@ Each entry records:
 
 This gives administrators a full history of which users attempted or executed destructive operations.
 
+Every tool call — including read-only tools — emits an `invoked` entry before any guard runs, giving a complete call-by-call trace.
+
+### Transcript export
+
+Every tool call is recorded in the audit log with a process-scoped `session_id`. Export the current session's trail as JSONL:
+
+```
+export_transcript(session_id="current")
+```
+
+Output file lands under `~/.oci-logan-mcp/transcripts/` by default (override via `transcript_dir` in config).
+
+Flags:
+- `include_results=false` — omit `result_summary` fields (useful when sharing).
+- `redact=true` — apply built-in PII/secret masking before writing.
+
+> **Note:** `session_id` is process-scoped — one id per server process. Long-lived servers aggregate many logical investigations under one id. Per-investigation session boundaries are a future enhancement.
+
 ### Fail-Closed Design
 
 - **No secret set** → guarded tools return `confirmation_unavailable` and point the user to `setup_confirmation_secret`
