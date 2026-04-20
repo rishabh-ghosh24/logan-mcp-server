@@ -71,8 +71,13 @@ class MCPHandlers:
         import uuid
 
         self._query_estimator = QueryEstimator(oci_client, settings)
+        # Share the AuditLogger's session_id with the BudgetTracker so a
+        # debugger can correlate budget state with audit entries by a single id.
+        session_id = (
+            audit_logger.session_id if audit_logger is not None else uuid.uuid4().hex
+        )
         self._budget_tracker = BudgetTracker(
-            session_id=uuid.uuid4().hex,
+            session_id=session_id,
             limits=BudgetLimits(
                 enabled=settings.budget.enabled,
                 max_queries_per_session=settings.budget.max_queries_per_session,
@@ -1227,7 +1232,7 @@ class MCPHandlers:
             })}]
         sid = args.get("session_id", "current")
         if sid == "current":
-            sid = self.audit_logger._session_id
+            sid = self.audit_logger.session_id
         out_dir = self.settings.transcript_dir
         try:
             result = self.audit_logger.export_transcript(

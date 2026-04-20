@@ -98,6 +98,10 @@ class CostConfig:
     eta_high_threshold_seconds: float = 60.0
     probe_ttl_seconds: int = 900
     filter_selectivity_discount: float = 0.2
+    # Mean record size used to convert probe row counts into bytes. The default
+    # is a rough fit for Linux syslog; JSON-heavy sources (e.g. OCI Audit) are
+    # closer to 2_000 and will under-estimate until retuned.
+    avg_bytes_per_row: float = 500.0
 
 
 @dataclass
@@ -156,6 +160,7 @@ class Settings:
                 "max_time_range_days": self.guardrails.max_time_range_days,
                 "warn_on_large_results": self.guardrails.warn_on_large_results,
                 "large_result_threshold": self.guardrails.large_result_threshold,
+                "token_expiry_seconds": self.guardrails.token_expiry_seconds,
             },
             "notifications": {
                 "slack": {
@@ -172,6 +177,7 @@ class Settings:
                 "eta_high_threshold_seconds": self.cost.eta_high_threshold_seconds,
                 "probe_ttl_seconds": self.cost.probe_ttl_seconds,
                 "filter_selectivity_discount": self.cost.filter_selectivity_discount,
+                "avg_bytes_per_row": self.cost.avg_bytes_per_row,
             },
             "budget": {
                 "enabled": self.budget.enabled,
@@ -180,6 +186,7 @@ class Settings:
                 "max_cost_usd_per_session": self.budget.max_cost_usd_per_session,
             },
             "transcript_dir": str(self.transcript_dir),
+            "read_only": self.read_only,
         }
 
 
@@ -290,6 +297,9 @@ def _parse_config(data: Dict[str, Any]) -> Settings:
             filter_selectivity_discount=cost_data.get(
                 "filter_selectivity_discount", settings.cost.filter_selectivity_discount
             ),
+            avg_bytes_per_row=cost_data.get(
+                "avg_bytes_per_row", settings.cost.avg_bytes_per_row
+            ),
         )
 
     if budget_data := data.get("budget"):
@@ -319,6 +329,9 @@ def _parse_config(data: Dict[str, Any]) -> Settings:
 
     if td := data.get("transcript_dir"):
         settings.transcript_dir = Path(td)
+
+    if "read_only" in data:
+        settings.read_only = bool(data["read_only"])
 
     return settings
 

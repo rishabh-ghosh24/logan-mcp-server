@@ -39,6 +39,11 @@ class AuditLogger:
         self._lock_path = self._log_dir / "audit.lock"
         self._thread_lock = threading.RLock()
 
+    @property
+    def session_id(self) -> str:
+        """Public accessor for the session id stamped on every audit entry."""
+        return self._session_id
+
     def log(
         self,
         user: str,

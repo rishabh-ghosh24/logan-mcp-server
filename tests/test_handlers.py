@@ -8,7 +8,6 @@ from oci_logan_mcp.handlers import MCPHandlers
 from oci_logan_mcp.config import Settings
 from oci_logan_mcp.user_store import UserStore
 from oci_logan_mcp.preferences import PreferenceStore
-from oci_logan_mcp.confirmation import GUARDED_TOOLS
 from oci_logan_mcp.secret_store import SecretStore
 from oci_logan_mcp.audit import AuditLogger
 

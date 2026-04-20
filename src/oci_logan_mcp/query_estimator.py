@@ -45,6 +45,12 @@ class QueryEstimate:
         }
 
 
+# These match the positive forms only: `'Log Source' = 'X'` and
+# `'Log Source' in (...)`. Negative forms (`!=`, `<>`, `NOT IN`) are
+# deliberately NOT detected — they would require an enumerate-all-sources
+# probe which P0 doesn't implement. Queries using those forms therefore
+# fall through to the source-less path (confidence="low", budget not
+# enforced) — same behavior as queries with no source filter at all.
 _SOURCE_EQ_RE = re.compile(r"'Log Source'\s*=\s*'([^']+)'", re.IGNORECASE)
 _SOURCE_IN_RE = re.compile(r"'Log Source'\s+in\s*\(([^)]+)\)", re.IGNORECASE)
 
@@ -216,7 +222,7 @@ class QueryEstimator:
                     count = int(rows[0][0] or 0)
                 except (TypeError, ValueError):
                     count = 0
-            bytes_per_hour = float(count) * 500.0
+            bytes_per_hour = float(count) * float(self.settings.cost.avg_bytes_per_row)
             self._probe_cache[cache_key] = (bytes_per_hour, now)
             return bytes_per_hour
         except Exception as e:
