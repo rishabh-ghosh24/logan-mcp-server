@@ -10,19 +10,27 @@ SIGNIFICANCE_THRESHOLD_PCT = 10.0
 TOP_K_SUMMARY = 3
 
 
-_BY_CLAUSE_RE = re.compile(r"\bby\s+(.+?)(?:\s*\|\s*|\s*$)", re.IGNORECASE)
+# Matches a `by <fields>` clause that follows a `| stats|eventstats|timestats` pipe.
+# Anchoring on the pipe prevents matching the word "by" inside filter-value string
+# literals (e.g. `'caused by X'`). If multiple stats pipes exist, we take the LAST
+# match — that's the final grouping the caller cares about.
+_BY_CLAUSE_RE = re.compile(
+    r"\|\s*(?:stats|eventstats|timestats)\s+.*?\bby\s+(.+?)(?=\s*\||\s*$)",
+    re.IGNORECASE,
+)
 
 
 def _extract_by_clause(query: str) -> List[str]:
-    """Extract dimension field names from a trailing `by <fields>` clause.
+    """Extract dimension field names from the final `| stats ... by <fields>` clause.
 
-    Handles single/multiple fields, quoted or unquoted. Returns [] if none.
-    Strips surrounding single quotes and whitespace.
+    Returns the first match's fields when only one stats clause exists; with
+    multiple stats pipes, returns the last. Returns [] if no stats clause with
+    a `by` is present. Handles single/multiple fields, quoted or unquoted.
     """
-    m = _BY_CLAUSE_RE.search(query)
-    if not m:
+    matches = list(_BY_CLAUSE_RE.finditer(query))
+    if not matches:
         return []
-    raw = m.group(1).strip()
+    raw = matches[-1].group(1).strip()
     return [p.strip().strip("'").strip('"') for p in raw.split(",") if p.strip()]
 
 

@@ -115,6 +115,22 @@ class TestReuseBreakout:
         from oci_logan_mcp.diff_tool import _extract_by_clause
         assert _extract_by_clause("* | stats count") == []
 
+    def test_extract_by_clause_ignores_by_in_string_literal(self):
+        """`by` inside a filter-value string literal must NOT be extracted.
+
+        Without the pipe-stats anchor in the regex, this would mis-extract "X'"
+        from the literal and then silently produce a degenerate delta downstream.
+        """
+        from oci_logan_mcp.diff_tool import _extract_by_clause
+        assert _extract_by_clause("'msg' = 'caused by X' | stats count") == []
+
+    def test_extract_by_clause_multiple_stats_returns_last(self):
+        """When a query has multiple stats pipes, reuse the final grouping."""
+        from oci_logan_mcp.diff_tool import _extract_by_clause
+        assert _extract_by_clause(
+            "* | eventstats count as c by Host | stats sum(c) by Source"
+        ) == ["Source"]
+
     @pytest.mark.asyncio
     async def test_reuses_breakout_from_query_by_clause(self):
         current = _grouped_result([("web-01", 400)])
