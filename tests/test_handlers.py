@@ -1450,7 +1450,12 @@ class TestDiffTimeWindows:
         assert result[0]["type"] == "text"
         payload = json.loads(result[0]["text"])
         assert payload["summary"] == "No significant change between windows."
-        handlers.diff_tool.run.assert_awaited_once()
+        handlers.diff_tool.run.assert_awaited_once_with(
+            query="'Log Source' = 'Audit Logs'",
+            current_window={"time_range": "last_1_hour"},
+            comparison_window={"time_range": "last_1_hour"},
+            dimensions=None,
+        )
 
     @pytest.mark.asyncio
     async def test_diff_time_windows_budget_exceeded_structured(self, handlers):
@@ -1470,3 +1475,7 @@ class TestDiffTimeWindows:
         payload = json.loads(result[0]["text"])
         assert payload["status"] == "budget_exceeded"
         assert "bytes limit hit" in payload["error"]
+        # Pin the snapshot-to-dict wiring so a rename of snapshot()/to_dict()
+        # fails here instead of silently degrading A1's budget awareness.
+        assert "budget" in payload
+        assert isinstance(payload["budget"], dict)

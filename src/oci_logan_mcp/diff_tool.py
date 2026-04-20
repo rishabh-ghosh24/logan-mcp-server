@@ -166,8 +166,12 @@ class DiffTool:
         # `delta` is already stable-filtered by `_compute_delta`.
         if not delta:
             return "No significant change between windows."
-        significant = delta
-        # Rank by absolute pct_change weighted by volume; None (new) ranks highest.
+
+        # Rank by absolute pct_change weighted by volume. Rows tagged "new"
+        # carry pct_change=None (infinity isn't JSON-safe), so we can't weight
+        # them by pct — put them in a higher tier (1, vol) so any new row
+        # outranks any pct-bearing change. Within the new tier they still
+        # order by volume.
         def _rank(r):
             pct = r["pct_change"]
             vol = max(r["current"], r["comparison"])
@@ -175,7 +179,7 @@ class DiffTool:
                 return (1, vol)
             return (0, abs(pct) * vol)
 
-        top = sorted(significant, key=_rank, reverse=True)[:TOP_K_SUMMARY]
+        top = sorted(delta, key=_rank, reverse=True)[:TOP_K_SUMMARY]
         parts = []
         for r in top:
             if r["tag"] == "new":
