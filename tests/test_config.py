@@ -224,3 +224,14 @@ def test_cost_budget_round_trips_through_save_and_load(tmp_path):
     assert loaded.cost.cost_per_gb_usd == 0.12
     assert loaded.budget.max_queries_per_session == 50
 
+
+
+def test_transcript_dir_round_trips_through_save_and_load(tmp_path):
+    from oci_logan_mcp.config import Settings, save_config, load_config
+    cfg_path = tmp_path / "config.yaml"
+    custom = tmp_path / "my-transcripts"
+    s = Settings()
+    s.transcript_dir = custom
+    save_config(s, config_path=cfg_path)
+    loaded = load_config(config_path=cfg_path)
+    assert loaded.transcript_dir == custom

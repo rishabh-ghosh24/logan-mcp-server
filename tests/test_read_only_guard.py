@@ -121,6 +121,7 @@ def test_all_registered_tools_are_classified():
         "get_query_examples", "get_log_summary",
         "get_preferences", "list_alerts", "list_dashboards",
         "explain_query", "get_session_budget",
+        "export_transcript",
     }
 
     unclassified = registered - MUTATING_TOOLS - KNOWN_READERS

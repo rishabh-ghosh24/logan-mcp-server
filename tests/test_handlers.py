@@ -1401,3 +1401,26 @@ async def test_invoked_event_strips_confirmation_secret(handlers, tmp_path):
     args = invoked_entries[0]["args"]
     assert "confirmation_secret" not in args
     assert args.get("some_arg") == "ok"
+
+
+@pytest.mark.asyncio
+async def test_export_transcript_tool_returns_path_and_count(handlers, tmp_path):
+    """export_transcript returns path and event_count >= number of tool calls made."""
+    import os
+
+    audit_dir = tmp_path / "audit_export"
+    audit = AuditLogger(audit_dir, session_id="test-export-session")
+    handlers.audit_logger = audit
+    handlers.settings.transcript_dir = tmp_path / "transcripts"
+
+    await handlers.handle_tool_call("get_current_context", {})
+    await handlers.handle_tool_call("list_saved_searches", {})
+
+    result = await handlers.handle_tool_call(
+        "export_transcript", {"session_id": "current"},
+    )
+    payload = json.loads(result[0]["text"])
+    assert "path" in payload
+    assert "event_count" in payload
+    assert payload["event_count"] >= 2
+    assert os.path.isfile(payload["path"])

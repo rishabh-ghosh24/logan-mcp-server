@@ -160,6 +160,8 @@ class MCPHandlers:
             # Estimation + Budget
             "explain_query": self._explain_query,
             "get_session_budget": self._get_session_budget,
+            # Transcript export
+            "export_transcript": self._export_transcript,
         }
 
         handler = handlers.get(name)
@@ -1198,4 +1200,25 @@ class MCPHandlers:
             format_type=args.get("format", "summary"),
             chat_id=args.get("chat_id"),
         )
+        return [{"type": "text", "text": json.dumps(result, indent=2)}]
+
+    async def _export_transcript(self, args: Dict) -> List[Dict]:
+        if not self.audit_logger:
+            return [{"type": "text", "text": json.dumps({
+                "error": "Audit logger unavailable; transcript export disabled.",
+            })}]
+        sid = args.get("session_id", "current")
+        if sid == "current":
+            sid = self.audit_logger._session_id
+        out_dir = self.settings.transcript_dir
+        try:
+            result = self.audit_logger.export_transcript(
+                session_id=sid,
+                out_dir=out_dir,
+                include_results=bool(args.get("include_results", True)),
+                redact=bool(args.get("redact", False)),
+            )
+        except Exception as e:
+            logger.exception("export_transcript failed")
+            return [{"type": "text", "text": json.dumps({"error": str(e)})}]
         return [{"type": "text", "text": json.dumps(result, indent=2)}]

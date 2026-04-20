@@ -845,4 +845,28 @@ def get_tools() -> List[Dict[str, Any]]:
                 },
             },
         },
+        {
+            "name": "export_transcript",
+            "description": "Export the current (or specified) session's tool-call transcript as JSONL. Returns the file path and event count. Pass session_id='current' for the running process's session.",
+            "inputSchema": {
+                "type": "object",
+                "properties": {
+                    "session_id": {
+                        "type": "string",
+                        "description": "Session id to export, or 'current' for the running process.",
+                        "default": "current",
+                    },
+                    "include_results": {
+                        "type": "boolean",
+                        "description": "Include result_summary fields. Default true.",
+                        "default": True,
+                    },
+                    "redact": {
+                        "type": "boolean",
+                        "description": "Run PII/secret redaction patterns over the output. Default false.",
+                        "default": False,
+                    },
+                },
+            },
+        },
     ]

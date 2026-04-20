@@ -122,6 +122,7 @@ class Settings:
     cost: CostConfig = field(default_factory=CostConfig)
     budget: BudgetConfig = field(default_factory=BudgetConfig)
     read_only: bool = False
+    transcript_dir: Path = field(default_factory=lambda: Path.home() / ".oci-logan-mcp" / "transcripts")
 
     def to_dict(self) -> dict:
         """Convert settings to dictionary for serialization."""
@@ -178,6 +179,7 @@ class Settings:
                 "max_bytes_per_session": self.budget.max_bytes_per_session,
                 "max_cost_usd_per_session": self.budget.max_cost_usd_per_session,
             },
+            "transcript_dir": str(self.transcript_dir),
         }
 
 
@@ -314,6 +316,9 @@ def _parse_config(data: Dict[str, Any]) -> Settings:
                 bot_token=tg_data.get("bot_token", ""),
                 default_chat_id=tg_data.get("default_chat_id", ""),
             )
+
+    if td := data.get("transcript_dir"):
+        settings.transcript_dir = Path(td)
 
     return settings
 
