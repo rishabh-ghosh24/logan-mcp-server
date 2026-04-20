@@ -125,6 +125,8 @@ class QueryEngine:
                 time_range=time_range,
                 time_start=time_start,
                 time_end=time_end,
+                compartment_id=effective_compartment,
+                include_subcompartments=include_subcompartments,
             )
 
         if not skip_budget and self.budget_tracker is not None and estimate is not None:

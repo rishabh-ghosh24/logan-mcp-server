@@ -102,10 +102,15 @@ class QueryEstimator:
         time_range: Optional[str] = None,
         time_start: Optional[str] = None,
         time_end: Optional[str] = None,
+        compartment_id: Optional[str] = None,
+        include_subcompartments: bool = True,
     ) -> QueryEstimate:
         """Return an estimate. Never raises."""
         try:
-            return await self._estimate_inner(query, time_range, time_start, time_end)
+            return await self._estimate_inner(
+                query, time_range, time_start, time_end,
+                compartment_id, include_subcompartments,
+            )
         except Exception as e:
             logger.warning("QueryEstimator failed unexpectedly: %s", e)
             return self._safe_default("internal_error")
@@ -126,6 +131,8 @@ class QueryEstimator:
         time_range: Optional[str],
         time_start: Optional[str],
         time_end: Optional[str],
+        compartment_id: Optional[str] = None,
+        include_subcompartments: bool = True,
     ) -> QueryEstimate:
         sources = self._extract_sources(query)
         if not sources:
@@ -144,7 +151,9 @@ class QueryEstimator:
         confidences: List[str] = []
         rationales: List[str] = []
         for source in sources:
-            bph = await self._probe_bytes_per_hour(source)
+            bph = await self._probe_bytes_per_hour(
+                source, compartment_id=compartment_id, include_subcompartments=include_subcompartments,
+            )
             if bph is None:
                 rationales.append(f"{source}: probe failed")
                 confidences.append("low")
@@ -174,10 +183,16 @@ class QueryEstimator:
             rationale="; ".join(rationales),
         )
 
-    async def _probe_bytes_per_hour(self, source: str) -> Optional[float]:
+    async def _probe_bytes_per_hour(
+        self,
+        source: str,
+        compartment_id: Optional[str] = None,
+        include_subcompartments: bool = True,
+    ) -> Optional[float]:
         ttl = self.settings.cost.probe_ttl_seconds
         now = time.time()
-        cached = self._probe_cache.get(source)
+        cache_key = f"{source}|{compartment_id}|{include_subcompartments}"
+        cached = self._probe_cache.get(cache_key)
         if cached and (now - cached[1]) < ttl:
             return cached[0]
         try:
@@ -188,7 +203,8 @@ class QueryEstimator:
                 time_start=probe_start.isoformat(),
                 time_end=probe_now.isoformat(),
                 max_results=1,
-                include_subcompartments=True,
+                compartment_id=compartment_id,
+                include_subcompartments=include_subcompartments,
             )
             rows = (probe_result or {}).get("rows", [])
             count = 0
@@ -198,7 +214,7 @@ class QueryEstimator:
                 except (TypeError, ValueError):
                     count = 0
             bytes_per_hour = float(count) * 500.0
-            self._probe_cache[source] = (bytes_per_hour, now)
+            self._probe_cache[cache_key] = (bytes_per_hour, now)
             return bytes_per_hour
         except Exception as e:
             logger.info("probe failed for source=%s: %s", source, e)
