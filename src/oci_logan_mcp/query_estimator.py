@@ -16,6 +16,7 @@ import logging
 import re
 import time
 from dataclasses import dataclass
+from datetime import datetime, timedelta, timezone
 from typing import Any, Dict, List, Optional
 
 from .config import Settings
@@ -180,10 +181,12 @@ class QueryEstimator:
         if cached and (now - cached[1]) < ttl:
             return cached[0]
         try:
+            probe_now = datetime.now(timezone.utc)
+            probe_start = probe_now - timedelta(hours=1)
             probe_result = await self.oci_client.query(
                 query_string=f"'Log Source' = '{source}' | stats count",
-                time_start=None,
-                time_end=None,
+                time_start=probe_start.isoformat(),
+                time_end=probe_now.isoformat(),
                 max_results=1,
                 include_subcompartments=True,
             )
