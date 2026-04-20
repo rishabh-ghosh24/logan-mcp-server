@@ -96,3 +96,41 @@ class TestDimensionedDelta:
         assert by_key["host=web-01"]["pct_change"] == pytest.approx(100.0)
         assert by_key["host=web-01"]["tag"] == "spike"
         assert "host=web-02" not in by_key
+
+
+class TestReuseBreakout:
+    def test_extract_by_clause_single_field(self):
+        from oci_logan_mcp.diff_tool import _extract_by_clause
+        assert _extract_by_clause("* | stats count by 'Host'") == ["Host"]
+
+    def test_extract_by_clause_multiple_fields(self):
+        from oci_logan_mcp.diff_tool import _extract_by_clause
+        assert _extract_by_clause("* | stats count by 'Host', 'Status'") == ["Host", "Status"]
+
+    def test_extract_by_clause_unquoted(self):
+        from oci_logan_mcp.diff_tool import _extract_by_clause
+        assert _extract_by_clause("* | stats count by Host") == ["Host"]
+
+    def test_extract_by_clause_none(self):
+        from oci_logan_mcp.diff_tool import _extract_by_clause
+        assert _extract_by_clause("* | stats count") == []
+
+    @pytest.mark.asyncio
+    async def test_reuses_breakout_from_query_by_clause(self):
+        current = _grouped_result([("web-01", 400)])
+        comparison = _grouped_result([("web-01", 200)])
+        engine = _make_engine([current, comparison])
+        tool = DiffTool(engine)
+
+        result = await tool.run(
+            query="'Log Source' = 'Audit Logs' | stats count by 'host'",
+            current_window={"time_range": "last_1_hour"},
+            comparison_window={"time_range": "last_1_hour"},
+            # dimensions omitted → reuse `by 'host'` from query
+        )
+
+        assert result["metadata"]["dimensions"] == ["host"]
+        # The user-provided stats is preserved; no double-append.
+        composed = engine.execute.call_args_list[0].kwargs["query"]
+        assert composed.count("stats count") == 1
+        assert result["delta"][0]["dimension"] == "host=web-01"

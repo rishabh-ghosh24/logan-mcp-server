@@ -3,10 +3,27 @@
 from __future__ import annotations
 
 import asyncio
+import re
 from typing import Any, Dict, List, Optional
 
 SIGNIFICANCE_THRESHOLD_PCT = 10.0
 TOP_K_SUMMARY = 3
+
+
+_BY_CLAUSE_RE = re.compile(r"\bby\s+(.+?)(?:\s*\|\s*|\s*$)", re.IGNORECASE)
+
+
+def _extract_by_clause(query: str) -> List[str]:
+    """Extract dimension field names from a trailing `by <fields>` clause.
+
+    Handles single/multiple fields, quoted or unquoted. Returns [] if none.
+    Strips surrounding single quotes and whitespace.
+    """
+    m = _BY_CLAUSE_RE.search(query)
+    if not m:
+        return []
+    raw = m.group(1).strip()
+    return [p.strip().strip("'").strip('"') for p in raw.split(",") if p.strip()]
 
 
 class DiffTool:
@@ -22,8 +39,15 @@ class DiffTool:
         comparison_window: Dict[str, str],
         dimensions: Optional[List[str]] = None,
     ) -> Dict[str, Any]:
+        reused_breakout = False
+        if dimensions is None:
+            dimensions = _extract_by_clause(query)
+            reused_breakout = bool(dimensions)
+
         effective_dims = dimensions or []
-        composed = self._compose_query(query, effective_dims)
+        # If we reused the query's own `by` clause, don't re-append stats —
+        # the query already aggregates. Otherwise compose the stats pipe.
+        composed = query if reused_breakout else self._compose_query(query, effective_dims)
 
         current_task = self._engine.execute(query=composed, **current_window)
         comparison_task = self._engine.execute(query=composed, **comparison_window)
@@ -44,6 +68,7 @@ class DiffTool:
                 "query": query,
                 "composed_query": composed,
                 "dimensions": effective_dims,
+                "reused_breakout": reused_breakout,
                 "current_window": current_window,
                 "comparison_window": comparison_window,
             },
