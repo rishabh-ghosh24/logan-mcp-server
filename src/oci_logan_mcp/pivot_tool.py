@@ -29,7 +29,33 @@ class PivotTool:
         max_rows_per_source: int = 100,
         field_name: Optional[str] = None,
     ) -> Dict[str, Any]:
-        raise NotImplementedError
+        field = self._resolve_field(entity_type, field_name)
+
+        if sources is None:
+            sources = await self._discover_sources(field, entity_value, time_range)
+
+        if not sources:
+            return self._empty_result(entity_type, entity_value, field)
+
+        by_source, partial = await self._query_sources(
+            sources, field, entity_value, time_range, max_rows_per_source
+        )
+
+        timeline = self._build_timeline(by_source)
+        total_events = sum(len(s["rows"]) for s in by_source)
+        sources_matched = sum(1 for s in by_source if s["rows"])
+
+        return {
+            "entity": {"type": entity_type, "value": entity_value, "field": field},
+            "by_source": by_source,
+            "cross_source_timeline": timeline,
+            "stats": {"total_events": total_events, "sources_matched": sources_matched},
+            "partial": partial,
+            "metadata": {
+                "time_range": time_range,
+                "sources_queried": [s["source"] for s in by_source],
+            },
+        }
 
     @staticmethod
     def _resolve_field(entity_type: str, field_name: Optional[str]) -> str:
@@ -96,3 +122,27 @@ class PivotTool:
                 break
 
         return by_source, partial
+
+    @staticmethod
+    def _build_timeline(by_source: List[Dict[str, Any]]) -> List[Dict[str, Any]]:
+        events = []
+        for src_result in by_source:
+            source = src_result["source"]
+            for row in src_result["rows"]:
+                ts = row.get("Time") or row.get("time") or row.get("timestamp")
+                events.append({"timestamp": ts, "source": source, **row})
+        events.sort(key=lambda e: (e["timestamp"] is None, e["timestamp"] or ""))
+        return events
+
+    @staticmethod
+    def _empty_result(
+        entity_type: str, entity_value: str, field: str
+    ) -> Dict[str, Any]:
+        return {
+            "entity": {"type": entity_type, "value": entity_value, "field": field},
+            "by_source": [],
+            "cross_source_timeline": [],
+            "stats": {"total_events": 0, "sources_matched": 0},
+            "partial": False,
+            "metadata": {},
+        }

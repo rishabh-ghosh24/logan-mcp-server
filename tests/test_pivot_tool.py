@@ -171,3 +171,114 @@ class TestPerSourceQuerying:
         issued_query = engine.execute.call_args.kwargs["query"]
         assert "'Log Source' = 'Audit Logs'" in issued_query
         assert "'User' = 'alice'" in issued_query
+
+
+class TestTimelineBuilding:
+    def test_timeline_merges_and_sorts_by_timestamp(self):
+        by_source = [
+            {
+                "source": "Audit Logs",
+                "rows": [
+                    {"Time": "2026-04-20T10:00:00Z", "Event": "login"},
+                    {"Time": "2026-04-20T10:02:00Z", "Event": "logout"},
+                ],
+                "truncated": False,
+            },
+            {
+                "source": "Web Logs",
+                "rows": [
+                    {"Time": "2026-04-20T10:01:00Z", "Status": "200"},
+                ],
+                "truncated": False,
+            },
+        ]
+
+        timeline = PivotTool._build_timeline(by_source)
+
+        timestamps = [e["timestamp"] for e in timeline]
+        assert timestamps == sorted(timestamps)
+        assert timeline[0]["source"] == "Audit Logs"
+        assert timeline[1]["source"] == "Web Logs"
+        assert timeline[2]["source"] == "Audit Logs"
+
+    def test_timeline_events_include_source_and_row_fields(self):
+        by_source = [
+            {
+                "source": "Audit Logs",
+                "rows": [{"Time": "2026-04-20T10:00:00Z", "Host": "web-01"}],
+                "truncated": False,
+            }
+        ]
+
+        timeline = PivotTool._build_timeline(by_source)
+
+        assert timeline[0]["source"] == "Audit Logs"
+        assert timeline[0]["timestamp"] == "2026-04-20T10:00:00Z"
+        assert timeline[0]["Host"] == "web-01"
+
+    def test_timeline_rows_without_timestamp_sort_last(self):
+        by_source = [
+            {
+                "source": "S1",
+                "rows": [
+                    {"Time": None, "Event": "no-ts"},
+                    {"Time": "2026-04-20T10:00:00Z", "Event": "has-ts"},
+                ],
+                "truncated": False,
+            }
+        ]
+
+        timeline = PivotTool._build_timeline(by_source)
+
+        assert timeline[0]["Event"] == "has-ts"
+        assert timeline[1]["Event"] == "no-ts"
+
+
+class TestRunIntegration:
+    @pytest.mark.asyncio
+    async def test_run_two_sources_returns_full_result(self):
+        discovery = _discovery_result([("Audit Logs", 10), ("Web Logs", 5)])
+        audit_rows = _source_result(
+            ["Time", "Host", "Event"],
+            [["2026-04-20T10:01:00Z", "web-01", "login"]],
+        )
+        web_rows = _source_result(
+            ["Time", "Host", "Status"],
+            [["2026-04-20T10:00:00Z", "web-01", "200"]],
+        )
+        engine = _make_engine([discovery, audit_rows, web_rows])
+        tool = PivotTool(engine)
+
+        result = await tool.run(
+            entity_type="host",
+            entity_value="web-01",
+            time_range={"time_range": "last_1_hour"},
+        )
+
+        assert result["entity"] == {"type": "host", "value": "web-01", "field": "Host"}
+        assert len(result["by_source"]) == 2
+        assert result["stats"]["total_events"] == 2
+        assert result["stats"]["sources_matched"] == 2
+        assert result["partial"] is False
+        # Timeline is time-sorted: Web log (10:00) before Audit (10:01)
+        assert result["cross_source_timeline"][0]["source"] == "Web Logs"
+        assert result["cross_source_timeline"][1]["source"] == "Audit Logs"
+
+    @pytest.mark.asyncio
+    async def test_run_nonexistent_entity_returns_empty(self):
+        # Discovery finds no sources
+        discovery = _discovery_result([])
+        engine = _make_engine([discovery])
+        tool = PivotTool(engine)
+
+        result = await tool.run(
+            entity_type="host",
+            entity_value="ghost-host",
+            time_range={"time_range": "last_1_hour"},
+        )
+
+        assert result["stats"]["total_events"] == 0
+        assert result["stats"]["sources_matched"] == 0
+        assert result["cross_source_timeline"] == []
+        assert result["by_source"] == []
+        assert result["partial"] is False
