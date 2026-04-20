@@ -433,3 +433,40 @@ class TestPromoteCLIFlag:
             with pytest.raises(SystemExit) as exc_info:
                 cli_main()
             assert exc_info.value.code == 2
+
+
+@pytest.mark.asyncio
+async def test_initialize_core_passes_uuid_session_id_to_audit_logger():
+    """initialize_core must construct AuditLogger with a 32-char hex session_id."""
+    import re
+    with patch.object(OCILogAnalyticsMCPServer, '_setup_handlers'):
+        srv = OCILogAnalyticsMCPServer()
+
+    captured_calls = []
+
+    class CapturingAuditLogger:
+        def __init__(self, **kwargs):
+            captured_calls.append(kwargs)
+
+    mock_secret_store = MagicMock()
+    mock_secret_store.has_secret.return_value = True
+    mock_secret_store.is_valid.return_value = True
+
+    with patch('oci_logan_mcp.server.config_exists', return_value=True), \
+         patch('oci_logan_mcp.server.load_config') as mock_load, \
+         patch('oci_logan_mcp.server.CacheManager'), \
+         patch('oci_logan_mcp.server.QueryLogger'), \
+         patch('oci_logan_mcp.server.OCILogAnalyticsClient'), \
+         patch('oci_logan_mcp.server.ContextManager'), \
+         patch('oci_logan_mcp.server.SecretStore', return_value=mock_secret_store), \
+         patch('oci_logan_mcp.server.AuditLogger', side_effect=lambda **kw: CapturingAuditLogger(**kw)), \
+         patch('oci_logan_mcp.server.MCPHandlers'):
+        mock_load.return_value = MagicMock()
+        await srv.initialize_core()
+
+    assert captured_calls, "AuditLogger was never called"
+    sid = captured_calls[0].get("session_id")
+    assert sid is not None, "session_id not passed to AuditLogger"
+    assert re.fullmatch(r"[0-9a-f]{32}", sid), (
+        f"Expected 32-char hex session_id, got: {sid!r}"
+    )

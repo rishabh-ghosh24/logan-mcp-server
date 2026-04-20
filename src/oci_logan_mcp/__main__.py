@@ -121,7 +121,7 @@ def _reset_secret(user_id: str) -> None:
         try:
             store.set_secret(secret)
             print("Secret reset successfully.")
-            audit = AuditLogger(base_dir / "logs")
+            audit = AuditLogger(base_dir / "logs", session_id="cli-reset-secret")
             audit.log(user=user_id, tool="__secret_management",
                       args={}, outcome="secret_reset")
             return
