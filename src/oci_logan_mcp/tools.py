@@ -207,6 +207,37 @@ def get_tools() -> List[Dict[str, Any]]:
                 "required": ["queries"],
             },
         },
+        {
+            "name": "diff_time_windows",
+            "description": (
+                "Compare the same query across two time windows. Returns per-dimension "
+                "deltas (spike/drop/new/disappeared) plus a one-line summary. Cheapest "
+                "triage primitive: 'what's different about this hour vs. yesterday?'"
+            ),
+            "inputSchema": {
+                "type": "object",
+                "properties": {
+                    "query": {
+                        "type": "string",
+                        "description": "Base Log Analytics query run in both windows",
+                    },
+                    "current_window": {
+                        "type": "object",
+                        "description": "Current window: {time_range: '...'} OR {time_start, time_end} (ISO 8601)",
+                    },
+                    "comparison_window": {
+                        "type": "object",
+                        "description": "Comparison window, same shape as current_window",
+                    },
+                    "dimensions": {
+                        "type": "array",
+                        "items": {"type": "string"},
+                        "description": "Optional. Fields to break out by. If omitted, extracted from the query's 'by' clause; else a scalar total delta.",
+                    },
+                },
+                "required": ["query", "current_window", "comparison_window"],
+            },
+        },
         # Visualization Tools
         {
             "name": "visualize",

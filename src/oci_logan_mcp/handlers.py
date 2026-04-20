@@ -26,6 +26,8 @@ from .confirmation import ConfirmationManager
 from .secret_store import SecretStore
 from .audit import AuditLogger
 from .read_only_guard import ReadOnlyError, raise_if_read_only
+from .diff_tool import DiffTool
+from .budget_tracker import BudgetExceededError
 
 if TYPE_CHECKING:
     from .catalog import CatalogEntry
@@ -90,6 +92,7 @@ class MCPHandlers:
             estimator=self._query_estimator,
             budget_tracker=self._budget_tracker,
         )
+        self.diff_tool = DiffTool(self.query_engine)
         self.validator = QueryValidator(self.schema_manager)
         self.visualization = VisualizationEngine()
         self.saved_search = SavedSearchService(oci_client, cache)
@@ -124,6 +127,7 @@ class MCPHandlers:
             "run_query": self._run_query,
             "run_saved_search": self._run_saved_search,
             "run_batch_queries": self._run_batch_queries,
+            "diff_time_windows": self._diff_time_windows,
             # Visualization
             "visualize": self._visualize,
             # Export
@@ -610,6 +614,27 @@ class MCPHandlers:
             if isinstance(r, dict) and "error" not in r:
                 self.auto_saver.process_successful_query(q_spec["query"], r)
         return [{"type": "text", "text": json.dumps(results, indent=2, default=str)}]
+
+    async def _diff_time_windows(self, args: Dict) -> List[Dict]:
+        """Run diff_time_windows. Catches budget breaches and returns them as a
+        structured payload instead of letting the generic exception path
+        stringify them — A1 relies on this shape."""
+        try:
+            result = await self.diff_tool.run(
+                query=args["query"],
+                current_window=args["current_window"],
+                comparison_window=args["comparison_window"],
+                dimensions=args.get("dimensions"),
+            )
+        except BudgetExceededError as e:
+            payload = {
+                "status": "budget_exceeded",
+                "error": str(e),
+                "partial": None,
+                "budget": self._budget_tracker.snapshot().to_dict(),
+            }
+            return [{"type": "text", "text": json.dumps(payload, indent=2, default=str)}]
+        return [{"type": "text", "text": json.dumps(result, indent=2, default=str)}]
 
     async def _visualize(self, args: Dict) -> List[Dict]:
         """Generate visualization."""

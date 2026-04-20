@@ -1423,3 +1423,50 @@ async def test_export_transcript_tool_returns_path_and_count(handlers, tmp_path)
     assert "event_count" in payload
     assert payload["event_count"] >= 2
     assert os.path.isfile(payload["path"])
+
+
+class TestDiffTimeWindows:
+    @pytest.mark.asyncio
+    async def test_diff_time_windows_routes_through_handler(self, handlers):
+        """diff_time_windows tool routes to DiffTool and returns JSON payload."""
+        # Stub DiffTool.run to avoid calling QueryEngine in unit tests.
+        handlers.diff_tool.run = AsyncMock(return_value={
+            "current": {"total": 100, "rows": []},
+            "comparison": {"total": 100, "rows": []},
+            "delta": [],
+            "summary": "No significant change between windows.",
+            "metadata": {},
+        })
+
+        result = await handlers.handle_tool_call(
+            "diff_time_windows",
+            {
+                "query": "'Log Source' = 'Audit Logs'",
+                "current_window": {"time_range": "last_1_hour"},
+                "comparison_window": {"time_range": "last_1_hour"},
+            },
+        )
+
+        assert result[0]["type"] == "text"
+        payload = json.loads(result[0]["text"])
+        assert payload["summary"] == "No significant change between windows."
+        handlers.diff_tool.run.assert_awaited_once()
+
+    @pytest.mark.asyncio
+    async def test_diff_time_windows_budget_exceeded_structured(self, handlers):
+        """BudgetExceededError surfaces as a structured payload, not plain text."""
+        from oci_logan_mcp.budget_tracker import BudgetExceededError
+        handlers.diff_tool.run = AsyncMock(side_effect=BudgetExceededError("bytes limit hit"))
+
+        result = await handlers.handle_tool_call(
+            "diff_time_windows",
+            {
+                "query": "*",
+                "current_window": {"time_range": "last_1_hour"},
+                "comparison_window": {"time_range": "last_1_hour"},
+            },
+        )
+
+        payload = json.loads(result[0]["text"])
+        assert payload["status"] == "budget_exceeded"
+        assert "bytes limit hit" in payload["error"]
