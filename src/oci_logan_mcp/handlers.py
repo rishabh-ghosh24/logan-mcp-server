@@ -231,8 +231,26 @@ class MCPHandlers:
             secret = arguments.get("confirmation_secret", "")
 
             if not token:
+                summary_extras = None
+                if name == "run_query" and self._query_estimator is not None:
+                    try:
+                        est = await self._query_estimator.estimate(
+                            query=arguments.get("query", ""),
+                            time_range=arguments.get("time_range"),
+                            time_start=arguments.get("time_start"),
+                            time_end=arguments.get("time_end"),
+                            compartment_id=arguments.get("compartment_id"),
+                            include_subcompartments=arguments.get("include_subcompartments", True),
+                        )
+                        summary_extras = {
+                            "estimated_bytes": est.estimated_bytes,
+                            "estimated_cost_usd": est.estimated_cost_usd,
+                            "estimate_confidence": est.confidence,
+                        }
+                    except Exception:
+                        summary_extras = None
                 confirmation = self.confirmation_manager.request_confirmation(
-                    name, arguments
+                    name, arguments, summary_extras=summary_extras,
                 )
                 if self.audit_logger:
                     self.audit_logger.log(

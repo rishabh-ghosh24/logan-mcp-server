@@ -34,6 +34,10 @@ _SUMMARY_KEYS: Dict[str, list] = {
     "update_alert": ["alert_id", "display_name", "severity", "query"],
     "update_saved_search": ["saved_search_id", "display_name", "query"],
     "add_dashboard_tile": ["dashboard_id", "title", "query", "visualization_type"],
+    "run_query": [
+        "query", "time_range", "time_start", "time_end",
+        "estimated_bytes", "estimated_cost_usd", "estimate_confidence",
+    ],
 }
 
 
@@ -74,11 +78,18 @@ class ConfirmationManager:
         return self.availability_status() == "available"
 
     def request_confirmation(
-        self, tool_name: str, arguments: Dict[str, Any]
+        self,
+        tool_name: str,
+        arguments: Dict[str, Any],
+        summary_extras: Dict[str, Any] = None,
     ) -> Dict[str, Any]:
         """Generate a confirmation token bound to this exact request.
 
         Returns a human-readable summary, the token, and instructions.
+
+        ``summary_extras`` are displayed in the human-readable summary but
+        excluded from the fingerprint, so the second call doesn't need to
+        repeat them to validate.
         """
         self._cleanup_expired()
 
@@ -88,7 +99,8 @@ class ConfirmationManager:
             "created_at": time.time(),
         }
 
-        summary = self._build_summary(tool_name, arguments)
+        summary_args = {**arguments, **(summary_extras or {})}
+        summary = self._build_summary(tool_name, summary_args)
 
         logger.info(
             "Confirmation requested for %s (token=%s...)", tool_name, token[:8]
@@ -154,7 +166,7 @@ class ConfirmationManager:
         clean = {
             k: v
             for k, v in sorted(arguments.items())
-            if k not in ("confirmation_token", "confirmation_secret")
+            if k not in ("confirmation_token", "confirmation_secret", "confirmation_secret_confirm")
         }
         canonical = json.dumps({"tool": tool_name, "args": clean}, sort_keys=True)
         return hashlib.sha256(canonical.encode()).hexdigest()
