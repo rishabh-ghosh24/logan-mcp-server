@@ -55,3 +55,38 @@ def sanitize_pattern(text: str) -> Optional[str]:
     if looks_sensitive(candidate):
         return None
     return candidate
+
+
+_SECRETISH_KEYS = frozenset({
+    "password", "secret", "token", "bearer", "authorization",
+    "api_key", "apikey", "auth",
+    "confirmation_secret", "confirmation_secret_confirm", "confirmation_token",
+})
+
+
+def redact_dict(obj):
+    """Recursively redact PII and secrets from a dict/list structure.
+
+    - Keys matching _SECRETISH_KEYS have their values replaced with '<redacted>'.
+    - String values are passed through sanitize_query_text to mask OCIDs, IPs,
+      emails, UUIDs, and long hex ids.
+    - Non-string scalars are returned unchanged.
+    - Tuples are converted to lists.
+    """
+    if isinstance(obj, dict):
+        result = {}
+        for k, v in obj.items():
+            if isinstance(k, str) and k.lower() in _SECRETISH_KEYS:
+                result[k] = "<redacted>"
+            else:
+                result[k] = redact_dict(v)
+        return result
+    elif isinstance(obj, (list, tuple)):
+        return [redact_dict(item) for item in obj]
+    elif isinstance(obj, str):
+        sanitized = sanitize_query_text(obj)
+        # sanitize_query_text returns None when the text contains a secret keyword
+        # (e.g. "password=x"). In that case fall back to full redaction.
+        return sanitized if sanitized is not None else "<redacted>"
+    else:
+        return obj
