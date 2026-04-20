@@ -65,7 +65,26 @@ class MCPHandlers:
 
         # Initialize services
         self.schema_manager = SchemaManager(oci_client, cache)
-        self.query_engine = QueryEngine(oci_client, cache, query_logger)
+
+        from .query_estimator import QueryEstimator
+        from .budget_tracker import BudgetTracker, BudgetLimits
+        import uuid
+
+        self._query_estimator = QueryEstimator(oci_client, settings)
+        self._budget_tracker = BudgetTracker(
+            session_id=uuid.uuid4().hex,
+            limits=BudgetLimits(
+                enabled=settings.budget.enabled,
+                max_queries_per_session=settings.budget.max_queries_per_session,
+                max_bytes_per_session=settings.budget.max_bytes_per_session,
+                max_cost_usd_per_session=settings.budget.max_cost_usd_per_session,
+            ),
+        )
+        self.query_engine = QueryEngine(
+            oci_client, cache, query_logger,
+            estimator=self._query_estimator,
+            budget_tracker=self._budget_tracker,
+        )
         self.validator = QueryValidator(self.schema_manager)
         self.visualization = VisualizationEngine()
         self.saved_search = SavedSearchService(oci_client, cache)
@@ -138,6 +157,9 @@ class MCPHandlers:
             # Notifications
             "send_to_slack": self._send_to_slack,
             "send_to_telegram": self._send_to_telegram,
+            # Estimation + Budget
+            "explain_query": self._explain_query,
+            "get_session_budget": self._get_session_budget,
         }
 
         handler = handlers.get(name)
@@ -1094,6 +1116,40 @@ class MCPHandlers:
     async def _delete_dashboard(self, args: Dict) -> List[Dict]:
         result = await self.dashboard_service.delete_dashboard(args["dashboard_id"])
         return [{"type": "text", "text": json.dumps(result, indent=2)}]
+
+    # ── Estimation + Budget handlers ───────────────────────────────────
+
+    async def _explain_query(self, args: Dict) -> List[Dict]:
+        if self.query_engine.estimator is None:
+            return [{"type": "text", "text": json.dumps({
+                "error": "Estimator is not configured for this server instance.",
+            })}]
+        est = await self.query_engine.estimator.estimate(
+            query=args["query"],
+            time_range=args.get("time_range"),
+            time_start=args.get("time_start"),
+            time_end=args.get("time_end"),
+        )
+        return [{"type": "text", "text": json.dumps(est.to_dict(), indent=2)}]
+
+    async def _get_session_budget(self, args: Dict) -> List[Dict]:
+        tracker = self.query_engine.budget_tracker
+        if tracker is None:
+            return [{"type": "text", "text": json.dumps({
+                "enabled": False,
+                "message": "Budget tracking is disabled on this server.",
+            })}]
+        used = tracker.snapshot().to_dict()
+        remaining = tracker.remaining()
+        limits = {
+            "enabled": tracker.limits.enabled,
+            "max_queries_per_session": tracker.limits.max_queries_per_session,
+            "max_bytes_per_session": tracker.limits.max_bytes_per_session,
+            "max_cost_usd_per_session": tracker.limits.max_cost_usd_per_session,
+        }
+        return [{"type": "text", "text": json.dumps(
+            {"used": used, "remaining": remaining, "limits": limits}, indent=2
+        )}]
 
     # ── Notification handlers ──────────────────────────────────────────
 

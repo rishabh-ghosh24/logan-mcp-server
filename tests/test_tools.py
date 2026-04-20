@@ -50,3 +50,12 @@ def test_setup_confirmation_secret_tool_schema():
     assert "confirmation_secret_confirm" in props
     assert "confirmation_secret" in required
     assert "confirmation_secret_confirm" in required
+
+
+def test_run_query_schema_carries_budget_override_fields():
+    from oci_logan_mcp.tools import get_tools
+    spec = next(t for t in get_tools() if t["name"] == "run_query")
+    props = spec["inputSchema"]["properties"]
+    assert "budget_override" in props
+    assert "confirmation_token" in props
+    assert "confirmation_secret" in props

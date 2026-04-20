@@ -1311,5 +1311,35 @@ async def test_read_only_disabled_does_not_block(handlers, settings, monkeypatch
     monkeypatch.setattr(handlers, "_delete_alert", fake_delete_alert)
     # Bypass confirmation gate for this test
     monkeypatch.setattr(handlers.confirmation_manager, "is_guarded", lambda name: False)
+    monkeypatch.setattr(handlers.confirmation_manager, "is_guarded_call", lambda name, args: False)
     result = await handlers.handle_tool_call("delete_alert", {})
     assert result == [{"type": "text", "text": "deleted"}]
+
+
+# ---------------------------------------------------------------------------
+# explain_query and get_session_budget tests
+# ---------------------------------------------------------------------------
+
+@pytest.mark.asyncio
+async def test_explain_query_returns_estimate(handlers):
+    result = await handlers.handle_tool_call(
+        "explain_query",
+        {"query": "'Log Source' = 'x'", "time_range": "last_1_hour"},
+    )
+    payload = json.loads(result[0]["text"])
+    assert "estimated_bytes" in payload
+    assert "estimated_cost_usd" in payload
+    assert "estimated_eta_seconds" in payload
+    assert payload["confidence"] in {"low", "medium", "high"}
+
+
+@pytest.mark.asyncio
+async def test_get_session_budget_returns_usage(handlers):
+    result = await handlers.handle_tool_call("get_session_budget", {})
+    payload = json.loads(result[0]["text"])
+    assert "used" in payload
+    assert "remaining" in payload
+    assert "limits" in payload
+    for key in ("queries", "bytes", "cost_usd"):
+        assert key in payload["used"]
+        assert key in payload["remaining"]

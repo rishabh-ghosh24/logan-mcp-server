@@ -788,6 +788,29 @@ def get_tools() -> List[Dict[str, Any]]:
                 },
             },
         },
+        # ── Estimation + Budget tools ──────────────────────────────────────
+        {
+            "name": "explain_query",
+            "description": "Estimate cost, bytes scanned, and runtime for a query before running it. Returns estimated_bytes, estimated_cost_usd, estimated_eta_seconds, confidence, and a human-readable rationale.",
+            "inputSchema": {
+                "type": "object",
+                "properties": {
+                    "query": {"type": "string", "description": "The Log Analytics query."},
+                    "time_range": {
+                        "type": "string",
+                        "enum": ["last_15_min", "last_1_hour", "last_24_hours", "last_7_days", "last_30_days"],
+                    },
+                    "time_start": {"type": "string"},
+                    "time_end": {"type": "string"},
+                },
+                "required": ["query"],
+            },
+        },
+        {
+            "name": "get_session_budget",
+            "description": "Return the current session's query budget usage and remaining allowance.",
+            "inputSchema": {"type": "object", "properties": {}},
+        },
         # ── Notification tools ─────────────────────────────────────────
         {
             "name": "send_to_slack",
