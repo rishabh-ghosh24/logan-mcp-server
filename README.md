@@ -417,6 +417,8 @@ Flags:
 
 > **Note:** `session_id` is process-scoped — one id per server process. Long-lived servers aggregate many logical investigations under one id. Per-investigation session boundaries are a future enhancement.
 
+> **P0 limitation:** The `--promote-and-exit` path does not emit audit entries; `export_transcript` against a promotion run returns `event_count: 0` by design. Full promotion-run audit coverage is planned for P1.
+
 ### Fail-Closed Design
 
 - **No secret set** → guarded tools return `confirmation_unavailable` and point the user to `setup_confirmation_secret`
