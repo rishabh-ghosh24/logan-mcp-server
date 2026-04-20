@@ -216,7 +216,10 @@ class OCILogAnalyticsMCPServer:
         self.secret_store = SecretStore(secret_path)
 
         # Initialize shared audit logger
-        self.audit_logger = AuditLogger(log_dir=base_dir / "logs")
+        import uuid
+        session_id = uuid.uuid4().hex
+        self.audit_logger = AuditLogger(log_dir=base_dir / "logs", session_id=session_id)
+        self._session_id = session_id
 
         # Deprecation warning for old env var
         if os.environ.get("OCI_LA_CONFIRMATION_SECRET"):
@@ -320,7 +323,7 @@ class OCILogAnalyticsMCPServer:
         logger.info("Starting MCP server on stdio...")
         async with stdio_server() as (read_stream, write_stream):
             schema_task = None
-            if self.oci_client and ENABLE_STARTUP_SCHEMA_REFRESH:
+            if self.oci_client and ENABLE_STARTUP_SCHEMA_REFRESH and not (self.settings and self.settings.read_only):
                 schema_task = asyncio.create_task(self._refresh_schema_background())
             elif self.oci_client:
                 logger.info(

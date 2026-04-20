@@ -25,6 +25,7 @@ from .notification_service import NotificationService
 from .confirmation import ConfirmationManager
 from .secret_store import SecretStore
 from .audit import AuditLogger
+from .read_only_guard import ReadOnlyError, raise_if_read_only
 
 if TYPE_CHECKING:
     from .catalog import CatalogEntry
@@ -64,7 +65,31 @@ class MCPHandlers:
 
         # Initialize services
         self.schema_manager = SchemaManager(oci_client, cache)
-        self.query_engine = QueryEngine(oci_client, cache, query_logger)
+
+        from .query_estimator import QueryEstimator
+        from .budget_tracker import BudgetTracker, BudgetLimits
+        import uuid
+
+        self._query_estimator = QueryEstimator(oci_client, settings)
+        # Share the AuditLogger's session_id with the BudgetTracker so a
+        # debugger can correlate budget state with audit entries by a single id.
+        session_id = (
+            audit_logger.session_id if audit_logger is not None else uuid.uuid4().hex
+        )
+        self._budget_tracker = BudgetTracker(
+            session_id=session_id,
+            limits=BudgetLimits(
+                enabled=settings.budget.enabled,
+                max_queries_per_session=settings.budget.max_queries_per_session,
+                max_bytes_per_session=settings.budget.max_bytes_per_session,
+                max_cost_usd_per_session=settings.budget.max_cost_usd_per_session,
+            ),
+        )
+        self.query_engine = QueryEngine(
+            oci_client, cache, query_logger,
+            estimator=self._query_estimator,
+            budget_tracker=self._budget_tracker,
+        )
         self.validator = QueryValidator(self.schema_manager)
         self.visualization = VisualizationEngine()
         self.saved_search = SavedSearchService(oci_client, cache)
@@ -137,6 +162,11 @@ class MCPHandlers:
             # Notifications
             "send_to_slack": self._send_to_slack,
             "send_to_telegram": self._send_to_telegram,
+            # Estimation + Budget
+            "explain_query": self._explain_query,
+            "get_session_budget": self._get_session_budget,
+            # Transcript export
+            "export_transcript": self._export_transcript,
         }
 
         handler = handlers.get(name)
@@ -145,8 +175,42 @@ class MCPHandlers:
 
         user_id = self.user_store.user_id
 
+        # --- Invoked event (fires before every gate) ---
+        if self.audit_logger:
+            clean_args_for_invoked = {
+                k: v for k, v in arguments.items()
+                if k not in (
+                    "confirmation_token",
+                    "confirmation_secret",
+                    "confirmation_secret_confirm",
+                )
+            }
+            try:
+                self.audit_logger.log(
+                    user=user_id, tool=name, args=clean_args_for_invoked,
+                    outcome="invoked",
+                )
+            except Exception as e:
+                logger.warning("invoked audit entry failed: %s", e)
+
+        # --- Read-only guard (runs BEFORE confirmation gate) ---
+        try:
+            raise_if_read_only(name, read_only=self.settings.read_only)
+        except ReadOnlyError as e:
+            if self.audit_logger:
+                self.audit_logger.log(
+                    user=user_id, tool=name, args=arguments,
+                    outcome="read_only_blocked",
+                )
+            return [{"type": "text", "text": json.dumps({
+                "status": "read_only_blocked",
+                "tool": name,
+                "error": str(e),
+            }, indent=2)}]
+
         # --- Confirmation gate for guarded operations ---
-        if self.confirmation_manager.is_guarded(name):
+        guarded_call = self.confirmation_manager.is_guarded_call(name, arguments)
+        if guarded_call:
             clean_args = {
                 k: v for k, v in arguments.items()
                 if k not in (
@@ -172,8 +236,26 @@ class MCPHandlers:
             secret = arguments.get("confirmation_secret", "")
 
             if not token:
+                summary_extras = None
+                if name == "run_query" and self._query_estimator is not None:
+                    try:
+                        est = await self._query_estimator.estimate(
+                            query=arguments.get("query", ""),
+                            time_range=arguments.get("time_range"),
+                            time_start=arguments.get("time_start"),
+                            time_end=arguments.get("time_end"),
+                            compartment_id=arguments.get("compartment_id"),
+                            include_subcompartments=arguments.get("include_subcompartments", True),
+                        )
+                        summary_extras = {
+                            "estimated_bytes": est.estimated_bytes,
+                            "estimated_cost_usd": est.estimated_cost_usd,
+                            "estimate_confidence": est.confidence,
+                        }
+                    except Exception:
+                        summary_extras = None
                 confirmation = self.confirmation_manager.request_confirmation(
-                    name, arguments
+                    name, arguments, summary_extras=summary_extras,
                 )
                 if self.audit_logger:
                     self.audit_logger.log(
@@ -207,7 +289,7 @@ class MCPHandlers:
 
         try:
             result = await handler(arguments)
-            if self.confirmation_manager.is_guarded(name) and self.audit_logger:
+            if guarded_call and self.audit_logger:
                 summary = result[0]["text"][:200] if result else ""
                 self.audit_logger.log(
                     user=user_id, tool=name, args=arguments,
@@ -216,7 +298,7 @@ class MCPHandlers:
             return result
         except Exception as e:
             logger.exception(f"Error in tool {name}")
-            if self.confirmation_manager.is_guarded(name) and self.audit_logger:
+            if guarded_call and self.audit_logger:
                 self.audit_logger.log(
                     user=user_id, tool=name, args=arguments,
                     outcome="execution_failed", error=str(e),
@@ -290,8 +372,9 @@ class MCPHandlers:
         sources = await self.schema_manager.get_log_sources(
             compartment_id=args.get("compartment_id")
         )
-        # Auto-capture to tenancy context
-        self.context_manager.update_log_sources(sources)
+        # Auto-capture to tenancy context (suppressed in read-only mode)
+        if not self.settings.read_only:
+            self.context_manager.update_log_sources(sources)
         return [{"type": "text", "text": json.dumps(sources, indent=2)}]
 
     async def _list_fields(self, args: Dict) -> List[Dict]:
@@ -307,8 +390,9 @@ class MCPHandlers:
             }
             for f in fields
         ]
-        # Auto-capture to tenancy context
-        self.context_manager.update_confirmed_fields(field_dicts)
+        # Auto-capture to tenancy context (suppressed in read-only mode)
+        if not self.settings.read_only:
+            self.context_manager.update_confirmed_fields(field_dicts)
         return [{"type": "text", "text": json.dumps(field_dicts, indent=2)}]
 
     async def _list_entities(self, args: Dict) -> List[Dict]:
@@ -376,6 +460,7 @@ class MCPHandlers:
     async def _run_query(self, args: Dict) -> List[Dict]:
         """Execute a query."""
         compartment_id, include_subs = self._resolve_scope(args)
+        budget_override = bool(args.get("budget_override", False))
 
         logger.info(f"run_query: include_subcompartments={include_subs}, compartment_id={compartment_id}, args={args}")
 
@@ -388,6 +473,7 @@ class MCPHandlers:
                 max_results=args.get("max_results"),
                 include_subcompartments=include_subs,
                 compartment_id=compartment_id,
+                budget_override=budget_override,
             )
         except Exception:
             # Track failure before re-raising
@@ -623,8 +709,9 @@ class MCPHandlers:
     async def _list_compartments(self, args: Dict) -> List[Dict]:
         """List compartments."""
         compartments = await self.oci_client.list_compartments()
-        # Auto-capture to tenancy context
-        self.context_manager.update_compartments(compartments)
+        # Auto-capture to tenancy context (suppressed in read-only mode)
+        if not self.settings.read_only:
+            self.context_manager.update_compartments(compartments)
         return [{"type": "text", "text": json.dumps(compartments, indent=2)}]
 
     async def _test_connection(self, args: Dict) -> List[Dict]:
@@ -1073,6 +1160,40 @@ class MCPHandlers:
         result = await self.dashboard_service.delete_dashboard(args["dashboard_id"])
         return [{"type": "text", "text": json.dumps(result, indent=2)}]
 
+    # ── Estimation + Budget handlers ───────────────────────────────────
+
+    async def _explain_query(self, args: Dict) -> List[Dict]:
+        if self.query_engine.estimator is None:
+            return [{"type": "text", "text": json.dumps({
+                "error": "Estimator is not configured for this server instance.",
+            })}]
+        est = await self.query_engine.estimator.estimate(
+            query=args["query"],
+            time_range=args.get("time_range"),
+            time_start=args.get("time_start"),
+            time_end=args.get("time_end"),
+        )
+        return [{"type": "text", "text": json.dumps(est.to_dict(), indent=2)}]
+
+    async def _get_session_budget(self, args: Dict) -> List[Dict]:
+        tracker = self.query_engine.budget_tracker
+        if tracker is None:
+            return [{"type": "text", "text": json.dumps({
+                "enabled": False,
+                "message": "Budget tracking is disabled on this server.",
+            })}]
+        used = tracker.snapshot().to_dict()
+        remaining = tracker.remaining()
+        limits = {
+            "enabled": tracker.limits.enabled,
+            "max_queries_per_session": tracker.limits.max_queries_per_session,
+            "max_bytes_per_session": tracker.limits.max_bytes_per_session,
+            "max_cost_usd_per_session": tracker.limits.max_cost_usd_per_session,
+        }
+        return [{"type": "text", "text": json.dumps(
+            {"used": used, "remaining": remaining, "limits": limits}, indent=2
+        )}]
+
     # ── Notification handlers ──────────────────────────────────────────
 
     async def _send_to_slack(self, args: Dict) -> List[Dict]:
@@ -1102,4 +1223,25 @@ class MCPHandlers:
             format_type=args.get("format", "summary"),
             chat_id=args.get("chat_id"),
         )
+        return [{"type": "text", "text": json.dumps(result, indent=2)}]
+
+    async def _export_transcript(self, args: Dict) -> List[Dict]:
+        if not self.audit_logger:
+            return [{"type": "text", "text": json.dumps({
+                "error": "Audit logger unavailable; transcript export disabled.",
+            })}]
+        sid = args.get("session_id", "current")
+        if sid == "current":
+            sid = self.audit_logger.session_id
+        out_dir = self.settings.transcript_dir
+        try:
+            result = self.audit_logger.export_transcript(
+                session_id=sid,
+                out_dir=out_dir,
+                include_results=bool(args.get("include_results", True)),
+                redact=bool(args.get("redact", False)),
+            )
+        except Exception as e:
+            logger.exception("export_transcript failed")
+            return [{"type": "text", "text": json.dumps({"error": str(e)})}]
         return [{"type": "text", "text": json.dumps(result, indent=2)}]

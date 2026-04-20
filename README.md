@@ -267,7 +267,67 @@ export OCI_LA_AUTH_TYPE=instance_principal
 oci-logan-mcp --setup
 ```
 
+## Cost + ETA estimation
+
+Every `run_query` response now carries flat estimate fields at the top level: `estimated_bytes`, `estimated_rows`, `estimated_cost_usd`, `estimated_eta_seconds`, `estimate_confidence`, `estimate_rationale`.
+
+Use `explain_query` to get the full estimate **without** running the query. Cache hits replay the last known estimate for the same query/time range — no additional OCI calls.
+
+## Session query budget
+
+Per-session caps prevent runaway agent loops:
+
+| Limit | Default |
+|---|---|
+| `max_queries_per_session` | 100 |
+| `max_bytes_per_session` | 10 GiB |
+| `max_cost_usd_per_session` | $5.00 |
+
+Call `get_session_budget` any time to see usage and remaining allowance.
+
+**Scope of enforcement (P0):** budget is enforced on `run_query` only. Cache hits are **free**. `run_batch_queries` is **unbudgeted** in P0 (concurrent execution would race under per-call checks; budgeting for batch is tracked for P1).
+
+> **P0 limitation — source-less queries:** queries without a `'Log Source'` filter cannot be estimated (no source to probe). They return `estimate_confidence="low"` and `estimated_bytes=0`, so the bytes and cost limits are not checked. The **query-count limit still applies**. Full-scan cost estimation requires an OCI "explain" API that does not yet exist.
+
+To exceed a budget in a specific call, pass `budget_override=true` to `run_query`. This is a guarded follow-up pattern: the first call returns a confirmation request, and a second call with `confirmation_token` plus `confirmation_secret` executes. Override does not exempt usage recording.
+
+Configure in `~/.oci-logan-mcp/config.yaml`:
+
+```yaml
+budget:
+  enabled: true
+  max_queries_per_session: 100
+  max_bytes_per_session: 10737418240
+  max_cost_usd_per_session: 5.00
+```
+
+Disable entirely with `budget.enabled: false`.
+
 ## Destructive Operation Safety
+
+### Read-only mode
+
+Start the server without any ability to mutate OCI resources or external systems:
+
+```bash
+oci-logan-mcp --read-only
+# or
+OCI_LOGAN_MCP_READ_ONLY=1 oci-logan-mcp
+```
+
+In read-only mode the following tools return a `read_only_blocked` error instead
+of executing:
+
+- `create_alert`, `update_alert`, `delete_alert`
+- `create_saved_search`, `update_saved_search`, `delete_saved_search`
+- `create_dashboard`, `add_dashboard_tile`, `delete_dashboard`
+- `send_to_slack`, `send_to_telegram`
+- `set_compartment`, `set_namespace`, `update_tenancy_context`
+- `save_learned_query`, `remember_preference`, `setup_confirmation_secret`
+
+All query, validation, listing, visualization and `export_results` tools remain
+available. Use this mode when giving an untrusted agent, a newcomer, or an
+automated process access to the server.
 
 All delete and update operations on OCI resources (alerts, dashboards, saved searches) are protected by **two-factor server-side confirmation**. This prevents any MCP client — Claude, Codex, or others — from accidentally modifying or destroying resources.
 
@@ -340,6 +400,26 @@ Each entry records:
 - **outcome** — `confirmed`, `confirmation_failed`, `token_expired`, `confirmation_unavailable`, etc.
 
 This gives administrators a full history of which users attempted or executed destructive operations.
+
+Every tool call — including read-only tools — emits an `invoked` entry before any guard runs, giving a complete call-by-call trace.
+
+### Transcript export
+
+Every tool call is recorded in the audit log with a process-scoped `session_id`. Export the current session's trail as JSONL:
+
+```
+export_transcript(session_id="current")
+```
+
+Output file lands under `~/.oci-logan-mcp/transcripts/` by default (override via `transcript_dir` in config).
+
+Flags:
+- `include_results=false` — omit `result_summary` fields (useful when sharing).
+- `redact=true` — apply built-in PII/secret masking before writing.
+
+> **Note:** `session_id` is process-scoped — one id per server process. Long-lived servers aggregate many logical investigations under one id. Per-investigation session boundaries are a future enhancement.
+
+> **P0 limitation:** The `--promote-and-exit` path does not emit audit entries; `export_transcript` against a promotion run returns `event_count: 0` by design. Full promotion-run audit coverage is planned for P1.
 
 ### Fail-Closed Design
 

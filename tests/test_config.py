@@ -146,3 +146,92 @@ class TestConfirmationConfig:
         settings = load_config(config_file)
         assert settings.guardrails.token_expiry_seconds == 120
 
+
+def test_settings_default_read_only_is_false():
+    from oci_logan_mcp.config import Settings
+    assert Settings().read_only is False
+
+
+def test_env_override_read_only_true(monkeypatch, tmp_path):
+    from oci_logan_mcp.config import load_config
+    monkeypatch.setenv("OCI_LOGAN_MCP_READ_ONLY", "1")
+    settings = load_config(config_path=tmp_path / "no.yaml")
+    assert settings.read_only is True
+
+
+@pytest.mark.parametrize("value,expected", [
+    ("1", True), ("true", True), ("TRUE", True), ("yes", True), ("on", True),
+    ("0", False), ("false", False), ("", False), ("no", False),
+])
+def test_env_override_read_only_parsing(monkeypatch, tmp_path, value, expected):
+    from oci_logan_mcp.config import load_config
+    monkeypatch.setenv("OCI_LOGAN_MCP_READ_ONLY", value)
+    settings = load_config(config_path=tmp_path / "no.yaml")
+    assert settings.read_only is expected
+
+
+def test_env_override_read_only_unrecognized_warns(monkeypatch, tmp_path, caplog):
+    from oci_logan_mcp.config import load_config
+    monkeypatch.setenv("OCI_LOGAN_MCP_READ_ONLY", "yez")
+    with caplog.at_level("WARNING"):
+        settings = load_config(config_path=tmp_path / "no.yaml")
+    assert settings.read_only is False  # default preserved
+    assert any("OCI_LOGAN_MCP_READ_ONLY" in rec.message for rec in caplog.records)
+
+
+def test_settings_has_cost_config_defaults():
+    from oci_logan_mcp.config import Settings
+    s = Settings()
+    assert s.cost.cost_per_gb_usd == 0.05
+    assert s.cost.eta_throughput_mbps == 50.0
+    assert s.cost.eta_high_threshold_seconds == 60.0
+    assert s.cost.probe_ttl_seconds == 900
+    assert 0 < s.cost.filter_selectivity_discount <= 1
+
+
+def test_settings_has_budget_config_defaults():
+    from oci_logan_mcp.config import Settings
+    s = Settings()
+    assert s.budget.enabled is True
+    assert s.budget.max_queries_per_session == 100
+    assert s.budget.max_bytes_per_session == 10 * 1024**3
+    assert s.budget.max_cost_usd_per_session == 5.00
+
+
+def test_cost_and_budget_loaded_from_yaml(tmp_path):
+    import yaml
+    from oci_logan_mcp.config import load_config
+    cfg_path = tmp_path / "config.yaml"
+    cfg_path.write_text(yaml.safe_dump({
+        "cost": {"cost_per_gb_usd": 0.10, "probe_ttl_seconds": 120},
+        "budget": {"enabled": False, "max_queries_per_session": 5},
+    }))
+    s = load_config(config_path=cfg_path)
+    assert s.cost.cost_per_gb_usd == 0.10
+    assert s.cost.probe_ttl_seconds == 120
+    assert s.budget.enabled is False
+    assert s.budget.max_queries_per_session == 5
+
+
+def test_cost_budget_round_trips_through_save_and_load(tmp_path):
+    from oci_logan_mcp.config import Settings, save_config, load_config
+    cfg_path = tmp_path / "config.yaml"
+    s = Settings()
+    s.cost.cost_per_gb_usd = 0.12
+    s.budget.max_queries_per_session = 50
+    save_config(s, config_path=cfg_path)
+    loaded = load_config(config_path=cfg_path)
+    assert loaded.cost.cost_per_gb_usd == 0.12
+    assert loaded.budget.max_queries_per_session == 50
+
+
+
+def test_transcript_dir_round_trips_through_save_and_load(tmp_path):
+    from oci_logan_mcp.config import Settings, save_config, load_config
+    cfg_path = tmp_path / "config.yaml"
+    custom = tmp_path / "my-transcripts"
+    s = Settings()
+    s.transcript_dir = custom
+    save_config(s, config_path=cfg_path)
+    loaded = load_config(config_path=cfg_path)
+    assert loaded.transcript_dir == custom

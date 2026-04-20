@@ -111,58 +111,59 @@ pivot_on_entity(
 
 ---
 
-## J1 — Ingestion health (with stoppage detection)
+## J1 — Ingestion health (freshness / stoppage detection)
 
 ### Purpose
-Answer the 2am question: "Is log ingestion even working right now?" Emphasis on **stoppage and drop detection**, not just descriptive stats.
+Answer the 2am question: "Is log ingestion even working right now?" P0 focuses on **freshness and stoppage detection** against the last record seen per source — no persistent baseline store, no background sampler. This keeps J1 small and trustworthy for a solo-dev P0; a full baseline-backed DROP/LAG subsystem is a P1 expansion.
 
-### Tool interface
+### Tool interface (P0)
 ```
 ingestion_health(
-  compartment_id: str | None = None,  # default: current context
+  compartment_id: str | None = None,      # default: current context
+  sources: list[str] | None = None,       # default: all discovered sources
   severity_filter: "all" | "warn" | "critical" = "warn",
 ) -> {
-  summary: {sources_healthy, sources_warn, sources_critical},
-  baseline_age_hours: float,
+  summary: {sources_healthy, sources_stopped, sources_unknown},
+  checked_at: datetime,
   findings: list[{
     source: str,
-    status: "healthy" | "stopped" | "dropped" | "lag",
-    last_log_ts: datetime,
-    baseline_hourly_volume: int,
-    current_hourly_volume: int,
+    status: "healthy" | "stopped" | "unknown",
+    last_log_ts: datetime | None,
+    age_seconds: int | None,
     severity: "info" | "warn" | "critical",
-    message: str,  # human-readable diagnosis
+    message: str,                         # human-readable diagnosis
   }],
 }
 ```
 
-### Baseline store
-- Persist per-source baselines: `(source, compartment) -> {avg_hourly_bytes, avg_hourly_count, stddev, updated_at}`.
-- Storage: SQLite or simple JSON store under `config.state_dir`.
-- Refreshed via a background sampler (or on-demand at first call with warning `baseline_age_hours=fresh`).
+### Detection rule (P0)
+- **STOPPED** — `last_log_ts` older than `stoppage_threshold_seconds` (config, default 600). Severity `critical`.
+- **HEALTHY** — `last_log_ts` within the threshold. Severity `info`.
+- **UNKNOWN** — no records found within the freshness probe window. Severity `warn`.
 
-### Detection rules
-- **STOPPED** — last_log_ts > max(10 min, 5× median_gap) old.
-- **DROP** — current hourly count < 10% of baseline_hourly_count.
-- **LAG** — ingestion timestamp lag vs. event timestamp > threshold.
+No DROP/LAG classifications in P0 — those require a baseline reference.
 
 ### Files
 - Create: `src/oci_logan_mcp/ingestion_health.py`.
-- Create: `src/oci_logan_mcp/baseline_store.py` — persistent baseline.
 - Modify: `src/oci_logan_mcp/tools.py`.
-- Modify: `src/oci_logan_mcp/config.py` — add `baseline_store_path`, thresholds.
+- Modify: `src/oci_logan_mcp/config.py` — add `stoppage_threshold_seconds` (default 600), `freshness_probe_window` (default `last_1_hour`).
 - Create: `tests/test_ingestion_health.py`.
-- Create: `tests/test_baseline_store.py`.
 
-### Test outline
-1. Test: source with recent data and healthy volume → `status=healthy`.
-2. Test: source last seen 3h ago with baseline 2min gap → `status=stopped, severity=critical`.
-3. Test: source at 5% of baseline volume → `status=dropped, severity=warn`.
-4. Test: no baseline → status=info with `"baseline not yet established"`.
-5. Test: baseline store refreshes when stale.
+### Test outline (P0)
+1. Test: source with a record in the last minute → `status=healthy`.
+2. Test: source last seen 30 minutes ago → `status=stopped, severity=critical`.
+3. Test: source with no records in probe window → `status=unknown, severity=warn`.
+4. Test: `sources` filter limits the probe set.
+5. Test: `severity_filter="critical"` omits healthy and unknown findings.
 
 ### Dependencies
-- Upgrades H1's estimator (H1 can read `baseline_store` for better accuracy once J1 lands).
+- None. Pure query against `query_engine`.
+
+### Deferred to P1
+- Persistent per-source baseline store (bytes/hour, count/hour, stddev) with background refresh.
+- DROP classification (current volume vs. baseline).
+- LAG classification (ingestion-time vs. event-time skew).
+- Once P1 baselines exist, H1 can read them instead of probing for each `explain_query` call.
 
 ---
 
@@ -237,13 +238,14 @@ investigate_incident(
 
 ### Orchestration flow
 1. **Resolve seed** — if `alarm_ocid`, pull alarm context + fire-time. If `query`, run it to get seed rows. If `description`, use it as an NL prompt against current NL-to-query path.
-2. **Enumerate suspect sources** — use J1's ingestion_health + diff against baseline to find sources with spikes/drops.
-3. **For each top-K source, in parallel:**
-   - Run `diff_time_windows` (A2) to quantify change.
+2. **Enumerate stopped sources** — call J1 `ingestion_health` (freshness) to find sources not emitting during the investigation window. These are candidate culprits regardless of volume.
+3. **Enumerate anomalous sources** — call A2 `diff_time_windows` with the investigation window vs. the prior equal-length window, per source. Top-K by delta magnitude. This replaces the old "baseline diff" step — A2 gives us spike/drop detection without a persistent baseline.
+4. **For each top-K source, in parallel:**
    - Extract top error patterns (reuse Logan `cluster` command).
-4. **Identify changed entities** — aggregate top entities (hosts/users) with status changes.
-5. **Assemble timeline** — merge time-ordered top events across sources.
-6. **Enforce budget** — use N5; abort gracefully if exceeded and return partial.
+   - Collect top entities (hosts/users/request-ids) via A4 `pivot_on_entity`.
+5. **Identify changed entities** — aggregate top entities with status changes across the top-K sources.
+6. **Assemble timeline** — merge time-ordered top events across sources.
+7. **Enforce budget** — use N5; abort gracefully if exceeded and return partial.
 
 ### Files
 - Create: `src/oci_logan_mcp/investigate.py` — orchestrator.
@@ -258,8 +260,9 @@ investigate_incident(
 5. Test: p95 runtime under 20s on canned-data harness.
 
 ### Dependencies
-- **Hard:** A2 (diff_time_windows), A4 (pivot_on_entity), J1 (baseline), H1+N5 (budget).
+- **Hard:** A2 (diff_time_windows), A4 (pivot_on_entity), J1 (freshness), H1+N5 (budget).
 - Ship only after A2+A4+J1 are merged locally on this branch.
+- **Note:** A1 no longer depends on a persistent baseline store. Spike/drop detection is performed live via A2 using the prior equal-length window as a reference. When J1 gains baselines in P1, step 3 can optionally pivot to baseline-backed anomaly scoring.
 
 ---
 

@@ -125,3 +125,23 @@ class TestAuditLogger:
         assert not (log_dir / "audit.log.6").is_file()
         # .5 should still exist (was .4 before rotation)
         assert (log_dir / "audit.log.5").is_file()
+
+
+def test_audit_logger_accepts_session_id(tmp_path):
+    from oci_logan_mcp.audit import AuditLogger
+    logger = AuditLogger(tmp_path, session_id="test-session-abc")
+    logger.log(user="alice", tool="t", args={}, outcome="invoked")
+    lines = (tmp_path / "audit.log").read_text().splitlines()
+    import json
+    entry = json.loads(lines[0])
+    assert entry["session_id"] == "test-session-abc"
+
+
+def test_audit_logger_without_session_id_defaults_to_unknown(tmp_path):
+    from oci_logan_mcp.audit import AuditLogger
+    logger = AuditLogger(tmp_path)
+    logger.log(user="a", tool="t", args={}, outcome="invoked")
+    import json
+    entry = json.loads((tmp_path / "audit.log").read_text().splitlines()[0])
+    assert "session_id" in entry
+    assert entry["session_id"]

@@ -142,6 +142,18 @@ def get_tools() -> List[Dict[str, Any]]:
                         "enum": ["default", "tenancy"],
                         "description": "Query scope: 'default' uses your configured compartment, 'tenancy' queries ALL compartments across the entire tenancy. Use 'tenancy' when user asks for logs 'across all compartments', 'entire tenancy', 'organization-wide', etc. When scope='tenancy', include_subcompartments is automatically set to true.",
                     },
+                    "budget_override": {
+                        "type": "boolean",
+                        "description": "If true, bypass the per-session budget check for this query. Requires confirmation_token and confirmation_secret (two-factor). Use only when the user explicitly acknowledges the budget override.",
+                    },
+                    "confirmation_token": {
+                        "type": "string",
+                        "description": "Server-generated token from the confirmation step. Omit on first call.",
+                    },
+                    "confirmation_secret": {
+                        "type": "string",
+                        "description": "Your confirmation secret. Required with token to execute a budget_override. You MUST ask the user for this value each time — NEVER reuse a previously provided secret.",
+                    },
                 },
                 "required": ["query"],
             },
@@ -776,6 +788,29 @@ def get_tools() -> List[Dict[str, Any]]:
                 },
             },
         },
+        # ── Estimation + Budget tools ──────────────────────────────────────
+        {
+            "name": "explain_query",
+            "description": "Estimate cost, bytes scanned, and runtime for a query before running it. Returns estimated_bytes, estimated_cost_usd, estimated_eta_seconds, confidence, and a human-readable rationale.",
+            "inputSchema": {
+                "type": "object",
+                "properties": {
+                    "query": {"type": "string", "description": "The Log Analytics query."},
+                    "time_range": {
+                        "type": "string",
+                        "enum": ["last_15_min", "last_1_hour", "last_24_hours", "last_7_days", "last_30_days"],
+                    },
+                    "time_start": {"type": "string"},
+                    "time_end": {"type": "string"},
+                },
+                "required": ["query"],
+            },
+        },
+        {
+            "name": "get_session_budget",
+            "description": "Return the current session's query budget usage and remaining allowance.",
+            "inputSchema": {"type": "object", "properties": {}},
+        },
         # ── Notification tools ─────────────────────────────────────────
         {
             "name": "send_to_slack",
@@ -807,6 +842,30 @@ def get_tools() -> List[Dict[str, Any]]:
                     "time_range": {"type": "string", "description": "Time range for query. Default: 'last_1_hour'"},
                     "format": {"type": "string", "enum": ["summary", "full"], "description": "Result format. Default: 'summary'"},
                     "chat_id": {"type": "string", "description": "Override default chat ID."},
+                },
+            },
+        },
+        {
+            "name": "export_transcript",
+            "description": "Export the current (or specified) session's tool-call transcript as JSONL. Returns the file path and event count. Pass session_id='current' for the running process's session.",
+            "inputSchema": {
+                "type": "object",
+                "properties": {
+                    "session_id": {
+                        "type": "string",
+                        "description": "Session id to export, or 'current' for the running process.",
+                        "default": "current",
+                    },
+                    "include_results": {
+                        "type": "boolean",
+                        "description": "Include result_summary fields. Default true.",
+                        "default": True,
+                    },
+                    "redact": {
+                        "type": "boolean",
+                        "description": "Run PII/secret redaction patterns over the output. Default false.",
+                        "default": False,
+                    },
                 },
             },
         },

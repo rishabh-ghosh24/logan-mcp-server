@@ -45,6 +45,12 @@ def main():
         action="store_true",
         help="Reset your confirmation secret for destructive operations",
     )
+    parser.add_argument(
+        "--read-only",
+        action="store_true",
+        help="Disable all mutating tools (alarms, saved searches, dashboards, "
+             "notifications, preference writes). Reads remain allowed.",
+    )
     args = parser.parse_args()
 
     # Reject invalid flag combinations
@@ -58,6 +64,8 @@ def main():
         parser.error("--reset-secret requires --user")
     if args.reset_secret and (args.setup or args.promote_and_exit):
         parser.error("--reset-secret cannot be combined with --setup or --promote-and-exit")
+    if args.read_only and (args.setup or args.promote_and_exit or args.reset_secret):
+        parser.error("--read-only only applies to server startup; cannot be combined with --setup, --promote-and-exit, or --reset-secret")
 
     if args.reset_secret:
         if args.user:
@@ -73,6 +81,8 @@ def main():
     else:
         if args.user:
             os.environ["LOGAN_USER"] = args.user
+        if args.read_only:
+            os.environ["OCI_LOGAN_MCP_READ_ONLY"] = "1"
         server_main()
 
 
@@ -111,7 +121,7 @@ def _reset_secret(user_id: str) -> None:
         try:
             store.set_secret(secret)
             print("Secret reset successfully.")
-            audit = AuditLogger(base_dir / "logs")
+            audit = AuditLogger(base_dir / "logs", session_id="cli-reset-secret")
             audit.log(user=user_id, tool="__secret_management",
                       args={}, outcome="secret_reset")
             return

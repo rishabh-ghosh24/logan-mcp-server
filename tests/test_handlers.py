@@ -8,7 +8,6 @@ from oci_logan_mcp.handlers import MCPHandlers
 from oci_logan_mcp.config import Settings
 from oci_logan_mcp.user_store import UserStore
 from oci_logan_mcp.preferences import PreferenceStore
-from oci_logan_mcp.confirmation import GUARDED_TOOLS
 from oci_logan_mcp.secret_store import SecretStore
 from oci_logan_mcp.audit import AuditLogger
 
@@ -1151,3 +1150,276 @@ async def test_get_query_examples_filter_by_category(tmp_path):
     assert "category" in body or "error" in body
 
 
+# ---------------------------------------------------------------------------
+# Tenancy-context auto-capture suppression under read-only (Task 2.5)
+# ---------------------------------------------------------------------------
+
+@pytest.mark.asyncio
+async def test_read_only_skips_tenancy_context_update_for_log_sources(
+    handlers, settings, monkeypatch
+):
+    settings.read_only = True
+    captured = {"called": False}
+
+    async def fake_get_log_sources(compartment_id=None):
+        return [{"name": "linux_syslog"}]
+
+    monkeypatch.setattr(handlers.schema_manager, "get_log_sources", fake_get_log_sources)
+    monkeypatch.setattr(
+        handlers.context_manager,
+        "update_log_sources",
+        lambda sources: captured.__setitem__("called", True),
+    )
+
+    result = await handlers.handle_tool_call("list_log_sources", {})
+    assert "linux_syslog" in result[0]["text"]
+    assert captured["called"] is False
+
+
+@pytest.mark.asyncio
+async def test_non_read_only_still_updates_tenancy_context_for_log_sources(
+    handlers, settings, monkeypatch
+):
+    settings.read_only = False
+    captured = {"called": False}
+
+    async def fake_get_log_sources(compartment_id=None):
+        return [{"name": "linux_syslog"}]
+
+    monkeypatch.setattr(handlers.schema_manager, "get_log_sources", fake_get_log_sources)
+    monkeypatch.setattr(
+        handlers.context_manager,
+        "update_log_sources",
+        lambda sources: captured.__setitem__("called", True),
+    )
+
+    await handlers.handle_tool_call("list_log_sources", {})
+    assert captured["called"] is True
+
+
+@pytest.mark.asyncio
+async def test_read_only_skips_tenancy_context_update_for_fields(
+    handlers, settings, monkeypatch
+):
+    settings.read_only = True
+    captured = {"called": False}
+
+    async def fake_get_fields(source_name=None):
+        return []
+
+    monkeypatch.setattr(handlers.schema_manager, "get_fields", fake_get_fields)
+    monkeypatch.setattr(
+        handlers.context_manager,
+        "update_confirmed_fields",
+        lambda fields: captured.__setitem__("called", True),
+    )
+
+    await handlers.handle_tool_call("list_fields", {})
+    assert captured["called"] is False
+
+
+@pytest.mark.asyncio
+async def test_non_read_only_still_updates_tenancy_context_for_fields(
+    handlers, settings, monkeypatch
+):
+    settings.read_only = False
+    captured = {"called": False}
+
+    async def fake_get_fields(source_name=None):
+        return []
+
+    monkeypatch.setattr(handlers.schema_manager, "get_fields", fake_get_fields)
+    monkeypatch.setattr(
+        handlers.context_manager,
+        "update_confirmed_fields",
+        lambda fields: captured.__setitem__("called", True),
+    )
+
+    await handlers.handle_tool_call("list_fields", {})
+    assert captured["called"] is True
+
+
+@pytest.mark.asyncio
+async def test_read_only_skips_tenancy_context_update_for_compartments(
+    handlers, settings, monkeypatch
+):
+    settings.read_only = True
+    captured = {"called": False}
+
+    handlers.oci_client.list_compartments = AsyncMock(return_value=[])
+    monkeypatch.setattr(
+        handlers.context_manager,
+        "update_compartments",
+        lambda compartments: captured.__setitem__("called", True),
+    )
+
+    await handlers.handle_tool_call("list_compartments", {})
+    assert captured["called"] is False
+
+
+@pytest.mark.asyncio
+async def test_non_read_only_still_updates_tenancy_context_for_compartments(
+    handlers, settings, monkeypatch
+):
+    settings.read_only = False
+    captured = {"called": False}
+
+    handlers.oci_client.list_compartments = AsyncMock(return_value=[])
+    monkeypatch.setattr(
+        handlers.context_manager,
+        "update_compartments",
+        lambda compartments: captured.__setitem__("called", True),
+    )
+
+    await handlers.handle_tool_call("list_compartments", {})
+    assert captured["called"] is True
+
+
+# ---------------------------------------------------------------------------
+# Read-only guard integration tests
+# ---------------------------------------------------------------------------
+
+@pytest.mark.asyncio
+async def test_read_only_blocks_mutating_tool(handlers, settings):
+    settings.read_only = True
+    result = await handlers.handle_tool_call("delete_alert", {"alert_id": "ocid1.alert.x"})
+    assert len(result) == 1
+    payload = json.loads(result[0]["text"])
+    assert payload["status"] == "read_only_blocked"
+    assert payload["tool"] == "delete_alert"
+    assert "read-only" in payload["error"].lower()
+
+
+@pytest.mark.asyncio
+async def test_read_only_allows_reader(handlers, settings, monkeypatch):
+    settings.read_only = True
+    # Stub the reader to avoid OCI calls
+    async def fake_list_saved_searches(args):
+        return [{"type": "text", "text": "[]"}]
+    monkeypatch.setattr(handlers, "_list_saved_searches", fake_list_saved_searches)
+    result = await handlers.handle_tool_call("list_saved_searches", {})
+    assert result == [{"type": "text", "text": "[]"}]
+
+
+@pytest.mark.asyncio
+async def test_read_only_disabled_does_not_block(handlers, settings, monkeypatch):
+    settings.read_only = False
+    # Stub a mutator so it doesn't actually hit OCI
+    async def fake_delete_alert(args):
+        return [{"type": "text", "text": "deleted"}]
+    monkeypatch.setattr(handlers, "_delete_alert", fake_delete_alert)
+    # Bypass confirmation gate for this test
+    monkeypatch.setattr(handlers.confirmation_manager, "is_guarded", lambda name: False)
+    monkeypatch.setattr(handlers.confirmation_manager, "is_guarded_call", lambda name, args: False)
+    result = await handlers.handle_tool_call("delete_alert", {})
+    assert result == [{"type": "text", "text": "deleted"}]
+
+
+# ---------------------------------------------------------------------------
+# explain_query and get_session_budget tests
+# ---------------------------------------------------------------------------
+
+@pytest.mark.asyncio
+async def test_explain_query_returns_estimate(handlers):
+    result = await handlers.handle_tool_call(
+        "explain_query",
+        {"query": "'Log Source' = 'x'", "time_range": "last_1_hour"},
+    )
+    payload = json.loads(result[0]["text"])
+    assert "estimated_bytes" in payload
+    assert "estimated_cost_usd" in payload
+    assert "estimated_eta_seconds" in payload
+    assert payload["confidence"] in {"low", "medium", "high"}
+
+
+@pytest.mark.asyncio
+async def test_get_session_budget_returns_usage(handlers):
+    result = await handlers.handle_tool_call("get_session_budget", {})
+    payload = json.loads(result[0]["text"])
+    assert "used" in payload
+    assert "remaining" in payload
+    assert "limits" in payload
+    for key in ("queries", "bytes", "cost_usd"):
+        assert key in payload["used"]
+        assert key in payload["remaining"]
+
+
+# ---------------------------------------------------------------------------
+# Invoked audit event tests (Task N6)
+# ---------------------------------------------------------------------------
+
+@pytest.mark.asyncio
+async def test_invoked_event_fires_for_non_guarded_tool(handlers, tmp_path):
+    """A non-guarded tool call produces an 'invoked' audit entry."""
+    audit_dir = tmp_path / "audit_invoked"
+    audit = AuditLogger(audit_dir)
+    handlers.audit_logger = audit
+
+    await handlers.handle_tool_call("get_current_context", {})
+
+    log_file = audit_dir / "audit.log"
+    assert log_file.is_file()
+    lines = log_file.read_text().strip().splitlines()
+    outcomes = [json.loads(ln)["outcome"] for ln in lines]
+    assert "invoked" in outcomes
+
+
+@pytest.mark.asyncio
+async def test_invoked_event_fires_before_read_only_block(handlers, settings, tmp_path):
+    """A read-only-blocked tool produces both 'invoked' and 'read_only_blocked', in that order."""
+    audit_dir = tmp_path / "audit_ro_invoked"
+    audit = AuditLogger(audit_dir)
+    handlers.audit_logger = audit
+    settings.read_only = True
+
+    await handlers.handle_tool_call("delete_alert", {"alert_id": "ocid1.alarm.x"})
+
+    log_file = audit_dir / "audit.log"
+    assert log_file.is_file()
+    lines = log_file.read_text().strip().splitlines()
+    outcomes = [json.loads(ln)["outcome"] for ln in lines]
+    assert outcomes == ["invoked", "read_only_blocked"]
+
+
+@pytest.mark.asyncio
+async def test_invoked_event_strips_confirmation_secret(handlers, tmp_path):
+    """The 'invoked' entry must not contain confirmation_secret in args."""
+    audit_dir = tmp_path / "audit_secret_strip"
+    audit = AuditLogger(audit_dir)
+    handlers.audit_logger = audit
+
+    await handlers.handle_tool_call(
+        "get_current_context",
+        {"confirmation_secret": "hunter2", "some_arg": "ok"},
+    )
+
+    log_file = audit_dir / "audit.log"
+    lines = log_file.read_text().strip().splitlines()
+    invoked_entries = [json.loads(ln) for ln in lines if json.loads(ln)["outcome"] == "invoked"]
+    assert invoked_entries, "No invoked entry found"
+    args = invoked_entries[0]["args"]
+    assert "confirmation_secret" not in args
+    assert args.get("some_arg") == "ok"
+
+
+@pytest.mark.asyncio
+async def test_export_transcript_tool_returns_path_and_count(handlers, tmp_path):
+    """export_transcript returns path and event_count >= number of tool calls made."""
+    import os
+
+    audit_dir = tmp_path / "audit_export"
+    audit = AuditLogger(audit_dir, session_id="test-export-session")
+    handlers.audit_logger = audit
+    handlers.settings.transcript_dir = tmp_path / "transcripts"
+
+    await handlers.handle_tool_call("get_current_context", {})
+    await handlers.handle_tool_call("list_saved_searches", {})
+
+    result = await handlers.handle_tool_call(
+        "export_transcript", {"session_id": "current"},
+    )
+    payload = json.loads(result[0]["text"])
+    assert "path" in payload
+    assert "event_count" in payload
+    assert payload["event_count"] >= 2
+    assert os.path.isfile(payload["path"])

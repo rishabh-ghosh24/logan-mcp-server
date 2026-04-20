@@ -267,14 +267,13 @@ Comprehensive list of features brainstormed by Agent A (monitoring/observability
 
 ## J. Admin / Ops
 
-### J1 — Ingestion-health tool (with stoppage detection)
-- **Conviction:** 🔥 · **Size:** M · **Disposition:** P0-core
-- **What:** For each log source: last-seen timestamp, hourly volume last 24h, parser-failure count, baseline comparison, stoppage alerts.
-- **Scope decisions (founder):** The core value is **detecting stoppages and drops**, not just describing flow.
-  - Compute baseline hourly volume per source.
-  - Flag sources where last log is >Nx older than typical gap → STOPPED.
-  - Flag sources where last-hour volume is <Y% of baseline → DROP.
-  - Output: ranked list with severity, plus ingestion lag and parser-failure stats.
+### J1 — Ingestion-health tool (freshness / stoppage detection)
+- **Conviction:** 🔥 · **Size:** S · **Disposition:** P0-core (trimmed)
+- **What (P0):** For each log source, return last-seen timestamp and a freshness-derived status (`healthy` / `stopped` / `unknown`). Query-time check only — no persistent baseline store, no background sampler.
+- **Scope decisions (founder):** P0 value is **stoppage detection against the threshold**, cheaply and honestly.
+  - STOPPED when `last_log_ts` older than a configurable threshold (default 10 min).
+  - Output: ranked list with severity and human-readable diagnosis.
+- **Deferred to P1:** persistent per-source baseline store (bytes/hour, count/hour, stddev) with background refresh; DROP classification (current volume vs. baseline); LAG classification; upgrading H1's estimator to read the baseline store.
 
 ### J2 — Parser failure triage
 - **Conviction:** 🔥 · **Size:** M · **Disposition:** P0-core
@@ -322,9 +321,9 @@ Comprehensive list of features brainstormed by Agent A (monitoring/observability
 
 ### L1 — Read-only mode flag (`--read-only`)
 - **Conviction:** 🔥 · **Size:** S · **Disposition:** P0-core
-- **What:** A single binary-level startup flag that disables every mutating tool.
-- **Disabled tools:** create/update/delete for alerts, dashboards, saved searches, learned queries, preferences; send_to_slack, send_to_telegram, export, redaction-rule mutations, etc.
-- **Still works:** run_query, list_*, get_*, validate_query, visualize, all read paths.
+- **What:** A single binary-level startup flag that blocks OCI/external/shared-state mutations.
+- **Disabled tools:** `create`/`update`/`delete` for alerts, saved searches, dashboards; `send_to_slack`, `send_to_telegram`; `set_compartment`, `set_namespace`, `update_tenancy_context`, `setup_confirmation_secret`; `save_learned_query`, `remember_preference`. Also suppresses the incidental shared tenancy-context auto-capture in `list_log_sources` / `list_fields` / `list_compartments`.
+- **Still works:** `run_query`, `run_batch_queries`, `run_saved_search`, all `list_*` reads, `validate_query`, `visualize`, `get_*`, `test_connection`, `find_compartment`, `export_results` (returns CSV/JSON text; no file write in current code). Per-user incidental writes (query log, result cache, per-user learned-query auto-save, preference usage tracking) continue.
 - **Why it matters:** Parallel deployments (full-access for admins, read-only for everyone else), safe agent experimentation, enterprise/audit adoption, dogfooding without risk.
 
 ### L2 — Scoped tokens / per-user compartment allowlist
@@ -383,8 +382,9 @@ Comprehensive list of features brainstormed by Agent A (monitoring/observability
 ## N. Agentic Workflows
 
 ### N1 — Multi-step investigation recorder
-- **Conviction:** 🔥 · **Size:** M · **Disposition:** P0-core
-- **What:** Every tool call in a session is captured and replayable as a "playbook." Ad-hoc investigation becomes a reusable runbook.
+- **Conviction:** 🔥 · **Size:** S · **Disposition:** P0-core (trimmed)
+- **What (P0):** `record_investigation(name, since, until)` captures the current process's N6 audit events inside the given time window and persists them as a named playbook; `list_playbooks`, `get_playbook`, `delete_playbook` round out P0. Record + catalogue only — no replay. Time-window capture instead of a client-supplied `session_id` because N6 P0 only guarantees a process-scoped session id.
+- **Deferred to P1:** replay, auto-parameterization, `dry_run`, capture_as chaining, optional `session_id` parameter (unlocked by N6 P1 client-supplied session ids).
 
 ### N2 — Suggested next query
 - **Conviction:** 🔥 · **Size:** M · **Disposition:** P0-core
@@ -392,9 +392,10 @@ Comprehensive list of features brainstormed by Agent A (monitoring/observability
 - **Why it matters:** Cheapest, highest-leverage change to make agents smarter. PM promoted from dark-horse to P0.
 
 ### N3 — Auto-generate incident report
-- **Conviction:** ⭐ · **Size:** M · **Disposition:** P0-core
-- **What:** End-of-investigation synthesis: queries run + findings → Markdown (and/or PDF via Report Delivery) ready for Slack/Telegram/email.
+- **Conviction:** ⭐ · **Size:** M · **Disposition:** P0-core (scoped)
+- **What (P0):** End-of-investigation synthesis from an A1 `InvestigationReport` → Markdown (+ optional HTML). Single source type in P0.
 - **Bundles with:** A1 (input) + Report Delivery (output).
+- **Deferred to P1:** `source.playbook_run` (needs N1 replay); `source.session_id` (needs a real per-investigation session boundary, not the process-scoped grouping).
 
 ### N4 — Session-scoped variables
 - **Conviction:** ⭐ · **Size:** S · **Disposition:** P2
@@ -407,9 +408,10 @@ Comprehensive list of features brainstormed by Agent A (monitoring/observability
 - **Bundles with H1:** H1 tells you what a query will cost; N5 enforces the budget.
 
 ### N6 — Chain-of-tool transcript export
-- **Conviction:** 💡 · **Size:** S · **Disposition:** P0-core
-- **What:** Export tool call + response chain for a session as JSONL — audit and training data.
+- **Conviction:** 💡 · **Size:** S · **Disposition:** P0-core (scoped)
+- **What (P0):** Add a process-scoped `session_id` to every audit entry; capture an `invoked` event for every tool call (not just confirmation-gated ones); expose `export_transcript(session_id=…)` that writes matching audit entries to JSONL. `session_id="current"` resolves to the process-scoped id, documented as a **debugging grouping, not an investigation boundary**.
 - **Founder decision:** Promoted from nice-to-have to P0; cheap to build, useful for both auditing and NL-to-query training data (feeds K3 in P1).
+- **Deferred to P1:** per-call `completed` / result-summary capture for non-guarded tools; client-supplied session ids; true per-investigation session semantics.
 
 ---
 
