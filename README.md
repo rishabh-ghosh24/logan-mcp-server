@@ -267,6 +267,40 @@ export OCI_LA_AUTH_TYPE=instance_principal
 oci-logan-mcp --setup
 ```
 
+## Cost + ETA estimation
+
+Every `run_query` response now carries flat estimate fields at the top level: `estimated_bytes`, `estimated_rows`, `estimated_cost_usd`, `estimated_eta_seconds`, `estimate_confidence`, `estimate_rationale`.
+
+Use `explain_query` to get the full estimate **without** running the query. Cache hits replay the last known estimate for the same query/time range — no additional OCI calls.
+
+## Session query budget
+
+Per-session caps prevent runaway agent loops:
+
+| Limit | Default |
+|---|---|
+| `max_queries_per_session` | 100 |
+| `max_bytes_per_session` | 10 GiB |
+| `max_cost_usd_per_session` | $5.00 |
+
+Call `get_session_budget` any time to see usage and remaining allowance.
+
+**Scope of enforcement (P0):** budget is enforced on `run_query` only. Cache hits are **free**. `run_batch_queries` is **unbudgeted** in P0 (concurrent execution would race under per-call checks; budgeting for batch is tracked for P1).
+
+To exceed a budget in a specific call, pass `budget_override=true` to `run_query`. This is a guarded follow-up pattern: the first call returns a confirmation request, and a second call with `confirmation_token` plus `confirmation_secret` executes. Override does not exempt usage recording.
+
+Configure in `~/.oci-logan-mcp/config.yaml`:
+
+```yaml
+budget:
+  enabled: true
+  max_queries_per_session: 100
+  max_bytes_per_session: 10737418240
+  max_cost_usd_per_session: 5.00
+```
+
+Disable entirely with `budget.enabled: false`.
+
 ## Destructive Operation Safety
 
 ### Read-only mode
