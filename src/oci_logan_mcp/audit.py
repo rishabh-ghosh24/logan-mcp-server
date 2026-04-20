@@ -8,7 +8,7 @@ import os
 import threading
 from datetime import datetime, timezone
 from pathlib import Path
-from typing import Any, Dict
+from typing import Any, Dict, List
 
 from .file_lock import locked_file
 
@@ -101,3 +101,62 @@ class AuditLogger:
 
         # Current log becomes .1
         self._log_path.rename(self._log_dir / f"{_AUDIT_FILENAME}.1")
+
+    def export_transcript(
+        self,
+        session_id: str,
+        out_dir: Path,
+        include_results: bool = True,
+        redact: bool = False,
+    ) -> Dict[str, Any]:
+        """Write matching audit entries to a timestamped JSONL file.
+
+        Returns {path: str, event_count: int}.
+        """
+        out_dir.mkdir(parents=True, exist_ok=True)
+        timestamp = datetime.now(timezone.utc).strftime("%Y%m%dT%H%M%SZ")
+        out_path = out_dir / f"transcript-{session_id}-{timestamp}.jsonl"
+
+        if redact:
+            from .sanitize import redact_dict as _redact
+        else:
+            _redact = None
+
+        count = 0
+        with self._thread_lock:
+            candidates = self._transcript_source_files()
+            with open(out_path, "w", encoding="utf-8") as out:
+                for src in candidates:
+                    try:
+                        with open(src, "r", encoding="utf-8") as f:
+                            for line in f:
+                                line = line.strip()
+                                if not line:
+                                    continue
+                                try:
+                                    entry = json.loads(line)
+                                except Exception:
+                                    continue
+                                if entry.get("session_id") != session_id:
+                                    continue
+                                if not include_results:
+                                    entry.pop("result_summary", None)
+                                if _redact is not None:
+                                    entry = _redact(entry)
+                                out.write(json.dumps(entry, separators=(",", ":")) + "\n")
+                                count += 1
+                    except FileNotFoundError:
+                        continue
+        return {"path": str(out_path), "event_count": count}
+
+    def _transcript_source_files(self) -> List[Path]:
+        """Return current log plus rotated backups, oldest first."""
+        files = []
+        if self._log_path.is_file():
+            files.append(self._log_path)
+        for i in range(1, _MAX_BACKUPS + 1):
+            p = self._log_dir / f"{_AUDIT_FILENAME}.{i}"
+            if p.is_file():
+                files.append(p)
+        files.reverse()  # oldest first
+        return files
