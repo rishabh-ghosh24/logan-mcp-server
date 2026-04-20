@@ -640,6 +640,9 @@ class MCPHandlers:
         return [{"type": "text", "text": json.dumps(result, indent=2, default=str)}]
 
     async def _pivot_on_entity(self, args: Dict) -> List[Dict]:
+        """Run pivot_on_entity. Catches BudgetExceededError and ValueError and
+        returns them as structured payloads rather than letting the generic
+        exception path stringify them."""
         try:
             result = await self.pivot_tool.run(
                 entity_type=args["entity_type"],
@@ -650,6 +653,8 @@ class MCPHandlers:
                 field_name=args.get("field_name"),
             )
         except BudgetExceededError as e:
+            # Budget exceeded during source discovery; per-source partial results
+            # are handled inside PivotTool._query_sources and never reach here.
             payload = {
                 "status": "budget_exceeded",
                 "error": str(e),

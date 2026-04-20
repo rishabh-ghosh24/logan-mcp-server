@@ -1536,3 +1536,17 @@ class TestPivotOnEntity:
         assert "cost limit hit" in payload["error"]
         assert "budget" in payload
         assert isinstance(payload["budget"], dict)
+
+    @pytest.mark.asyncio
+    async def test_pivot_on_entity_value_error_structured(self, handlers):
+        """ValueError (e.g. custom entity_type without field_name) returns structured error."""
+        handlers.pivot_tool.run = AsyncMock(side_effect=ValueError("field_name is required"))
+
+        result = await handlers.handle_tool_call(
+            "pivot_on_entity",
+            {"entity_type": "custom", "entity_value": "x", "time_range": {"time_range": "last_1_hour"}},
+        )
+
+        payload = json.loads(result[0]["text"])
+        assert payload["status"] == "error"
+        assert "field_name is required" in payload["error"]
