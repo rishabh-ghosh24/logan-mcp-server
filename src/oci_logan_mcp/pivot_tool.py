@@ -2,7 +2,7 @@
 
 from __future__ import annotations
 
-from typing import Any, Dict, List, Optional
+from typing import Any, Dict, List, Optional, Tuple
 
 from .budget_tracker import BudgetExceededError
 
@@ -78,7 +78,7 @@ class PivotTool:
         value: str,
         time_range: Dict[str, str],
         max_rows: int,
-    ):
+    ) -> Tuple[List[Dict[str, Any]], bool]:
         by_source = []
         partial = False
 
