@@ -337,3 +337,44 @@ class TestRunIntegration:
         assert result["cross_source_timeline"] == []
         assert result["by_source"] == []
         assert result["partial"] is False
+
+
+class TestSourcesFilter:
+    @pytest.mark.asyncio
+    async def test_provided_sources_skip_discovery(self):
+        audit_rows = _source_result(
+            ["Time", "Host"],
+            [["2026-04-20T10:00:00Z", "web-01"]],
+        )
+        engine = _make_engine([audit_rows])
+        tool = PivotTool(engine)
+
+        result = await tool.run(
+            entity_type="host",
+            entity_value="web-01",
+            time_range={"time_range": "last_1_hour"},
+            sources=["Audit Logs"],  # explicit sources — no discovery query
+        )
+
+        # Only 1 engine call (the per-source query, no discovery query)
+        assert engine.execute.call_count == 1
+        issued_query = engine.execute.call_args.kwargs["query"]
+        assert "'Log Source' = 'Audit Logs'" in issued_query
+        assert result["stats"]["total_events"] == 1
+
+    @pytest.mark.asyncio
+    async def test_provided_sources_filter_to_given_list(self):
+        # Only Audit Logs queried even though there could be more sources
+        audit_rows = _source_result(["Time", "Host"], [["2026-04-20T10:00:00Z", "web-01"]])
+        engine = _make_engine([audit_rows])
+        tool = PivotTool(engine)
+
+        result = await tool.run(
+            entity_type="host",
+            entity_value="web-01",
+            time_range={"time_range": "last_1_hour"},
+            sources=["Audit Logs"],
+        )
+
+        assert len(result["by_source"]) == 1
+        assert result["by_source"][0]["source"] == "Audit Logs"
