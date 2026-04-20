@@ -84,6 +84,8 @@ def redact_dict(obj):
     elif isinstance(obj, (list, tuple)):
         return [redact_dict(item) for item in obj]
     elif isinstance(obj, str):
+        if not obj:
+            return obj
         sanitized = sanitize_query_text(obj)
         # sanitize_query_text returns None when the text contains a secret keyword
         # (e.g. "password=x"). In that case fall back to full redaction.

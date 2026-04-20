@@ -136,7 +136,10 @@ class QueryEstimator:
     ) -> QueryEstimate:
         sources = self._extract_sources(query)
         if not sources:
-            return self._safe_default("no source filter")
+            return self._safe_default(
+                "no 'Log Source' filter — cost/bytes budget NOT enforced "
+                "(accepted P0 limitation); query-count limit still applies"
+            )
 
         if time_start and time_end:
             try:
