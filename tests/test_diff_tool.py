@@ -150,3 +150,46 @@ class TestReuseBreakout:
         composed = engine.execute.call_args_list[0].kwargs["query"]
         assert composed.count("stats count") == 1
         assert result["delta"][0]["dimension"] == "host=web-01"
+
+
+class TestAsymmetricWindows:
+    @pytest.mark.asyncio
+    async def test_new_value_in_current_only(self):
+        current = _grouped_result([("web-01", 100), ("web-99-new", 50)])
+        comparison = _grouped_result([("web-01", 100)])
+        engine = _make_engine([current, comparison])
+        tool = DiffTool(engine)
+
+        result = await tool.run(
+            query="'Log Source' = 'Audit Logs'",
+            current_window={"time_range": "last_1_hour"},
+            comparison_window={"time_range": "last_1_hour"},
+            dimensions=["host"],
+        )
+
+        by_key = {r["dimension"]: r for r in result["delta"]}
+        assert by_key["host=web-99-new"] == {
+            "dimension": "host=web-99-new",
+            "current": 50,
+            "comparison": 0,
+            "pct_change": None,
+            "tag": "new",
+        }
+
+    @pytest.mark.asyncio
+    async def test_disappeared_value_in_current_only(self):
+        current = _grouped_result([("web-01", 100)])
+        comparison = _grouped_result([("web-01", 100), ("web-99-gone", 200)])
+        engine = _make_engine([current, comparison])
+        tool = DiffTool(engine)
+
+        result = await tool.run(
+            query="'Log Source' = 'Audit Logs'",
+            current_window={"time_range": "last_1_hour"},
+            comparison_window={"time_range": "last_1_hour"},
+            dimensions=["host"],
+        )
+
+        by_key = {r["dimension"]: r for r in result["delta"]}
+        assert by_key["host=web-99-gone"]["tag"] == "disappeared"
+        assert by_key["host=web-99-gone"]["pct_change"] == -100.0
