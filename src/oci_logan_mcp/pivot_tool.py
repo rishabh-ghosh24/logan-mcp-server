@@ -35,7 +35,7 @@ class PivotTool:
             sources = await self._discover_sources(field, entity_value, time_range)
 
         if not sources:
-            return self._empty_result(entity_type, entity_value, field)
+            return self._empty_result(entity_type, entity_value, field, time_range)
 
         by_source, partial = await self._query_sources(
             sources, field, entity_value, time_range, max_rows_per_source
@@ -85,11 +85,17 @@ class PivotTool:
         src_idx = columns.index("Log Source")
         cnt_idx = columns.index("count") if "count" in columns else len(columns) - 1
 
-        return [
-            str(row[src_idx])
-            for row in rows
-            if row and int(row[cnt_idx] or 0) > 0
-        ]
+        sources = []
+        for row in rows:
+            if not row:
+                continue
+            try:
+                cnt = int(row[cnt_idx] or 0)
+            except (TypeError, ValueError):
+                cnt = 0
+            if cnt > 0:
+                sources.append(str(row[src_idx]))
+        return sources
 
     @staticmethod
     def _extract_rows(response: Dict[str, Any]) -> List[Dict[str, Any]]:
@@ -136,7 +142,10 @@ class PivotTool:
 
     @staticmethod
     def _empty_result(
-        entity_type: str, entity_value: str, field: str
+        entity_type: str,
+        entity_value: str,
+        field: str,
+        time_range: Optional[Dict[str, str]] = None,
     ) -> Dict[str, Any]:
         return {
             "entity": {"type": entity_type, "value": entity_value, "field": field},
@@ -144,5 +153,8 @@ class PivotTool:
             "cross_source_timeline": [],
             "stats": {"total_events": 0, "sources_matched": 0},
             "partial": False,
-            "metadata": {},
+            "metadata": {
+                "time_range": time_range or {},
+                "sources_queried": [],
+            },
         }

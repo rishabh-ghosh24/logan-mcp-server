@@ -337,6 +337,8 @@ class TestRunIntegration:
         assert result["cross_source_timeline"] == []
         assert result["by_source"] == []
         assert result["partial"] is False
+        assert result["metadata"]["sources_queried"] == []
+        assert result["metadata"]["time_range"] == {"time_range": "last_1_hour"}
 
 
 class TestSourcesFilter:
