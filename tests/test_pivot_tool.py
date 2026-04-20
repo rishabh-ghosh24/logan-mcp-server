@@ -234,6 +234,61 @@ class TestTimelineBuilding:
         assert timeline[1]["Event"] == "no-ts"
 
 
+class TestBudgetHandling:
+    @pytest.mark.asyncio
+    async def test_budget_exceeded_on_first_source_returns_partial(self):
+        from oci_logan_mcp.budget_tracker import BudgetExceededError
+
+        discovery = _discovery_result([("Audit Logs", 100), ("Web Logs", 50)])
+        engine = _make_engine([
+            discovery,
+            BudgetExceededError("bytes limit hit"),  # Audit Logs query raises
+        ])
+        tool = PivotTool(engine)
+
+        result = await tool.run(
+            entity_type="host",
+            entity_value="web-01",
+            time_range={"time_range": "last_1_hour"},
+        )
+
+        # No source results because the first one exceeded budget
+        assert result["partial"] is True
+        assert result["by_source"] == []
+        assert result["stats"]["total_events"] == 0
+
+    @pytest.mark.asyncio
+    async def test_budget_exceeded_mid_pivot_returns_completed_sources(self):
+        from oci_logan_mcp.budget_tracker import BudgetExceededError
+
+        discovery = _discovery_result([
+            ("Audit Logs", 100),
+            ("Web Logs", 50),
+            ("System Logs", 25),
+        ])
+        audit_rows = _source_result(["Time", "Host"], [["2026-04-20T10:00:00Z", "web-01"]])
+        engine = _make_engine([
+            discovery,
+            audit_rows,
+            BudgetExceededError("bytes limit hit"),  # Web Logs raises
+        ])
+        tool = PivotTool(engine)
+
+        result = await tool.run(
+            entity_type="host",
+            entity_value="web-01",
+            time_range={"time_range": "last_1_hour"},
+        )
+
+        assert result["partial"] is True
+        # Audit Logs completed before budget hit
+        assert len(result["by_source"]) == 1
+        assert result["by_source"][0]["source"] == "Audit Logs"
+        # System Logs was never attempted (aborted after Web Logs raised)
+        source_names = [s["source"] for s in result["by_source"]]
+        assert "System Logs" not in source_names
+
+
 class TestRunIntegration:
     @pytest.mark.asyncio
     async def test_run_two_sources_returns_full_result(self):
