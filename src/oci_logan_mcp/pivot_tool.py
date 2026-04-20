@@ -40,3 +40,25 @@ class PivotTool:
             valid = list(ENTITY_FIELD_MAP.keys()) + ["custom"]
             raise ValueError(f"Unknown entity_type {entity_type!r}. Valid: {valid}")
         return field
+
+    async def _discover_sources(
+        self, field: str, value: str, time_range: Dict[str, str]
+    ) -> List[str]:
+        query = f"'{field}' = '{value}' | stats count by 'Log Source'"
+        res = await self._engine.execute(query=query, **time_range)
+
+        data = res.get("data", {}) or {}
+        columns = [c.get("name") for c in data.get("columns", [])]
+        rows = data.get("rows", [])
+
+        if "Log Source" not in columns:
+            return []
+
+        src_idx = columns.index("Log Source")
+        cnt_idx = columns.index("count") if "count" in columns else len(columns) - 1
+
+        return [
+            str(row[src_idx])
+            for row in rows
+            if row and int(row[cnt_idx] or 0) > 0
+        ]

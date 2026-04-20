@@ -59,3 +59,44 @@ class TestFieldResolution:
 
     def test_custom_with_field_name_returns_it(self):
         assert PivotTool._resolve_field("custom", "Request ID") == "Request ID"
+
+
+class TestSourceDiscovery:
+    @pytest.mark.asyncio
+    async def test_discovery_returns_sources_with_data(self):
+        discovery = _discovery_result([("Audit Logs", 500), ("Web Logs", 30)])
+        engine = _make_engine([discovery])
+        tool = PivotTool(engine)
+
+        sources = await tool._discover_sources("Host", "web-01", {"time_range": "last_1_hour"})
+
+        assert sources == ["Audit Logs", "Web Logs"]
+        call_kwargs = engine.execute.call_args.kwargs
+        assert "'Host' = 'web-01' | stats count by 'Log Source'" == call_kwargs["query"]
+        assert call_kwargs["time_range"] == "last_1_hour"
+
+    @pytest.mark.asyncio
+    async def test_discovery_excludes_zero_count_sources(self):
+        discovery = _discovery_result([("Audit Logs", 5), ("Empty Source", 0)])
+        engine = _make_engine([discovery])
+        tool = PivotTool(engine)
+
+        sources = await tool._discover_sources("Host", "web-01", {"time_range": "last_1_hour"})
+
+        assert sources == ["Audit Logs"]
+        assert "Empty Source" not in sources
+
+    @pytest.mark.asyncio
+    async def test_discovery_no_log_source_column_returns_empty(self):
+        # Discovery query returns columns without 'Log Source' (unusual, but defensive)
+        no_src_col = {
+            "source": "live",
+            "data": {"columns": [{"name": "count"}], "rows": [[42]]},
+            "metadata": {},
+        }
+        engine = _make_engine([no_src_col])
+        tool = PivotTool(engine)
+
+        sources = await tool._discover_sources("Host", "web-01", {"time_range": "last_1_hour"})
+
+        assert sources == []
