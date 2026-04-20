@@ -4,6 +4,8 @@ from __future__ import annotations
 
 from typing import Any, Dict, List, Optional
 
+from .budget_tracker import BudgetExceededError
+
 ENTITY_FIELD_MAP: Dict[str, str] = {
     "host": "Host",
     "user": "User",
@@ -62,3 +64,35 @@ class PivotTool:
             for row in rows
             if row and int(row[cnt_idx] or 0) > 0
         ]
+
+    @staticmethod
+    def _extract_rows(response: Dict[str, Any]) -> List[Dict[str, Any]]:
+        data = response.get("data", {}) or {}
+        columns = [c.get("name") for c in data.get("columns", [])]
+        return [dict(zip(columns, row)) for row in data.get("rows", [])]
+
+    async def _query_sources(
+        self,
+        sources: List[str],
+        field: str,
+        value: str,
+        time_range: Dict[str, str],
+        max_rows: int,
+    ):
+        by_source = []
+        partial = False
+
+        for source in sources:
+            try:
+                query = f"'Log Source' = '{source}' and '{field}' = '{value}'"
+                res = await self._engine.execute(
+                    query=query, max_results=max_rows, **time_range
+                )
+                rows = self._extract_rows(res)
+                truncated = len(rows) >= max_rows
+                by_source.append({"source": source, "rows": rows, "truncated": truncated})
+            except BudgetExceededError:
+                partial = True
+                break
+
+        return by_source, partial

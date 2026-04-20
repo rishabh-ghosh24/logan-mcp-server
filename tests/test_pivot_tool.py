@@ -100,3 +100,74 @@ class TestSourceDiscovery:
         sources = await tool._discover_sources("Host", "web-01", {"time_range": "last_1_hour"})
 
         assert sources == []
+
+
+class TestPerSourceQuerying:
+    @pytest.mark.asyncio
+    async def test_query_sources_returns_rows_per_source(self):
+        audit_res = _source_result(
+            ["Time", "Host", "Event"],
+            [["2026-04-20T10:00:00Z", "web-01", "login"], ["2026-04-20T10:01:00Z", "web-01", "logout"]],
+        )
+        web_res = _source_result(
+            ["Time", "Host", "Status"],
+            [["2026-04-20T10:00:30Z", "web-01", "200"]],
+        )
+        engine = _make_engine([audit_res, web_res])
+        tool = PivotTool(engine)
+
+        by_source, partial = await tool._query_sources(
+            sources=["Audit Logs", "Web Access Logs"],
+            field="Host",
+            value="web-01",
+            time_range={"time_range": "last_1_hour"},
+            max_rows=100,
+        )
+
+        assert partial is False
+        assert len(by_source) == 2
+        assert by_source[0]["source"] == "Audit Logs"
+        assert len(by_source[0]["rows"]) == 2
+        assert by_source[0]["rows"][0]["Host"] == "web-01"
+        assert by_source[1]["source"] == "Web Access Logs"
+
+    @pytest.mark.asyncio
+    async def test_extract_rows_converts_to_dicts(self):
+        res = _source_result(["Time", "Host", "count"], [["2026-04-20T10:00:00Z", "web-01", 42]])
+        rows = PivotTool._extract_rows(res)
+        assert rows == [{"Time": "2026-04-20T10:00:00Z", "Host": "web-01", "count": 42}]
+
+    @pytest.mark.asyncio
+    async def test_truncated_flag_when_rows_fill_max(self):
+        # 3 rows returned, max_rows=3 → truncated=True
+        rows = [["2026-04-20T10:0%d:00Z" % i, "web-01", str(i)] for i in range(3)]
+        res = _source_result(["Time", "Host", "Status"], rows)
+        engine = _make_engine([res])
+        tool = PivotTool(engine)
+
+        by_source, _ = await tool._query_sources(
+            sources=["Web Logs"],
+            field="Host",
+            value="web-01",
+            time_range={"time_range": "last_1_hour"},
+            max_rows=3,
+        )
+
+        assert by_source[0]["truncated"] is True
+
+    @pytest.mark.asyncio
+    async def test_query_uses_log_source_and_field_filter(self):
+        engine = _make_engine([_source_result(["Time"], [])])
+        tool = PivotTool(engine)
+
+        await tool._query_sources(
+            sources=["Audit Logs"],
+            field="User",
+            value="alice",
+            time_range={"time_range": "last_1_hour"},
+            max_rows=100,
+        )
+
+        issued_query = engine.execute.call_args.kwargs["query"]
+        assert "'Log Source' = 'Audit Logs'" in issued_query
+        assert "'User' = 'alice'" in issued_query
