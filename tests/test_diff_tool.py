@@ -193,3 +193,43 @@ class TestAsymmetricWindows:
         by_key = {r["dimension"]: r for r in result["delta"]}
         assert by_key["host=web-99-gone"]["tag"] == "disappeared"
         assert by_key["host=web-99-gone"]["pct_change"] == -100.0
+
+
+class TestSummary:
+    @pytest.mark.asyncio
+    async def test_summary_prefers_high_volume_change(self):
+        # web-01: 10000 → 12000 (+20%, high volume) — should be named
+        # web-02: 1 → 5 (+400%, tiny volume) — should NOT dominate
+        current = _grouped_result([("web-01", 12000), ("web-02", 5)])
+        comparison = _grouped_result([("web-01", 10000), ("web-02", 1)])
+        engine = _make_engine([current, comparison])
+        tool = DiffTool(engine)
+
+        result = await tool.run(
+            query="'Log Source' = 'Audit Logs'",
+            current_window={"time_range": "last_1_hour"},
+            comparison_window={"time_range": "last_1_hour"},
+            dimensions=["host"],
+        )
+
+        # Summary names web-01 before web-02 despite web-02's larger pct.
+        idx_01 = result["summary"].find("web-01")
+        idx_02 = result["summary"].find("web-02")
+        assert idx_01 != -1
+        assert idx_01 < idx_02 or idx_02 == -1
+
+    @pytest.mark.asyncio
+    async def test_summary_quiet_when_all_stable(self):
+        current = _grouped_result([("web-01", 100), ("web-02", 105)])
+        comparison = _grouped_result([("web-01", 100), ("web-02", 100)])
+        engine = _make_engine([current, comparison])
+        tool = DiffTool(engine)
+
+        result = await tool.run(
+            query="'Log Source' = 'Audit Logs'",
+            current_window={"time_range": "last_1_hour"},
+            comparison_window={"time_range": "last_1_hour"},
+            dimensions=["host"],
+        )
+
+        assert "no significant change" in result["summary"].lower()
