@@ -130,7 +130,7 @@ class PivotTool:
             source = src_result["source"]
             for row in src_result["rows"]:
                 ts = row.get("Time") or row.get("time") or row.get("timestamp")
-                events.append({"timestamp": ts, "source": source, **row})
+                events.append({**row, "timestamp": ts, "source": source})
         events.sort(key=lambda e: (e["timestamp"] is None, e["timestamp"] or ""))
         return events
 
