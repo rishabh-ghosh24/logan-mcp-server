@@ -233,3 +233,54 @@ async def test_live_path_caches_result_with_estimate_bundle():
     _key, payload = cache.set.call_args.args
     assert isinstance(payload, dict)
     assert "result" in payload and "estimate" in payload
+
+
+# --- P0 limitation regression: source-less queries ---
+
+@pytest.mark.asyncio
+async def test_sourceless_query_returns_low_confidence_zero_bytes(estimator, oci_client):
+    """Source-less queries cannot be probed; estimator must return confidence=low, bytes=0."""
+    est = await estimator.estimate("* | head 100", "last_1_hour")
+    assert est.confidence == "low"
+    assert est.estimated_bytes == 0
+    assert est.estimated_cost_usd is None or est.estimated_cost_usd == 0
+    assert oci_client.query.await_count == 0, "no probe should fire for source-less query"
+
+
+@pytest.mark.asyncio
+async def test_sourceless_query_bypasses_bytes_cost_budget_but_query_count_blocks():
+    """
+    Regression for P0 limitation: bytes/cost budget is not checked when estimate is
+    zero (source-less), but query-count limit still applies.
+    """
+    from unittest.mock import AsyncMock, MagicMock
+    from oci_logan_mcp.query_engine import QueryEngine
+    from oci_logan_mcp.query_estimator import QueryEstimator
+    from oci_logan_mcp.budget_tracker import BudgetTracker, BudgetExceededError, BudgetLimits
+    from oci_logan_mcp.config import Settings
+
+    limits = BudgetLimits(
+        enabled=True,
+        max_queries_per_session=1,   # tight query-count limit
+        max_bytes_per_session=10 * 1024 ** 3,
+        max_cost_usd_per_session=5.00,
+    )
+    settings = Settings()
+
+    oci_client = MagicMock()
+    oci_client.compartment_id = "c"
+    oci_client.query = AsyncMock(return_value={"rows": [], "columns": []})
+
+    estimator_obj = QueryEstimator(oci_client, settings)
+    budget = BudgetTracker(session_id="test-session", limits=limits)
+    cache = MagicMock(get=MagicMock(return_value=None), set=MagicMock())
+    engine = QueryEngine(oci_client, cache, MagicMock(), estimator=estimator_obj, budget_tracker=budget)
+
+    # First source-less query: bytes/cost are 0 so budget allows it; query count increments
+    resp = await engine.execute(query="* | head 10", time_range="last_1_hour")
+    assert resp["estimate_confidence"] == "low"
+    assert resp["estimated_bytes"] == 0
+
+    # Second source-less query: query-count limit (1) is now exhausted → BudgetExceededError
+    with pytest.raises(BudgetExceededError):
+        await engine.execute(query="* | head 10", time_range="last_1_hour")

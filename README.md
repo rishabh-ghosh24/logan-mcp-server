@@ -287,6 +287,8 @@ Call `get_session_budget` any time to see usage and remaining allowance.
 
 **Scope of enforcement (P0):** budget is enforced on `run_query` only. Cache hits are **free**. `run_batch_queries` is **unbudgeted** in P0 (concurrent execution would race under per-call checks; budgeting for batch is tracked for P1).
 
+> **P0 limitation — source-less queries:** queries without a `'Log Source'` filter cannot be estimated (no source to probe). They return `estimate_confidence="low"` and `estimated_bytes=0`, so the bytes and cost limits are not checked. The **query-count limit still applies**. Full-scan cost estimation requires an OCI "explain" API that does not yet exist.
+
 To exceed a budget in a specific call, pass `budget_override=true` to `run_query`. This is a guarded follow-up pattern: the first call returns a confirmation request, and a second call with `confirmation_token` plus `confirmation_secret` executes. Override does not exempt usage recording.
 
 Configure in `~/.oci-logan-mcp/config.yaml`:
