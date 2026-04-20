@@ -44,7 +44,7 @@ diff_time_windows(
   query: str,                  # base query to execute in both windows
   current_window: TimeRange,
   comparison_window: TimeRange,
-  dimensions: list[str] | None = None,  # fields to break out (default: auto-detect top-k)
+  dimensions: list[str] | None = None,  # fields to break out. If None and the query has a `by <fields>` clause, reuse it; else return a scalar total delta. A1 passes explicit dimensions when it wants a breakout.
 ) -> {
   current: AggregateResult,
   comparison: AggregateResult,
@@ -61,7 +61,7 @@ diff_time_windows(
 ### Test outline
 1. Test: two identical windows → empty delta, summary "no significant change."
 2. Test: window with 2× volume → delta shows +100%, summary names the spike.
-3. Test: dimension auto-detect picks top categorical fields when not provided.
+3. Test: when `dimensions` is omitted and the query already contains a `by <fields>` clause, those fields are reused (no source-side field discovery in P0).
 4. Test: missing dimension in one window → handled gracefully.
 
 ### Dependencies
@@ -239,7 +239,7 @@ investigate_incident(
 ### Orchestration flow
 1. **Resolve seed** — if `alarm_ocid`, pull alarm context + fire-time. If `query`, run it to get seed rows. If `description`, use it as an NL prompt against current NL-to-query path.
 2. **Enumerate stopped sources** — call J1 `ingestion_health` (freshness) to find sources not emitting during the investigation window. These are candidate culprits regardless of volume.
-3. **Enumerate anomalous sources** — call A2 `diff_time_windows` with the investigation window vs. the prior equal-length window, per source. Top-K by delta magnitude. This replaces the old "baseline diff" step — A2 gives us spike/drop detection without a persistent baseline.
+3. **Enumerate anomalous sources** — call A2 `diff_time_windows` with the investigation window vs. the prior equal-length window, per source. Top-K by delta magnitude. This replaces the old "baseline diff" step — A2 gives us spike/drop detection without a persistent baseline. A1 passes explicit `dimensions` (from field knowledge it already has via `list_fields`/learned queries) when it wants a per-field breakout; A2 does not perform field discovery in P0.
 4. **For each top-K source, in parallel:**
    - Extract top error patterns (reuse Logan `cluster` command).
    - Collect top entities (hosts/users/request-ids) via A4 `pivot_on_entity`.
