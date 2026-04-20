@@ -129,12 +129,18 @@ class QueryEngine:
                 include_subcompartments=include_subcompartments,
             )
 
+        budget_reserved = False
+        reserved_bytes = 0
+        reserved_cost = 0.0
         if not skip_budget and self.budget_tracker is not None and estimate is not None:
-            self.budget_tracker.check(
-                estimated_bytes=estimate.estimated_bytes,
-                estimated_cost_usd=float(estimate.estimated_cost_usd or 0.0),
+            reserved_bytes = int(estimate.estimated_bytes)
+            reserved_cost = float(estimate.estimated_cost_usd or 0.0)
+            self.budget_tracker.reserve(
+                estimated_bytes=reserved_bytes,
+                estimated_cost_usd=reserved_cost,
                 override=budget_override,
             )
+            budget_reserved = True
 
         # Execute query
         start_time = datetime.now()
@@ -166,12 +172,7 @@ class QueryEngine:
                 success=True,
             )
 
-            # Budget: record actual usage after successful live execution
-            if not skip_budget and self.budget_tracker is not None and estimate is not None:
-                self.budget_tracker.record(
-                    actual_bytes=int(estimate.estimated_bytes),
-                    actual_cost_usd=float(estimate.estimated_cost_usd or 0.0),
-                )
+            # Budget already committed via reserve() — nothing to do on success.
 
             response = {
                 "source": "live",
@@ -191,6 +192,10 @@ class QueryEngine:
 
         except Exception as e:
             execution_time = (datetime.now() - start_time).total_seconds()
+            # Query failed — roll back the reservation so a failed OCI call
+            # doesn't consume the caller's budget.
+            if budget_reserved and self.budget_tracker is not None:
+                self.budget_tracker.release(bytes=reserved_bytes, cost_usd=reserved_cost)
             self.logger.log_query(
                 query=query,
                 time_start=start,
