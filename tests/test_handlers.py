@@ -812,18 +812,26 @@ class TestConfirmationFlow:
         assert "confirmation_unavailable" not in text
 
     @pytest.mark.asyncio
-    async def test_create_alert_not_guarded(self, handlers_with_secret):
-        """create_* tools are additive and not guarded."""
+    async def test_create_alert_is_guarded(self, handlers_with_secret):
+        """create_* tools go through the same two-factor confirmation flow
+        as update_* and delete_*. Previously these were ungated despite
+        descriptions claiming "APPROVAL REQUIRED" — see docs/reviews/
+        2026-04-22-mcp-builder-review.md.
+        """
         handlers_with_secret.alarm_service.create_alert = AsyncMock(
             return_value={"alarm_id": "new"}
         )
+        # First call (no token) must return a confirmation request, not execute.
         result = await handlers_with_secret.handle_tool_call(
             "create_alert",
             {"display_name": "Test", "query": "* | stats count",
              "destination_topic_id": "ocid1.topic.1"},
         )
         text = json.loads(result[0]["text"])
-        assert text.get("status") != "confirmation_required"
+        assert text.get("status") == "confirmation_required"
+        assert "confirmation_token" in text
+        # The underlying service must NOT be called on the first (unconfirmed) call.
+        handlers_with_secret.alarm_service.create_alert.assert_not_called()
 
     @pytest.mark.asyncio
     async def test_setup_confirmation_secret_succeeds(self, handlers):

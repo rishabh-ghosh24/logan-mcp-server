@@ -27,12 +27,22 @@ class TestConfirmationManager:
         return ConfirmationManager(secret_store=store, token_expiry_seconds=300)
 
     def test_is_guarded(self, manager):
-        """All 6 guarded tools are recognized."""
+        """All guarded tools are recognized; known non-mutating tools are not."""
         for tool in GUARDED_TOOLS:
             assert manager.is_guarded(tool) is True
         assert manager.is_guarded("run_query") is False
-        assert manager.is_guarded("create_alert") is False
         assert manager.is_guarded("list_alerts") is False
+
+    def test_create_tools_are_guarded(self, manager):
+        """Create_* tools must require server-side confirmation.
+
+        Regression guard for a bug where descriptions said 'APPROVAL REQUIRED'
+        but GUARDED_TOOLS did not include the creates, so a misaligned client
+        could skip the approval step entirely.
+        """
+        assert manager.is_guarded("create_alert") is True
+        assert manager.is_guarded("create_saved_search") is True
+        assert manager.is_guarded("create_dashboard") is True
 
     def test_is_available_with_secret(self, manager):
         assert manager.is_available() is True

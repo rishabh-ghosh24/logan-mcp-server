@@ -160,19 +160,27 @@ def get_tools() -> List[Dict[str, Any]]:
         },
         {
             "name": "run_saved_search",
-            "description": "Execute a saved search by name or ID.",
+            "description": (
+                "Execute a saved search by name or ID. Provide at least one of "
+                "`name` or `id` (if both are given, `id` wins). If you don't "
+                "know what exists, call list_saved_searches first."
+            ),
             "inputSchema": {
                 "type": "object",
                 "properties": {
                     "name": {
                         "type": "string",
-                        "description": "Name of the saved search",
+                        "description": "Name of the saved search (case-sensitive).",
                     },
                     "id": {
                         "type": "string",
-                        "description": "OCID of the saved search",
+                        "description": "OCID of the saved search.",
                     },
                 },
+                "anyOf": [
+                    {"required": ["name"]},
+                    {"required": ["id"]},
+                ],
             },
         },
         {
@@ -637,11 +645,13 @@ def get_tools() -> List[Dict[str, Any]]:
         # ── Alert tools ────────────────────────────────────────────────
         {
             "name": "create_alert",
+            "destructive": True,
             "description": (
                 "Create an OCI-native autonomous alert from a Log Analytics query. "
                 "The alert fires 24/7 via OCI Monitoring, independent of the MCP server. "
                 "Requires a numeric aggregation query (e.g. '| stats count'). "
-                "APPROVAL REQUIRED: This tool creates OCI resources. Confirm with the user before invoking."
+                "TWO-FACTOR CONFIRMATION REQUIRED: First call returns a confirmation token and summary. "
+                "To execute, re-invoke with confirmation_token and your confirmation secret."
             ),
             "inputSchema": {
                 "type": "object",
@@ -655,6 +665,8 @@ def get_tools() -> List[Dict[str, Any]]:
                     "threshold_operator": {"type": "string", "enum": ["gt", "gte", "eq", "lt", "lte"], "description": "Comparison operator. Default: 'gt'"},
                     "severity": {"type": "string", "enum": ["CRITICAL", "ERROR", "WARNING", "INFO"], "description": "Alert severity. Default: 'CRITICAL'"},
                     "compartment_id": {"type": "string", "description": "Compartment OCID override."},
+                    "confirmation_token": {"type": "string", "description": "Server-generated token from the confirmation step. Omit on first call."},
+                    "confirmation_secret": {"type": "string", "description": "Your confirmation secret. Required with token to execute. You MUST ask the user for this value each time — NEVER reuse a previously provided secret."},
                 },
             },
         },
@@ -714,9 +726,11 @@ def get_tools() -> List[Dict[str, Any]]:
         # ── Saved search CRUD ──────────────────────────────────────────
         {
             "name": "create_saved_search",
+            "destructive": True,
             "description": (
                 "Create a new Log Analytics saved search. "
-                "APPROVAL REQUIRED: This tool creates an OCI resource. Confirm with the user before invoking."
+                "TWO-FACTOR CONFIRMATION REQUIRED: First call returns a confirmation token and summary. "
+                "To execute, re-invoke with confirmation_token and your confirmation secret."
             ),
             "inputSchema": {
                 "type": "object",
@@ -727,6 +741,8 @@ def get_tools() -> List[Dict[str, Any]]:
                     "description": {"type": "string"},
                     "compartment_id": {"type": "string"},
                     "category": {"type": "string"},
+                    "confirmation_token": {"type": "string", "description": "Server-generated token from the confirmation step. Omit on first call."},
+                    "confirmation_secret": {"type": "string", "description": "Your confirmation secret. Required with token to execute. You MUST ask the user for this value each time — NEVER reuse a previously provided secret."},
                 },
             },
         },
@@ -773,9 +789,11 @@ def get_tools() -> List[Dict[str, Any]]:
         # ── Dashboard tools ────────────────────────────────────────────
         {
             "name": "create_dashboard",
+            "destructive": True,
             "description": (
                 "Create an OCI Management Dashboard with visualization tiles. "
-                "APPROVAL REQUIRED: This tool creates OCI resources. Confirm with the user before invoking."
+                "TWO-FACTOR CONFIRMATION REQUIRED: First call returns a confirmation token and summary. "
+                "To execute, re-invoke with confirmation_token and your confirmation secret."
             ),
             "inputSchema": {
                 "type": "object",
@@ -802,6 +820,8 @@ def get_tools() -> List[Dict[str, Any]]:
                     },
                     "description": {"type": "string"},
                     "compartment_id": {"type": "string"},
+                    "confirmation_token": {"type": "string", "description": "Server-generated token from the confirmation step. Omit on first call."},
+                    "confirmation_secret": {"type": "string", "description": "Your confirmation secret. Required with token to execute. You MUST ask the user for this value each time — NEVER reuse a previously provided secret."},
                 },
             },
         },

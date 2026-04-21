@@ -586,13 +586,28 @@ class MCPHandlers:
         search_id = args.get("id")
         search_name = args.get("name")
 
+        if not search_id and not search_name:
+            return [{"type": "text", "text": json.dumps({
+                "status": "error",
+                "error_code": "MISSING_ARGUMENT",
+                "message": "run_saved_search requires either `name` or `id`.",
+                "next_step": "Call list_saved_searches to see available searches, "
+                             "then retry with name=<display_name> or id=<ocid>.",
+            }, indent=2)}]
+
         if not search_id and search_name:
             search = await self.saved_search.get_search_by_name(search_name)
             if search:
                 search_id = search.get("id")
 
         if not search_id:
-            return [{"type": "text", "text": "Saved search not found"}]
+            return [{"type": "text", "text": json.dumps({
+                "status": "error",
+                "error_code": "NOT_FOUND",
+                "message": f"No saved search found with name={search_name!r}.",
+                "next_step": "Call list_saved_searches to see valid names, "
+                             "or pass the OCID via the `id` argument.",
+            }, indent=2)}]
 
         saved = await self.saved_search.get_search_by_id(search_id)
         query = saved.get("query", "")
