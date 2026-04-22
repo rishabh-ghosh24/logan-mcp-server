@@ -158,7 +158,7 @@ Configurable via `ingestion_health.stoppage_threshold_seconds` (default 600s) an
 
 ### `parser_failure_triage` — which parsers are broken?
 
-Surface the top parser failures ranked by volume. Returns up to 20 parsers, each with failure count, first/last seen timestamps, and up to 3 sample raw lines that failed to parse. Use this to identify which parsers need fixing before investigating an incident.
+Surface the top log sources with parse failures, ranked by volume. Returns up to 20 sources, each with failure count, first/last seen timestamps, and up to 3 sample raw lines that failed to parse. Each source has one parser configured, so this tells you which parser needs fixing before investigating an incident.
 
 ```json
 {
@@ -168,7 +168,7 @@ Surface the top parser failures ranked by volume. Returns up to 20 parsers, each
 }
 ```
 
-Returns `{failures: [...], total_failure_count: N}` where each entry carries `parser_name`, `source` (the log source the parser was attached to), `failure_count`, `first_seen`, `last_seen`, and `sample_raw_lines` (up to 3).
+Returns `{failures: [...], total_failure_count: N}` where each entry carries `source`, `failure_count`, `first_seen`, `last_seen`, and `sample_raw_lines` (up to 3).
 
 ## Multi-User Learning
 
