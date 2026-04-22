@@ -605,3 +605,197 @@ class TestPhase4AnomalyRanking:
         srcs = [s["source"] for s in report["anomalous_sources"]]
         assert "Broken" not in srcs
         assert "Working" in srcs
+
+
+class TestPhase5And6DrillDown:
+    @pytest.mark.asyncio
+    async def test_cluster_and_entity_queries_composed_with_parens(self):
+        """Phase 5: for each anomalous source, runs cluster + 3 entity discoveries."""
+        diff_result = {
+            "current": {}, "comparison": {}, "summary": "",
+            "delta": [{"dimension": "Apache", "current": 100, "comparison": 50, "pct_change": 100.0}],
+        }
+
+        async def execute_router(**kwargs):
+            q = kwargs.get("query", "")
+            if "| cluster" in q:
+                return {"data": {"columns": [
+                    {"name": "Cluster Sample"}, {"name": "Count"}, {"name": "Problem Priority"},
+                ], "rows": [["sample1", 42, 2]]}}
+            if "'Host Name (Server)'" in q:
+                return {"data": {"columns": [{"name": "Host Name (Server)"}, {"name": "n"}],
+                                 "rows": [["web-01", 20]]}}
+            if "'User Name'" in q:
+                return {"data": {"columns": [{"name": "User Name"}, {"name": "n"}],
+                                 "rows": [["alice", 5]]}}
+            if "'Request ID'" in q:
+                return {"data": {"columns": [{"name": "Request ID"}, {"name": "n"}],
+                                 "rows": [["req-123", 3]]}}
+            if "| fields Time" in q:
+                return {"data": {"columns": [
+                    {"name": "Time"}, {"name": "Severity"}, {"name": "Original Log Content"},
+                ], "rows": [[1776829209000, "error", "bad line"]]}}
+            return {"data": {"columns": [], "rows": []}}
+
+        engine = MagicMock()
+        engine.execute = AsyncMock(side_effect=execute_router)
+        schema, ih, j2, diff = _make_deps()
+        diff.run = AsyncMock(return_value=diff_result)
+        tool = InvestigateIncidentTool(
+            query_engine=engine, schema_manager=schema,
+            ingestion_health_tool=ih, parser_triage_tool=j2, diff_tool=diff,
+            settings=_make_settings(), budget_tracker=_make_budget(),
+        )
+        report = await tool.run(query="'Event' = 'error'", time_range="last_1_hour", top_k=3)
+
+        # Every per-source query starts with the parens-wrapped seed_filter.
+        executed_queries = [c.kwargs.get("query", "") for c in engine.execute.await_args_list]
+        per_source_queries = [q for q in executed_queries if "'Log Source' = 'Apache'" in q]
+        assert len(per_source_queries) >= 4  # cluster + 3 entities + timeline
+        for q in per_source_queries:
+            assert q.startswith("('Event' = 'error') and 'Log Source' = 'Apache'"), q
+
+        # Populated fields on the anomalous_source entry.
+        src = report["anomalous_sources"][0]
+        assert len(src["top_error_clusters"]) == 1
+        assert src["top_error_clusters"][0]["pattern"] == "sample1"
+        assert src["top_error_clusters"][0]["count"] == 42
+        entity_values = {e["entity_value"] for e in src["top_entities"]}
+        assert {"web-01", "alice", "req-123"} <= entity_values
+        assert src["timeline"] is not None
+        assert len(src["timeline"]) == 1
+
+    @pytest.mark.asyncio
+    async def test_invalid_entity_field_partial_not_fatal(self):
+        """Field-variance (ServiceError code=InvalidParameter with
+        'Invalid field' in message) → entity_discovery_partial only."""
+        from oci.exceptions import ServiceError
+        diff_result = {
+            "current": {}, "comparison": {}, "summary": "",
+            "delta": [{"dimension": "Apache", "current": 100, "comparison": 0, "pct_change": None}],
+        }
+
+        async def execute_router(**kwargs):
+            q = kwargs.get("query", "")
+            if "'User Name'" in q:
+                raise ServiceError(status=400, code="InvalidParameter",
+                                   headers={}, message="Invalid field for SEARCH = operator: User Name")
+            return {"data": {"columns": [], "rows": []}}
+
+        engine = MagicMock()
+        engine.execute = AsyncMock(side_effect=execute_router)
+        schema, ih, j2, diff = _make_deps()
+        diff.run = AsyncMock(return_value=diff_result)
+        tool = InvestigateIncidentTool(
+            query_engine=engine, schema_manager=schema,
+            ingestion_health_tool=ih, parser_triage_tool=j2, diff_tool=diff,
+            settings=_make_settings(), budget_tracker=_make_budget(),
+        )
+        report = await tool.run(query="'Event' = 'x'", time_range="last_1_hour", top_k=3)
+
+        assert report["partial"] is True
+        assert "entity_discovery_partial" in report["partial_reasons"]
+        # Field-variance specifically does NOT trigger source_errors.
+        assert "source_errors" not in report["partial_reasons"]
+        src = report["anomalous_sources"][0]
+        assert src["errors"]
+        assert any("User Name" in e and "InvalidParameter" in e for e in src["errors"])
+
+    @pytest.mark.asyncio
+    async def test_entity_discovery_non_field_variance_is_source_errors_not_partial(self):
+        """Non-InvalidParameter failures during entity discovery (5xx, auth,
+        transport) must surface as source_errors, NOT masquerade as
+        entity_discovery_partial."""
+        from oci.exceptions import ServiceError
+        diff_result = {
+            "current": {}, "comparison": {}, "summary": "",
+            "delta": [{"dimension": "Apache", "current": 100, "comparison": 0, "pct_change": None}],
+        }
+
+        async def execute_router(**kwargs):
+            q = kwargs.get("query", "")
+            if "'User Name'" in q:
+                raise ServiceError(status=503, code="ServiceUnavailable",
+                                   headers={}, message="backend unavailable")
+            return {"data": {"columns": [], "rows": []}}
+
+        engine = MagicMock()
+        engine.execute = AsyncMock(side_effect=execute_router)
+        schema, ih, j2, diff = _make_deps()
+        diff.run = AsyncMock(return_value=diff_result)
+        tool = InvestigateIncidentTool(
+            query_engine=engine, schema_manager=schema,
+            ingestion_health_tool=ih, parser_triage_tool=j2, diff_tool=diff,
+            settings=_make_settings(), budget_tracker=_make_budget(),
+        )
+        report = await tool.run(query="'Event' = 'x'", time_range="last_1_hour", top_k=3)
+
+        assert report["partial"] is True
+        assert "source_errors" in report["partial_reasons"]
+        assert "entity_discovery_partial" not in report["partial_reasons"]
+        src = report["anomalous_sources"][0]
+        assert any("ServiceError" in e or "ServiceUnavailable" in e for e in src["errors"])
+
+    @pytest.mark.asyncio
+    async def test_budget_exception_mid_drill_down_flagged_as_budget_not_source_errors(self):
+        """BudgetExceededError raised inside a per-source branch must
+        surface as `budget_exceeded` partial_reason, not get downgraded
+        to `source_errors`."""
+        from oci_logan_mcp.budget_tracker import BudgetExceededError
+        diff_result = {
+            "current": {}, "comparison": {}, "summary": "",
+            "delta": [
+                {"dimension": "A", "current": 100, "comparison": 50, "pct_change": 100.0},
+                {"dimension": "B", "current": 50, "comparison": 25, "pct_change": 100.0},
+            ],
+        }
+        call_count = {"n": 0}
+
+        async def execute_router(**kwargs):
+            call_count["n"] += 1
+            if call_count["n"] > 3:
+                raise BudgetExceededError("session cost limit reached mid-drill-down")
+            return {"data": {"columns": [], "rows": []}}
+
+        engine = MagicMock()
+        engine.execute = AsyncMock(side_effect=execute_router)
+        schema, ih, j2, diff = _make_deps()
+        diff.run = AsyncMock(return_value=diff_result)
+        tool = InvestigateIncidentTool(
+            query_engine=engine, schema_manager=schema,
+            ingestion_health_tool=ih, parser_triage_tool=j2, diff_tool=diff,
+            settings=_make_settings(), budget_tracker=_make_budget(),
+        )
+        report = await tool.run(query="*", time_range="last_1_hour", top_k=3)
+
+        assert report["partial"] is True
+        assert "budget_exceeded" in report["partial_reasons"]
+        assert "source_errors" not in report["partial_reasons"]
+
+    @pytest.mark.asyncio
+    async def test_timeline_error_sets_partial_and_null(self):
+        diff_result = {
+            "current": {}, "comparison": {}, "summary": "",
+            "delta": [{"dimension": "Apache", "current": 100, "comparison": 50, "pct_change": 100.0}],
+        }
+
+        async def execute_router(**kwargs):
+            q = kwargs.get("query", "")
+            if "| fields Time" in q:
+                raise RuntimeError("timeline server went away")
+            return {"data": {"columns": [], "rows": []}}
+
+        engine = MagicMock()
+        engine.execute = AsyncMock(side_effect=execute_router)
+        schema, ih, j2, diff = _make_deps()
+        diff.run = AsyncMock(return_value=diff_result)
+        tool = InvestigateIncidentTool(
+            query_engine=engine, schema_manager=schema,
+            ingestion_health_tool=ih, parser_triage_tool=j2, diff_tool=diff,
+            settings=_make_settings(), budget_tracker=_make_budget(),
+        )
+        report = await tool.run(query="*", time_range="last_1_hour", top_k=3)
+
+        assert "timeline_omitted" in report["partial_reasons"]
+        src = report["anomalous_sources"][0]
+        assert src["timeline"] is None

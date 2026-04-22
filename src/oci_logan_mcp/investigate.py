@@ -224,6 +224,198 @@ TOP_K_MIN = 1
 TOP_K_MAX = 3
 TIMELINE_CAP = 50
 
+# Entity discovery uses the same field names as pivot_tool's ENTITY_FIELD_MAP,
+# but A1 P0 uses only three (ip deferred to P1 to bound per-source query count).
+A1_ENTITY_FIELDS = [
+    ("host", "Host Name (Server)"),
+    ("user", "User Name"),
+    ("request_id", "Request ID"),
+]
+PER_SOURCE_CONCURRENCY = 2
+CLUSTER_HEAD = 3
+ENTITY_HEAD = 5
+TIMELINE_HEAD = 20
+
+
+def _is_field_variance_error(exc: Exception) -> bool:
+    """True iff this exception represents OCI LA rejecting a field that
+    doesn't exist on the target source/tenancy (e.g. `'User Name'` in a
+    tenancy that only has `'Host Name (Server)'`).
+
+    This is the ONLY exception class the design lets us silently downgrade
+    to `entity_discovery_partial`. Transport, auth, and 5xx failures must
+    surface as `source_errors`, not masquerade as field variance.
+    """
+    try:
+        from oci.exceptions import ServiceError
+    except ImportError:
+        return False
+    if not isinstance(exc, ServiceError):
+        return False
+    code = getattr(exc, "code", "") or ""
+    message = getattr(exc, "message", "") or ""
+    return code == "InvalidParameter" and "Invalid field" in message
+
+
+def _parse_cluster_response(response: Dict[str, Any]) -> List[Dict[str, Any]]:
+    """Parse a `| cluster | sort -Count | head N` response.
+
+    Real OCI LA `cluster` returns 14+ columns (Cluster Sample, Count, Problem
+    Priority, Score, etc.). We surface the three most actionable ones.
+    """
+    data = response.get("data", {}) or {}
+    columns = [c.get("name") for c in data.get("columns", []) or []]
+    rows = data.get("rows", []) or []
+    if "Cluster Sample" not in columns or "Count" not in columns:
+        return []
+    sample_idx = columns.index("Cluster Sample")
+    count_idx = columns.index("Count")
+    prio_idx = columns.index("Problem Priority") if "Problem Priority" in columns else None
+    out: List[Dict[str, Any]] = []
+    max_idx = max(sample_idx, count_idx, prio_idx if prio_idx is not None else 0)
+    for row in rows:
+        if not row or len(row) <= max_idx:
+            continue
+        cnt = row[count_idx]
+        prio = row[prio_idx] if prio_idx is not None else None
+        out.append({
+            "pattern": str(row[sample_idx]) if row[sample_idx] is not None else "",
+            "count": int(cnt) if cnt is not None else 0,
+            "problem_priority": int(prio) if prio is not None else None,
+        })
+    return out
+
+
+def _parse_timeline_response(response: Dict[str, Any]) -> List[Dict[str, Any]]:
+    """Parse a `| fields Time, Severity, 'Original Log Content' | sort -Time | head N` response.
+
+    Normalizes Time through _parse_ts so epoch-ms LONGs become ISO strings.
+    """
+    from .ingestion_health import _parse_ts
+    data = response.get("data", {}) or {}
+    columns = [c.get("name") for c in data.get("columns", []) or []]
+    rows = data.get("rows", []) or []
+    if "Time" not in columns or "Original Log Content" not in columns:
+        return []
+    t_idx = columns.index("Time")
+    sev_idx = columns.index("Severity") if "Severity" in columns else None
+    msg_idx = columns.index("Original Log Content")
+    max_idx = max(i for i in (t_idx, sev_idx, msg_idx) if i is not None)
+    out: List[Dict[str, Any]] = []
+    for row in rows:
+        if not row or len(row) <= max_idx:
+            continue
+        t = _parse_ts(row[t_idx])
+        if t is None:
+            continue
+        sev = row[sev_idx] if sev_idx is not None else None
+        out.append({
+            "time": t.isoformat(),
+            "severity": str(sev) if sev is not None else None,
+            "message": str(row[msg_idx]) if row[msg_idx] is not None else "",
+        })
+    return out
+
+
+async def _drill_down_one_source(
+    engine,
+    source: str,
+    seed_filter: str,
+    time_range: str,
+    compartment_id: Optional[str],
+) -> Dict[str, Any]:
+    """Run cluster + entity discovery + timeline for a single source, sequentially.
+
+    Returns a dict with keys:
+      - top_error_clusters, top_entities, timeline, errors
+      - entity_discovery_partial: True iff at least one entity-field query
+        failed with the recognized field-variance shape (ServiceError
+        code=InvalidParameter, message contains "Invalid field")
+      - timeline_omitted: True iff the timeline query failed (best-effort
+        per design)
+      - infra_error: True iff any non-field-variance, non-Budget exception
+        was caught (cluster error, unexpected entity-query failure).
+        Timeline failures do NOT set infra_error — they map to
+        timeline_omitted via their own path.
+
+    Re-raises `BudgetExceededError` so the orchestrator can distinguish
+    it from generic source failures when handling the gather result.
+    """
+    result = {
+        "top_error_clusters": [],
+        "top_entities": [],
+        "timeline": None,
+        "errors": [],
+        "entity_discovery_partial": False,
+        "timeline_omitted": False,
+        "infra_error": False,
+    }
+
+    # Cluster — any non-Budget failure is infrastructure. Record it but
+    # don't abort the branch; entity/timeline may still succeed.
+    cluster_query = _compose_source_scoped_query(
+        seed_filter, source, f"cluster | sort -Count | head {CLUSTER_HEAD}",
+    )
+    try:
+        cluster_resp = await engine.execute(
+            query=cluster_query, time_range=time_range, compartment_id=compartment_id,
+        )
+        result["top_error_clusters"] = _parse_cluster_response(cluster_resp)
+    except BudgetExceededError:
+        raise
+    except Exception as e:
+        result["errors"].append(f"cluster: {type(e).__name__}: {e}")
+        result["infra_error"] = True
+
+    # Entity discovery (3 fields, sequential). Distinguish field-variance
+    # (soft) from infrastructure failures (hard, but non-fatal to branch).
+    for entity_type, field_name in A1_ENTITY_FIELDS:
+        entity_query = _compose_source_scoped_query(
+            seed_filter, source,
+            f"stats count as n by '{field_name}' | sort -n | head {ENTITY_HEAD}",
+        )
+        try:
+            entity_resp = await engine.execute(
+                query=entity_query, time_range=time_range, compartment_id=compartment_id,
+            )
+            result["top_entities"].extend(
+                _select_top_entities(entity_resp, entity_type, field_name)
+            )
+        except BudgetExceededError:
+            raise
+        except Exception as e:
+            if _is_field_variance_error(e):
+                result["errors"].append(
+                    f"top_entities[{entity_type}]: field '{field_name}' "
+                    f"not present in this source (InvalidParameter)"
+                )
+                result["entity_discovery_partial"] = True
+            else:
+                result["errors"].append(
+                    f"top_entities[{entity_type}]: {type(e).__name__}: {e}"
+                )
+                result["infra_error"] = True
+
+    # Timeline — best-effort per design. Any non-Budget error is non-fatal
+    # and maps to timeline_omitted (NOT infra_error; timeline is the
+    # lowest-value sub-phase).
+    timeline_query = _compose_source_scoped_query(
+        seed_filter, source,
+        f"fields Time, Severity, 'Original Log Content' | sort -Time | head {TIMELINE_HEAD}",
+    )
+    try:
+        tl_resp = await engine.execute(
+            query=timeline_query, time_range=time_range, compartment_id=compartment_id,
+        )
+        result["timeline"] = _parse_timeline_response(tl_resp)
+    except BudgetExceededError:
+        raise
+    except Exception as e:
+        result["errors"].append(f"timeline: {type(e).__name__}: {e}")
+        result["timeline_omitted"] = True
+
+    return result
+
 
 def _templated_summary(acc: Dict[str, Any]) -> str:
     """Render a 1-2 sentence human-readable summary from the accumulator."""
@@ -377,7 +569,54 @@ class InvestigateIncidentTool:
                     "timeline": None,
                     "errors": [],
                 }
-            # Phases 5-7 are added by subsequent tasks.
+
+            # Phases 5+6 — per-source drill-down under Semaphore(2)
+            sem = asyncio.Semaphore(PER_SOURCE_CONCURRENCY)
+            sources_list = [s["source"] for s in acc["anomalous_sources"]]
+
+            async def bounded(source_name: str):
+                async with sem:
+                    return await _drill_down_one_source(
+                        self._engine, source_name, seed_filter, time_range, compartment_id,
+                    )
+
+            results = await asyncio.gather(
+                *(bounded(s) for s in sources_list),
+                return_exceptions=True,
+            )
+            for source_name, branch_result in zip(sources_list, results):
+                # Budget exhaustion is its own partial_reason; don't downgrade
+                # to source_errors.
+                if isinstance(branch_result, BudgetExceededError):
+                    acc["per_source"][source_name]["errors"].append(
+                        f"branch: BudgetExceededError: {branch_result}"
+                    )
+                    acc["partial_reasons"].add("budget_exceeded")
+                    continue
+                # Other uncaught branch-level exceptions (should be rare given
+                # _drill_down_one_source catches everything non-Budget).
+                if isinstance(branch_result, Exception):
+                    acc["per_source"][source_name]["errors"].append(
+                        f"branch: {type(branch_result).__name__}: {branch_result}"
+                    )
+                    acc["source_errors"].append(str(branch_result))
+                    acc["partial_reasons"].add("source_errors")
+                    continue
+                # Normal path: merge branch_result flags into partial_reasons.
+                ps = acc["per_source"][source_name]
+                ps["top_error_clusters"] = branch_result["top_error_clusters"]
+                ps["top_entities"] = branch_result["top_entities"]
+                ps["timeline"] = branch_result["timeline"]
+                ps["errors"].extend(branch_result["errors"])
+                if branch_result["entity_discovery_partial"]:
+                    acc["partial_reasons"].add("entity_discovery_partial")
+                if branch_result["timeline_omitted"]:
+                    acc["partial_reasons"].add("timeline_omitted")
+                # infra_error = non-Budget, non-field-variance failure seen
+                # inside a per-phase try — maps to source_errors.
+                if branch_result["infra_error"]:
+                    acc["partial_reasons"].add("source_errors")
+            # Phase 7 is added by subsequent tasks.
         except BudgetExceededError:
             acc["partial_reasons"].add("budget_exceeded")
         return _finalize(acc, self._budget)
