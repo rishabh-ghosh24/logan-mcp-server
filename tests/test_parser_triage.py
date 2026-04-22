@@ -340,6 +340,35 @@ class TestOrchestration:
         assert by_source["Quiet Source"]["sample_raw_lines"] == []
 
 
+    @pytest.mark.asyncio
+    async def test_run_forwards_compartment_id_to_engine(self):
+        """ParserTriageTool.run must thread compartment_id to every engine.execute call,
+        otherwise callers scoping A1 to a non-default compartment get a mismatch."""
+        stats_resp = _stats_resp([
+            ["Apache Access", 10, "2026-04-22T00:00:00Z", "2026-04-22T09:00:00Z"],
+        ])
+        samples_resp = _samples_resp([["Apache Access", "line"]])
+        engine = _make_engine(stats_resp, samples_resp)
+        tool = ParserTriageTool(engine)
+
+        await tool.run(time_range="last_24_hours", top_n=5, compartment_id="ocid1.custom")
+
+        # Both the stats and samples engine calls must carry the same compartment_id.
+        for call in engine.execute.await_args_list:
+            assert call.kwargs.get("compartment_id") == "ocid1.custom"
+
+    @pytest.mark.asyncio
+    async def test_run_compartment_id_defaults_to_none(self):
+        """Backward compatibility: existing callers without compartment_id still work."""
+        stats_resp = _stats_resp([])
+        engine = _make_engine(stats_resp)
+        tool = ParserTriageTool(engine)
+
+        await tool.run()
+
+        assert engine.execute.await_args.kwargs.get("compartment_id") is None
+
+
 class TestToolSchema:
     def test_parser_failure_triage_schema_present(self):
         from oci_logan_mcp.tools import get_tools

@@ -537,10 +537,17 @@ class InvestigateIncidentTool:
             acc["parser_failures"] = await self._j2_tool.run(
                 time_range=time_range,
                 top_n=10,
+                compartment_id=compartment_id,
             )
             # Phase 4 — A2 anomaly ranking with anchored windows
             anchor = _utcnow()
             current_w, comparison_w = _compute_windows(time_range, anchor)
+            # Thread compartment_id through the window dicts so DiffTool's
+            # **current_window / **comparison_window splat forwards it to
+            # each engine.execute call. Keeps _compute_windows signature pure.
+            if compartment_id is not None:
+                current_w["compartment_id"] = compartment_id
+                comparison_w["compartment_id"] = compartment_id
             if seed_filter == "*":
                 ranking_query = "* | stats count as n by 'Log Source'"
             else:

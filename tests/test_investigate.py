@@ -1047,3 +1047,50 @@ class TestToolSchema:
         assert props["top_k"]["maximum"] == 3
         assert "compartment_id" in props
         assert tool["inputSchema"].get("required") == ["query"]
+
+
+class TestCompartmentIdForwarding:
+    @pytest.mark.asyncio
+    async def test_compartment_id_forwarded_to_j2(self):
+        schema, ih, j2, diff = _make_deps()
+        tool = InvestigateIncidentTool(
+            query_engine=_make_engine(), schema_manager=schema,
+            ingestion_health_tool=ih, parser_triage_tool=j2, diff_tool=diff,
+            settings=_make_settings(), budget_tracker=_make_budget(),
+        )
+        await tool.run(query="*", time_range="last_1_hour", top_k=3, compartment_id="ocid1.custom")
+
+        j2.run.assert_awaited_once()
+        assert j2.run.await_args.kwargs["compartment_id"] == "ocid1.custom"
+
+    @pytest.mark.asyncio
+    async def test_compartment_id_forwarded_to_a2_via_window_dicts(self):
+        schema, ih, j2, diff = _make_deps()
+        tool = InvestigateIncidentTool(
+            query_engine=_make_engine(), schema_manager=schema,
+            ingestion_health_tool=ih, parser_triage_tool=j2, diff_tool=diff,
+            settings=_make_settings(), budget_tracker=_make_budget(),
+        )
+        await tool.run(query="*", time_range="last_1_hour", top_k=3, compartment_id="ocid1.custom")
+
+        diff.run.assert_awaited_once()
+        kwargs = diff.run.await_args.kwargs
+        # Both window dicts carry compartment_id (DiffTool splats them into engine.execute)
+        assert kwargs["current_window"].get("compartment_id") == "ocid1.custom"
+        assert kwargs["comparison_window"].get("compartment_id") == "ocid1.custom"
+
+    @pytest.mark.asyncio
+    async def test_no_compartment_id_leaves_window_dicts_clean(self):
+        """Backward compat: when compartment_id is None, window dicts don't get it."""
+        schema, ih, j2, diff = _make_deps()
+        tool = InvestigateIncidentTool(
+            query_engine=_make_engine(), schema_manager=schema,
+            ingestion_health_tool=ih, parser_triage_tool=j2, diff_tool=diff,
+            settings=_make_settings(), budget_tracker=_make_budget(),
+        )
+        await tool.run(query="*", time_range="last_1_hour", top_k=3)  # no compartment_id
+
+        diff.run.assert_awaited_once()
+        kwargs = diff.run.await_args.kwargs
+        assert "compartment_id" not in kwargs["current_window"]
+        assert "compartment_id" not in kwargs["comparison_window"]
