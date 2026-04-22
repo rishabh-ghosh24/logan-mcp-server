@@ -121,6 +121,7 @@ def test_all_registered_tools_are_classified():
         "parser_failure_triage",
         "investigate_incident",
         "why_did_this_fire",
+        "related_dashboards_and_searches",
         "visualize", "export_results",
         "get_current_context", "list_compartments",
         "test_connection", "find_compartment",

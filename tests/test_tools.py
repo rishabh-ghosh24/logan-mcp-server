@@ -73,3 +73,14 @@ def test_run_query_schema_carries_budget_override_fields():
     assert "budget_override" in props
     assert "confirmation_token" in props
     assert "confirmation_secret" in props
+
+
+def test_related_dashboards_and_searches_schema():
+    tools = {t["name"]: t for t in get_tools()}
+    spec = tools["related_dashboards_and_searches"]
+    props = spec["inputSchema"]["properties"]
+
+    assert "source" in props
+    assert "field" in props
+    assert "entity" in props
+    assert props["entity"]["required"] == ["type", "value"]

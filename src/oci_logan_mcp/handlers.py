@@ -32,6 +32,7 @@ from .ingestion_health import IngestionHealthTool
 from .parser_triage import ParserTriageTool
 from .investigate import InvestigateIncidentTool
 from .alarm_postmortem import WhyDidThisFireTool
+from .related_resources import RelatedDashboardsAndSearchesTool
 from .budget_tracker import BudgetExceededError
 
 if TYPE_CHECKING:
@@ -127,6 +128,11 @@ class MCPHandlers:
         # Wire unified query catalog
         from .catalog import UnifiedCatalog
         self.catalog = UnifiedCatalog(base_dir=user_store.base_dir)
+        self.related_dashboards_and_searches_tool = RelatedDashboardsAndSearchesTool(
+            dashboard_service=self.dashboard_service,
+            saved_search_service=self.saved_search,
+            catalog=self.catalog,
+        )
         self.confirmation_manager = ConfirmationManager(
             secret_store=secret_store,
             token_expiry_seconds=settings.guardrails.token_expiry_seconds,
@@ -156,6 +162,7 @@ class MCPHandlers:
             "parser_failure_triage": self._parser_failure_triage,
             "investigate_incident": self._investigate_incident,
             "why_did_this_fire": self._why_did_this_fire,
+            "related_dashboards_and_searches": self._related_dashboards_and_searches,
             # Visualization
             "visualize": self._visualize,
             # Export
@@ -852,6 +859,30 @@ class MCPHandlers:
             return [{"type": "text", "text": json.dumps(
                 {"status": "error", "error": str(e)}, indent=2
             )}]
+        return [{"type": "text", "text": json.dumps(result, indent=2, default=str)}]
+
+    async def _related_dashboards_and_searches(self, args: Dict) -> List[Dict]:
+        """Suggest dashboards, saved searches, and learned queries for a source/entity/field."""
+        source = args.get("source")
+        entity = args.get("entity")
+        field = args.get("field")
+
+        if not source and not entity and not field:
+            return [{"type": "text", "text": json.dumps(
+                {
+                    "status": "error",
+                    "error_code": "missing_search_input",
+                    "error": "Provide at least one of source, entity, or field.",
+                },
+                indent=2,
+            )}]
+
+        result = await self.related_dashboards_and_searches_tool.run(
+            source=source,
+            entity=entity,
+            field=field,
+            user_id=self.user_store.user_id,
+        )
         return [{"type": "text", "text": json.dumps(result, indent=2, default=str)}]
 
     async def _visualize(self, args: Dict) -> List[Dict]:

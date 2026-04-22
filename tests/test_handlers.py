@@ -162,6 +162,7 @@ class TestToolRouting:
             "export_results", "set_compartment", "set_namespace",
             "get_current_context", "list_compartments", "test_connection",
             "find_compartment", "get_query_examples", "get_log_summary",
+            "related_dashboards_and_searches",
             "setup_confirmation_secret",
             "save_learned_query",
             "update_tenancy_context",
@@ -1871,3 +1872,48 @@ class TestWhyDidThisFire:
         assert payload["status"] == "budget_exceeded"
         assert "bytes limit hit" in payload["error"]
         assert "budget" in payload
+
+
+class TestRelatedDashboardsAndSearches:
+    @pytest.mark.asyncio
+    async def test_routes_to_related_resources_tool(self, handlers):
+        handlers.related_dashboards_and_searches_tool.run = AsyncMock(return_value={
+            "dashboards": [
+                {
+                    "id": "dash-1",
+                    "name": "Audit Dashboard",
+                    "score": 3,
+                    "reason": "source matched display_name",
+                }
+            ],
+            "saved_searches": [],
+            "learned_queries": [],
+        })
+
+        result = await handlers.handle_tool_call(
+            "related_dashboards_and_searches",
+            {"source": "Audit"},
+        )
+
+        payload = json.loads(result[0]["text"])
+        assert payload["dashboards"][0]["id"] == "dash-1"
+        handlers.related_dashboards_and_searches_tool.run.assert_awaited_once_with(
+            source="Audit",
+            entity=None,
+            field=None,
+            user_id="testuser",
+        )
+
+    @pytest.mark.asyncio
+    async def test_missing_inputs_returns_structured_error(self, handlers):
+        handlers.related_dashboards_and_searches_tool.run = AsyncMock()
+
+        result = await handlers.handle_tool_call(
+            "related_dashboards_and_searches",
+            {},
+        )
+
+        payload = json.loads(result[0]["text"])
+        assert payload["status"] == "error"
+        assert payload["error_code"] == "missing_search_input"
+        handlers.related_dashboards_and_searches_tool.run.assert_not_awaited()
