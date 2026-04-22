@@ -126,7 +126,7 @@ Click **Save**, then start a new Codex session to connect.
 | Capability | Tools | Examples |
 |---|---|---|
 | **Query logs** | `run_query`, `run_batch_queries`, `run_saved_search` | Search logs, run multiple queries in parallel, execute saved searches |
-| **Triage diffs** | `diff_time_windows`, `pivot_on_entity`, `ingestion_health` | Compare a query across two time windows; get per-dimension deltas (spike/drop/new/disappeared) + a one-line summary; explore where in the chain issues occur |
+| **Triage diffs** | `diff_time_windows`, `pivot_on_entity`, `ingestion_health` | Compare a query across two time windows; pull all events for an entity across sources; probe per-source ingestion freshness |
 | **Explore schema** | `list_log_sources`, `list_fields`, `list_entities`, `list_parsers`, `list_labels` | Discover what log data is available |
 | **Visualize** | `visualize` | Generate pie, bar, line, area, table, tile, treemap, heatmap, histogram charts |
 | **Dashboards** | `create_dashboard`, `add_dashboard_tile`, `list_dashboards`, `delete_dashboard` | Create OCI Management Dashboards with LA widgets, grid layout, and scope filters |
@@ -139,38 +139,6 @@ Click **Save**, then start a new Codex session to connect.
 | **Monitor** | `test_connection`, `get_current_context`, `get_log_summary` | Check connectivity, see current config, view log volume |
 
 ## Investigation Toolkit
-
-The triage tools help you understand log flow and root-cause issues quickly.
-
-### `diff_time_windows` — compare query behavior across time
-
-Run the same query over two time windows and get per-dimension deltas (spikes, drops, new dimensions, disappeared dimensions) plus a one-line summary.
-
-```json
-{
-  "tool": "diff_time_windows",
-  "query": "source='Linux Syslog' | stats count by severity",
-  "window_a_range": "last_4_hours",
-  "window_b_range": "last_24_hours"
-}
-```
-
-Returns `{summary, checked_at, findings: [...]}` where each finding carries `dimension_name`, `dimension_value`, `delta`, `ratio`, `status` (spike/drop/new/disappeared), and `message`.
-
-### `pivot_on_entity` — drill down into a dimension
-
-Slice a query across monitored entities (hosts, databases, applications) to see which entity is responsible for a spike or anomaly. Breaks a single aggregation into per-entity rows, sorted by contribution.
-
-```json
-{
-  "tool": "pivot_on_entity",
-  "query": "source='Apache Access' | stats count by status_code",
-  "entity_type": "Host",
-  "limit": 20
-}
-```
-
-Returns `{summary, checked_at, entity_count, results: [...]}` where each result shows the entity name, matched_count, percentage of total, and timeline (sparkline of values over time).
 
 ### `ingestion_health` — is ingestion even working?
 
