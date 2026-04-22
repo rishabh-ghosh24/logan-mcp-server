@@ -849,6 +849,184 @@ class TestPhase5And6DrillDown:
         assert src["timeline"] is None
 
 
+class TestOrchestrationEdgeCases:
+    @pytest.mark.asyncio
+    async def test_source_pinned_seed_no_false_cross_source_expansion(self):
+        """Seed `'Log Source' = 'X' | ...` → drill-down queries for other sources
+        compose to expressions that match zero rows (intentional)."""
+        diff_result = {
+            "current": {}, "comparison": {}, "summary": "",
+            "delta": [{"dimension": "Y", "current": 5, "comparison": 2, "pct_change": 150.0}],
+        }
+        engine = _make_engine()
+        engine.execute = AsyncMock(return_value={"data": {"columns": [], "rows": []}})
+        schema, ih, j2, diff = _make_deps()
+        diff.run = AsyncMock(return_value=diff_result)
+        tool = InvestigateIncidentTool(
+            query_engine=engine, schema_manager=schema,
+            ingestion_health_tool=ih, parser_triage_tool=j2, diff_tool=diff,
+            settings=_make_settings(), budget_tracker=_make_budget(),
+        )
+        await tool.run(query="'Log Source' = 'X'", time_range="last_1_hour", top_k=3)
+        per_source_queries = [
+            c.kwargs.get("query", "")
+            for c in engine.execute.await_args_list
+            if "'Log Source' = 'Y'" in c.kwargs.get("query", "")
+        ]
+        # Each per-source query for Y must contain the seed's X constraint wrapped in parens.
+        for q in per_source_queries:
+            assert q.startswith("('Log Source' = 'X') and 'Log Source' = 'Y'"), q
+
+    @pytest.mark.asyncio
+    async def test_per_source_gather_exception_isolated(self):
+        """One source's drill-down branch raises → that source has errors,
+        others complete, partial_reasons includes source_errors."""
+        diff_result = {
+            "current": {}, "comparison": {}, "summary": "",
+            "delta": [
+                {"dimension": "A", "current": 100, "comparison": 0, "pct_change": None},
+                {"dimension": "B", "current": 50, "comparison": 10, "pct_change": 400.0},
+            ],
+        }
+
+        # A's cluster query raises a non-Budget exception, B runs clean.
+        async def execute_router(**kwargs):
+            q = kwargs.get("query", "")
+            if "'Log Source' = 'A'" in q and "| cluster" in q:
+                raise RuntimeError("A cluster failed hard")
+            return {"data": {"columns": [], "rows": []}}
+
+        engine = MagicMock()
+        engine.execute = AsyncMock(side_effect=execute_router)
+        schema, ih, j2, diff = _make_deps()
+        diff.run = AsyncMock(return_value=diff_result)
+        tool = InvestigateIncidentTool(
+            query_engine=engine, schema_manager=schema,
+            ingestion_health_tool=ih, parser_triage_tool=j2, diff_tool=diff,
+            settings=_make_settings(), budget_tracker=_make_budget(),
+        )
+        report = await tool.run(query="*", time_range="last_1_hour", top_k=3)
+
+        # The branch-level exception is a recoverable per-phase error, so it
+        # becomes a per-source `errors` entry rather than a branch-level failure.
+        a_entry = next(s for s in report["anomalous_sources"] if s["source"] == "A")
+        b_entry = next(s for s in report["anomalous_sources"] if s["source"] == "B")
+        assert any("cluster" in e for e in a_entry["errors"])
+        assert b_entry["errors"] == [] or not any("cluster" in e for e in b_entry["errors"])
+        # infra_error path flags source_errors in partial_reasons.
+        assert report["partial"] is True
+        assert "source_errors" in report["partial_reasons"]
+        # And critically, NOT misreported as the other categories:
+        assert "entity_discovery_partial" not in report["partial_reasons"]
+        assert "budget_exceeded" not in report["partial_reasons"]
+
+    @pytest.mark.asyncio
+    async def test_multi_reason_partial(self):
+        """Simultaneously trigger timeline_omitted AND entity_discovery_partial."""
+        from oci.exceptions import ServiceError
+        diff_result = {
+            "current": {}, "comparison": {}, "summary": "",
+            "delta": [{"dimension": "A", "current": 50, "comparison": 10, "pct_change": 400.0}],
+        }
+
+        async def execute_router(**kwargs):
+            q = kwargs.get("query", "")
+            if "'User Name'" in q:
+                raise ServiceError(status=400, code="InvalidParameter",
+                                   headers={}, message="Invalid field")
+            if "| fields Time" in q:
+                raise RuntimeError("timeline failed")
+            return {"data": {"columns": [], "rows": []}}
+
+        engine = MagicMock()
+        engine.execute = AsyncMock(side_effect=execute_router)
+        schema, ih, j2, diff = _make_deps()
+        diff.run = AsyncMock(return_value=diff_result)
+        tool = InvestigateIncidentTool(
+            query_engine=engine, schema_manager=schema,
+            ingestion_health_tool=ih, parser_triage_tool=j2, diff_tool=diff,
+            settings=_make_settings(), budget_tracker=_make_budget(),
+        )
+        report = await tool.run(query="*", time_range="last_1_hour", top_k=3)
+        assert report["partial"] is True
+        assert "entity_discovery_partial" in report["partial_reasons"]
+        assert "timeline_omitted" in report["partial_reasons"]
+
+    @pytest.mark.asyncio
+    async def test_all_timelines_drop_cross_source_null(self):
+        diff_result = {
+            "current": {}, "comparison": {}, "summary": "",
+            "delta": [
+                {"dimension": "A", "current": 10, "comparison": 1, "pct_change": 900.0},
+                {"dimension": "B", "current": 5, "comparison": 1, "pct_change": 400.0},
+            ],
+        }
+
+        async def execute_router(**kwargs):
+            q = kwargs.get("query", "")
+            if "| fields Time" in q:
+                raise RuntimeError("timeline unavailable")
+            return {"data": {"columns": [], "rows": []}}
+
+        engine = MagicMock()
+        engine.execute = AsyncMock(side_effect=execute_router)
+        schema, ih, j2, diff = _make_deps()
+        diff.run = AsyncMock(return_value=diff_result)
+        tool = InvestigateIncidentTool(
+            query_engine=engine, schema_manager=schema,
+            ingestion_health_tool=ih, parser_triage_tool=j2, diff_tool=diff,
+            settings=_make_settings(), budget_tracker=_make_budget(),
+        )
+        report = await tool.run(query="*", time_range="last_1_hour", top_k=3)
+        assert report["cross_source_timeline"] is None
+        for s in report["anomalous_sources"]:
+            assert s["timeline"] is None
+        assert "timeline_omitted" in report["partial_reasons"]
+
+    @pytest.mark.asyncio
+    async def test_epoch_ms_timestamps_in_timeline_normalized_to_iso(self):
+        diff_result = {
+            "current": {}, "comparison": {}, "summary": "",
+            "delta": [{"dimension": "A", "current": 5, "comparison": 1, "pct_change": 400.0}],
+        }
+
+        async def execute_router(**kwargs):
+            q = kwargs.get("query", "")
+            if "| fields Time" in q:
+                # OCI returns Time as epoch-millisecond LONG
+                return {"data": {
+                    "columns": [
+                        {"name": "Time"}, {"name": "Severity"}, {"name": "Original Log Content"},
+                    ],
+                    "rows": [
+                        [1776829209147, "error", "msg1"],
+                        [1776829200000, None, "msg2"],
+                    ],
+                }}
+            return {"data": {"columns": [], "rows": []}}
+
+        engine = MagicMock()
+        engine.execute = AsyncMock(side_effect=execute_router)
+        schema, ih, j2, diff = _make_deps()
+        diff.run = AsyncMock(return_value=diff_result)
+        tool = InvestigateIncidentTool(
+            query_engine=engine, schema_manager=schema,
+            ingestion_health_tool=ih, parser_triage_tool=j2, diff_tool=diff,
+            settings=_make_settings(), budget_tracker=_make_budget(),
+        )
+        report = await tool.run(query="*", time_range="last_1_hour", top_k=3)
+        # Timeline entries have ISO timestamps, not raw ints.
+        for s in report["anomalous_sources"]:
+            if s["timeline"]:
+                for row in s["timeline"]:
+                    assert isinstance(row["time"], str)
+                    assert "T" in row["time"] and row["time"].endswith("+00:00")
+        if report["cross_source_timeline"]:
+            for row in report["cross_source_timeline"]:
+                assert isinstance(row["time"], str)
+                assert "T" in row["time"]
+
+
 class TestToolSchema:
     def test_investigate_incident_schema_present(self):
         from oci_logan_mcp.tools import get_tools
