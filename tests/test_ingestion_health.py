@@ -1,7 +1,6 @@
 """Tests for ingestion_health tool."""
 
 from datetime import datetime, timedelta, timezone
-from unittest.mock import AsyncMock, MagicMock
 
 import pytest
 
