@@ -170,6 +170,8 @@ Surface the top log sources with parse failures, ranked by volume. Returns up to
 
 Returns `{failures: [...], total_failure_count: N}` where each entry carries `source`, `failure_count`, `first_seen`, `last_seen`, and `sample_raw_lines` (up to 3).
 
+If the session budget is exhausted between the stats and samples queries, the ranked failure list is preserved and the response adds `partial: true, partial_reason: "samples_budget_exceeded"` with empty `sample_raw_lines` on each entry — so you still see which sources are failing even when samples can't be fetched.
+
 ## Multi-User Learning
 
 The server learns from usage and improves over time. Each user gets isolated storage, and the best queries are promoted to benefit everyone.
