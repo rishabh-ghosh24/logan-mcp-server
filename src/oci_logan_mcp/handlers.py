@@ -29,6 +29,7 @@ from .read_only_guard import ReadOnlyError, raise_if_read_only
 from .diff_tool import DiffTool
 from .pivot_tool import PivotTool
 from .ingestion_health import IngestionHealthTool
+from .parser_triage import ParserTriageTool
 from .budget_tracker import BudgetExceededError
 
 if TYPE_CHECKING:
@@ -99,6 +100,7 @@ class MCPHandlers:
         self.ingestion_health_tool = IngestionHealthTool(
             self.query_engine, self.schema_manager, settings,
         )
+        self.parser_triage_tool = ParserTriageTool(self.query_engine)
         self.validator = QueryValidator(self.schema_manager)
         self.visualization = VisualizationEngine()
         self.saved_search = SavedSearchService(oci_client, cache)
@@ -136,6 +138,7 @@ class MCPHandlers:
             "diff_time_windows": self._diff_time_windows,
             "pivot_on_entity": self._pivot_on_entity,
             "ingestion_health": self._ingestion_health,
+            "parser_failure_triage": self._parser_failure_triage,
             # Visualization
             "visualize": self._visualize,
             # Export
@@ -697,6 +700,22 @@ class MCPHandlers:
                 compartment_id=args.get("compartment_id"),
                 sources=args.get("sources"),
                 severity_filter=args.get("severity_filter", "warn"),
+            )
+        except BudgetExceededError as e:
+            payload = {
+                "status": "budget_exceeded",
+                "error": str(e),
+                "partial": None,
+                "budget": self._budget_tracker.snapshot().to_dict(),
+            }
+            return [{"type": "text", "text": json.dumps(payload, indent=2, default=str)}]
+        return [{"type": "text", "text": json.dumps(result, indent=2, default=str)}]
+
+    async def _parser_failure_triage(self, args: Dict) -> List[Dict]:
+        try:
+            result = await self.parser_triage_tool.run(
+                time_range=args.get("time_range", "last_24h"),
+                top_n=int(args.get("top_n", 20)),
             )
         except BudgetExceededError as e:
             payload = {

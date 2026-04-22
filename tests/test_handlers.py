@@ -1598,3 +1598,45 @@ class TestIngestionHealth:
         payload = json.loads(result[0]["text"])
         assert payload["status"] == "budget_exceeded"
         assert "bytes limit hit" in payload["error"]
+
+
+class TestParserFailureTriage:
+    @pytest.mark.asyncio
+    async def test_routes_to_parser_triage_tool(self, handlers):
+        """parser_failure_triage routes to ParserTriageTool and returns JSON."""
+        handlers.parser_triage_tool.run = AsyncMock(return_value={
+            "failures": [],
+            "total_failure_count": 0,
+        })
+
+        result = await handlers.handle_tool_call(
+            "parser_failure_triage",
+            {"time_range": "last_24h", "top_n": 5},
+        )
+
+        assert result[0]["type"] == "text"
+        payload = json.loads(result[0]["text"])
+        assert "failures" in payload
+        assert payload["total_failure_count"] == 0
+        handlers.parser_triage_tool.run.assert_awaited_once_with(
+            time_range="last_24h",
+            top_n=5,
+        )
+
+    @pytest.mark.asyncio
+    async def test_budget_exceeded_returns_structured_payload(self, handlers):
+        """BudgetExceededError surfaces as structured payload, not plain text."""
+        from oci_logan_mcp.budget_tracker import BudgetExceededError
+        handlers.parser_triage_tool.run = AsyncMock(
+            side_effect=BudgetExceededError("query limit hit")
+        )
+
+        result = await handlers.handle_tool_call(
+            "parser_failure_triage",
+            {},
+        )
+
+        payload = json.loads(result[0]["text"])
+        assert payload["status"] == "budget_exceeded"
+        assert "query limit hit" in payload["error"]
+        assert "budget" in payload

@@ -118,6 +118,7 @@ def test_all_registered_tools_are_classified():
         "diff_time_windows",
         "pivot_on_entity",
         "ingestion_health",
+        "parser_failure_triage",
         "visualize", "export_results",
         "get_current_context", "list_compartments",
         "test_connection", "find_compartment",
