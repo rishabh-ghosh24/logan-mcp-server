@@ -259,6 +259,29 @@ class TestWhyDidThisFireTool:
         assert result["related_saved_search_id"] == "ocid1.savedsearch.oc1..test"
         assert result["dashboard_id"] is None
 
+    @pytest.mark.asyncio
+    async def test_alarm_without_compartment_id_still_executes(self):
+        tool, client, engine = _make_tool()
+        alarm = _logan_alarm()
+        alarm["compartment_id"] = None
+        client.get_alarm = AsyncMock(return_value=alarm)
+        engine.execute = AsyncMock(side_effect=[
+            _query_result(columns=["count"], rows=[[4]]),
+            _query_result(
+                columns=["Time", "Log Source", "Severity", "Original Log Content"],
+                rows=[["2026-04-23T09:59:00Z", "Audit Logs", "ERROR", "bad things"]],
+            ),
+        ])
+
+        result = await tool.run(
+            alarm_ocid="ocid1.alarm.oc1..test",
+            fire_time="2026-04-23T10:00:00Z",
+        )
+
+        first_call = engine.execute.await_args_list[0].kwargs
+        assert first_call["compartment_id"] is None
+        assert result["alarm"]["compartment_id"] is None
+
 
 class TestWhyDidThisFireSchema:
     def test_schema_present(self):
