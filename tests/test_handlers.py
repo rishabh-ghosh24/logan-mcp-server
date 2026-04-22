@@ -1780,3 +1780,94 @@ class TestInvestigateIncident:
         payload = json.loads(result[0]["text"])
         # Falls through to handle_tool_call's generic exception path
         assert "unexpected" in payload.get("error", "") or "unexpected" in result[0]["text"]
+
+
+class TestWhyDidThisFire:
+    @pytest.mark.asyncio
+    async def test_routes_to_why_did_this_fire_tool(self, handlers):
+        handlers.why_did_this_fire_tool.run = AsyncMock(return_value={
+            "alarm": {"alarm_id": "ocid1.alarm.oc1..test"},
+            "top_contributing_rows": [],
+        })
+
+        result = await handlers.handle_tool_call(
+            "why_did_this_fire",
+            {"alarm_ocid": "ocid1.alarm.oc1..test", "fire_time": "2026-04-23T10:00:00Z"},
+        )
+
+        payload = json.loads(result[0]["text"])
+        assert payload["alarm"]["alarm_id"] == "ocid1.alarm.oc1..test"
+        handlers.why_did_this_fire_tool.run.assert_awaited_once_with(
+            alarm_ocid="ocid1.alarm.oc1..test",
+            fire_time="2026-04-23T10:00:00Z",
+            window_before_seconds=None,
+            window_after_seconds=60,
+        )
+
+    @pytest.mark.asyncio
+    async def test_missing_alarm_ocid_returns_structured_error(self, handlers):
+        handlers.why_did_this_fire_tool.run = AsyncMock()
+
+        result = await handlers.handle_tool_call(
+            "why_did_this_fire",
+            {"fire_time": "2026-04-23T10:00:00Z"},
+        )
+
+        payload = json.loads(result[0]["text"])
+        assert payload["status"] == "error"
+        assert "alarm_ocid" in payload["error"]
+        handlers.why_did_this_fire_tool.run.assert_not_awaited()
+
+    @pytest.mark.asyncio
+    async def test_invalid_window_before_seconds_returns_structured_error(self, handlers):
+        handlers.why_did_this_fire_tool.run = AsyncMock()
+
+        result = await handlers.handle_tool_call(
+            "why_did_this_fire",
+            {
+                "alarm_ocid": "ocid1.alarm.oc1..test",
+                "fire_time": "2026-04-23T10:00:00Z",
+                "window_before_seconds": "abc",
+            },
+        )
+
+        payload = json.loads(result[0]["text"])
+        assert payload["status"] == "error"
+        assert "window_before_seconds" in payload["error"]
+        handlers.why_did_this_fire_tool.run.assert_not_awaited()
+
+    @pytest.mark.asyncio
+    async def test_negative_window_after_seconds_returns_structured_error(self, handlers):
+        handlers.why_did_this_fire_tool.run = AsyncMock()
+
+        result = await handlers.handle_tool_call(
+            "why_did_this_fire",
+            {
+                "alarm_ocid": "ocid1.alarm.oc1..test",
+                "fire_time": "2026-04-23T10:00:00Z",
+                "window_after_seconds": -1,
+            },
+        )
+
+        payload = json.loads(result[0]["text"])
+        assert payload["status"] == "error"
+        assert "window_after_seconds" in payload["error"]
+        handlers.why_did_this_fire_tool.run.assert_not_awaited()
+
+    @pytest.mark.asyncio
+    async def test_budget_exceeded_returns_structured_payload(self, handlers):
+        from oci_logan_mcp.budget_tracker import BudgetExceededError
+
+        handlers.why_did_this_fire_tool.run = AsyncMock(
+            side_effect=BudgetExceededError("bytes limit hit")
+        )
+
+        result = await handlers.handle_tool_call(
+            "why_did_this_fire",
+            {"alarm_ocid": "ocid1.alarm.oc1..test", "fire_time": "2026-04-23T10:00:00Z"},
+        )
+
+        payload = json.loads(result[0]["text"])
+        assert payload["status"] == "budget_exceeded"
+        assert "bytes limit hit" in payload["error"]
+        assert "budget" in payload

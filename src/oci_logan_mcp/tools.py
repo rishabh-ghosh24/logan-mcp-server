@@ -420,6 +420,46 @@ def get_tools() -> List[Dict[str, Any]]:
                 "required": ["query"],
             },
         },
+        {
+            "name": "why_did_this_fire",
+            "description": (
+                "For Logan-managed monitoring alarms, explain why the alarm "
+                "fired by returning the stored Logan query, the historical "
+                "fire window, the trigger query result over that window, and "
+                "up to 50 scoped top contributing rows when the seed query is "
+                "safely scoped."
+            ),
+            "inputSchema": {
+                "type": "object",
+                "properties": {
+                    "alarm_ocid": {
+                        "type": "string",
+                        "description": "OCID of the Logan-managed monitoring alarm.",
+                    },
+                    "fire_time": {
+                        "type": "string",
+                        "description": "ISO-8601 timestamp when the alarm fired.",
+                    },
+                    "window_before_seconds": {
+                        "type": "integer",
+                        "minimum": 1,
+                        "description": (
+                            "Optional lookback window. Defaults to the alarm's "
+                            "pending_duration when present, else 300 seconds."
+                        ),
+                    },
+                    "window_after_seconds": {
+                        "type": "integer",
+                        "minimum": 0,
+                        "description": (
+                            "Optional post-fire padding window in seconds. "
+                            "Default: 60."
+                        ),
+                    },
+                },
+                "required": ["alarm_ocid", "fire_time"],
+            },
+        },
         # Visualization Tools
         {
             "name": "visualize",

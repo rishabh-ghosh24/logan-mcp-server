@@ -31,6 +31,7 @@ from .pivot_tool import PivotTool
 from .ingestion_health import IngestionHealthTool
 from .parser_triage import ParserTriageTool
 from .investigate import InvestigateIncidentTool
+from .alarm_postmortem import WhyDidThisFireTool
 from .budget_tracker import BudgetExceededError
 
 if TYPE_CHECKING:
@@ -111,6 +112,10 @@ class MCPHandlers:
             settings=settings,
             budget_tracker=self._budget_tracker,
         )
+        self.why_did_this_fire_tool = WhyDidThisFireTool(
+            oci_client=oci_client,
+            query_engine=self.query_engine,
+        )
         self.validator = QueryValidator(self.schema_manager)
         self.visualization = VisualizationEngine()
         self.saved_search = SavedSearchService(oci_client, cache)
@@ -150,6 +155,7 @@ class MCPHandlers:
             "ingestion_health": self._ingestion_health,
             "parser_failure_triage": self._parser_failure_triage,
             "investigate_incident": self._investigate_incident,
+            "why_did_this_fire": self._why_did_this_fire,
             # Visualization
             "visualize": self._visualize,
             # Export
@@ -786,6 +792,67 @@ class MCPHandlers:
                 {"status": "error", "error": str(e)}, indent=2,
             )}]
         return [{"type": "text", "text": json.dumps(report, indent=2, default=str)}]
+
+    async def _why_did_this_fire(self, args: Dict) -> List[Dict]:
+        """Run why_did_this_fire with structured validation and budget errors."""
+        alarm_ocid = args.get("alarm_ocid")
+        if not alarm_ocid or not isinstance(alarm_ocid, str):
+            return [{"type": "text", "text": json.dumps(
+                {"status": "error", "error": "alarm_ocid is required and must be a string"},
+                indent=2,
+            )}]
+        fire_time = args.get("fire_time")
+        if not fire_time or not isinstance(fire_time, str):
+            return [{"type": "text", "text": json.dumps(
+                {"status": "error", "error": "fire_time is required and must be an ISO-8601 string"},
+                indent=2,
+            )}]
+        window_before_seconds = args.get("window_before_seconds")
+        if window_before_seconds is not None:
+            try:
+                window_before_seconds = int(window_before_seconds)
+            except (TypeError, ValueError):
+                return [{"type": "text", "text": json.dumps(
+                    {"status": "error", "error": "window_before_seconds must be an integer"},
+                    indent=2,
+                )}]
+            if window_before_seconds < 1:
+                return [{"type": "text", "text": json.dumps(
+                    {"status": "error", "error": "window_before_seconds must be >= 1"},
+                    indent=2,
+                )}]
+        try:
+            window_after_seconds = int(args.get("window_after_seconds", 60))
+        except (TypeError, ValueError):
+            return [{"type": "text", "text": json.dumps(
+                {"status": "error", "error": "window_after_seconds must be an integer"},
+                indent=2,
+            )}]
+        if window_after_seconds < 0:
+            return [{"type": "text", "text": json.dumps(
+                {"status": "error", "error": "window_after_seconds must be >= 0"},
+                indent=2,
+            )}]
+        try:
+            result = await self.why_did_this_fire_tool.run(
+                alarm_ocid=alarm_ocid,
+                fire_time=fire_time,
+                window_before_seconds=window_before_seconds,
+                window_after_seconds=window_after_seconds,
+            )
+        except BudgetExceededError as e:
+            payload = {
+                "status": "budget_exceeded",
+                "error": str(e),
+                "partial": None,
+                "budget": self._budget_tracker.snapshot().to_dict(),
+            }
+            return [{"type": "text", "text": json.dumps(payload, indent=2, default=str)}]
+        except ValueError as e:
+            return [{"type": "text", "text": json.dumps(
+                {"status": "error", "error": str(e)}, indent=2
+            )}]
+        return [{"type": "text", "text": json.dumps(result, indent=2, default=str)}]
 
     async def _visualize(self, args: Dict) -> List[Dict]:
         """Generate visualization."""

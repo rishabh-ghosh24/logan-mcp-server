@@ -615,6 +615,8 @@ class OCILogAnalyticsClient:
                     "is_enabled": getattr(data, "is_enabled", True),
                     "destinations": getattr(data, "destinations", []),
                     "query": getattr(data, "query", ""),
+                    "pending_duration": getattr(data, "pending_duration", None),
+                    "compartment_id": getattr(data, "compartment_id", None),
                     "freeform_tags": getattr(data, "freeform_tags", {}) or {}}
         except oci.exceptions.ServiceError as e:
             if e.status == 429:
