@@ -218,58 +218,40 @@ parser_failure_triage(
 
 ## A1 — `investigate_incident` (orchestrator)
 
-### Purpose
-Flagship. One tool call that takes an alarm/query and time-range and returns a first-cut investigation.
+> **Implementation status:** Shipped in P0 per the detailed design at
+> [`2026-04-22-a1-investigate-incident-design.md`](2026-04-22-a1-investigate-incident-design.md).
+> This section captures the branch-level acceptance criteria; the design doc
+> is the source of truth for the actual implementation shape.
 
-### Tool interface
+### Purpose
+Flagship. One tool call that takes a seed query and a time range and returns a first-cut investigation. Composes J1 (ingestion_health), J2 (parser_failure_triage), A2 (diff_time_windows), and Logan `cluster` + `next_steps.suggest()` heuristics.
+
+### P0 tool interface
 ```
 investigate_incident(
-  seed: {
-    alarm_ocid: str | None,
-    query: str | None,
-    description: str | None,
-  },
-  time_range: TimeRange,
+  query: str,                        # seed, required (P0: query only; alarm_ocid/description deferred)
+  time_range: str = "last_1_hour",   # TIME_RANGES enum
+  top_k: int = 3,                    # clamped [1, 3]
   compartment_id: str | None = None,
-  max_budget_usd: float | None = None,
-) -> InvestigationReport {
-  summary: str,
-  anomalous_sources: list[{source, anomaly_score, why}],
-  top_error_clusters: list[{pattern, count, sample_rows}],
-  changed_entities: list[{entity_type, entity_value, change_description}],
-  timeline: list[TimelineEvent],
-  next_steps: list[NextStep],  # populated via N2
-  budget_consumed: BudgetSnapshot,
-}
+) -> InvestigationReport
 ```
 
-### Orchestration flow
-1. **Resolve seed** — if `alarm_ocid`, pull alarm context + fire-time. If `query`, run it to get seed rows. If `description`, use it as an NL prompt against current NL-to-query path.
-2. **Enumerate stopped sources** — call J1 `ingestion_health` (freshness) to find sources not emitting during the investigation window. These are candidate culprits regardless of volume.
-3. **Enumerate anomalous sources** — call A2 `diff_time_windows` with the investigation window vs. the prior equal-length window, per source. Top-K by delta magnitude. This replaces the old "baseline diff" step — A2 gives us spike/drop detection without a persistent baseline. A1 passes explicit `dimensions` (from field knowledge it already has via `list_fields`/learned queries) when it wants a per-field breakout; A2 does not perform field discovery in P0.
-4. **For each top-K source, in parallel:**
-   - Extract top error patterns (reuse Logan `cluster` command).
-   - Collect top entities (hosts/users/request-ids) via A4 `pivot_on_entity`.
-5. **Identify changed entities** — aggregate top entities with status changes across the top-K sources.
-6. **Assemble timeline** — merge time-ordered top events across sources.
-7. **Enforce budget** — use N5; abort gracefully if exceeded and return partial.
+See the design doc for the full `InvestigationReport` shape, including:
+- `top_entities` (not "changed_entities" — computed by count, not change-vs-baseline)
+- `partial_reasons: list[str]` with values: `budget_exceeded`, `timeline_omitted`, `entity_discovery_partial`, `source_errors`
+- J1 wrapped with `probe_window` + `note` (freshness snapshot ≠ investigation-window)
+- `seed.seed_filter` (quote-aware pre-pipe extraction) + `seed.seed_filter_degraded` flag
+- Per-source `errors` list for non-fatal issues
 
-### Files
-- Create: `src/oci_logan_mcp/investigate.py` — orchestrator.
-- Modify: `src/oci_logan_mcp/tools.py`.
-- Create: `tests/test_investigate.py`.
-
-### Test outline
-1. Test: alarm-seeded investigation on canned data returns expected summary fields.
-2. Test: budget exceeded mid-run → returns `partial=true` with whatever was gathered.
-3. Test: all sources healthy, no anomalies → summary "no anomalies detected in range."
-4. Test: query-seeded path produces equivalent output to alarm-seeded.
-5. Test: p95 runtime under 20s on canned-data harness.
+### P0 deferrals (explicit)
+- `alarm_ocid` seed → A6 `why_did_this_fire` owns OCID → fire_time + MQL-to-Logan translation
+- `description` (NL) seed → no in-repo NL resolver exists; skip for P0
+- `ip` entity discovery → deferred to bound per-source query count (3 entity fields in P0: host, user, request_id)
+- Full pipeline-aware seed parsing → quote-aware pre-pipe split only; `where`/`eval`/`stats` tails are dropped for drill-down scoping
 
 ### Dependencies
-- **Hard:** A2 (diff_time_windows), A4 (pivot_on_entity), J1 (freshness), H1+N5 (budget).
-- Ship only after A2+A4+J1 are merged locally on this branch.
-- **Note:** A1 no longer depends on a persistent baseline store. Spike/drop detection is performed live via A2 using the prior equal-length window as a reference. When J1 gains baselines in P1, step 3 can optionally pivot to baseline-backed anomaly scoring.
+- **Hard:** A2 (diff_time_windows), J1 (ingestion_health), J2 (parser_failure_triage), N5 (BudgetTracker)
+- **Shipped alongside** on the feat/triage-toolkit branch (all on main now)
 
 ---
 
