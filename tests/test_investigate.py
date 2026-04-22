@@ -476,3 +476,43 @@ class TestPhase1SeedExecution:
         assert len(calls) == 1
         assert calls[0].kwargs.get("time_range") == "last_1_hour"
         assert calls[0].kwargs.get("compartment_id") == "ocid1.test"
+
+
+class TestPhase2IngestionHealth:
+    @pytest.mark.asyncio
+    async def test_j1_invoked_with_all_severity(self):
+        ih_result = {
+            "summary": {"sources_healthy": 2, "sources_stopped": 1, "sources_unknown": 0},
+            "findings": [
+                {"source": "Broken", "status": "stopped", "severity": "critical"},
+            ],
+            "checked_at": "2026-04-22T10:00:00+00:00",
+            "metadata": {},
+        }
+        schema, ih, j2, diff = _make_deps(ih_result=ih_result)
+        tool = InvestigateIncidentTool(
+            query_engine=_make_engine(), schema_manager=schema,
+            ingestion_health_tool=ih, parser_triage_tool=j2, diff_tool=diff,
+            settings=_make_settings(), budget_tracker=_make_budget(),
+        )
+        report = await tool.run(query="*", time_range="last_1_hour", top_k=3, compartment_id="ocid1.xyz")
+        ih.run.assert_awaited_once()
+        kwargs = ih.run.await_args.kwargs
+        assert kwargs["severity_filter"] == "all"
+        assert kwargs["compartment_id"] == "ocid1.xyz"
+
+    @pytest.mark.asyncio
+    async def test_report_wraps_j1_with_probe_window_and_note(self):
+        schema, ih, j2, diff = _make_deps()
+        settings = _make_settings()
+        settings.ingestion_health.freshness_probe_window = "last_1_hour"
+        tool = InvestigateIncidentTool(
+            query_engine=_make_engine(), schema_manager=schema,
+            ingestion_health_tool=ih, parser_triage_tool=j2, diff_tool=diff,
+            settings=settings, budget_tracker=_make_budget(),
+        )
+        report = await tool.run(query="*", time_range="last_7_days", top_k=3)
+        ih_section = report["ingestion_health"]
+        assert ih_section["probe_window"] == "last_1_hour"
+        assert "probe window" in ih_section["note"].lower()
+        assert "snapshot" in ih_section

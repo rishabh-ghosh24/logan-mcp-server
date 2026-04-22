@@ -324,7 +324,23 @@ class InvestigateIncidentTool:
                 time_range=time_range,
                 compartment_id=compartment_id,
             )
-            # Phases 2-7 are added by subsequent tasks.
+            # Phase 2 — J1 freshness snapshot (configured probe window, not investigation window)
+            j1_snapshot = await self._ih_tool.run(
+                compartment_id=compartment_id,
+                severity_filter="all",
+            )
+            probe_window = self._settings.ingestion_health.freshness_probe_window
+            acc["ingestion_health"] = {
+                "snapshot": j1_snapshot,
+                "probe_window": probe_window,
+                "note": (
+                    f"Freshness is evaluated over J1's configured probe window "
+                    f"({probe_window}), which may differ from the investigation "
+                    f"time_range ({time_range}). A source marked healthy here "
+                    f"could have been stopped during the investigation window."
+                ),
+            }
+            # Phases 3-7 are added by subsequent tasks.
         except BudgetExceededError:
             acc["partial_reasons"].add("budget_exceeded")
         return _finalize(acc, self._budget)
