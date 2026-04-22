@@ -340,7 +340,12 @@ class InvestigateIncidentTool:
                     f"could have been stopped during the investigation window."
                 ),
             }
-            # Phases 3-7 are added by subsequent tasks.
+            # Phase 3 — J2 parser failures (always-on)
+            acc["parser_failures"] = await self._j2_tool.run(
+                time_range=time_range,
+                top_n=10,
+            )
+            # Phases 4-7 are added by subsequent tasks.
         except BudgetExceededError:
             acc["partial_reasons"].add("budget_exceeded")
         return _finalize(acc, self._budget)

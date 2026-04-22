@@ -516,3 +516,22 @@ class TestPhase2IngestionHealth:
         assert ih_section["probe_window"] == "last_1_hour"
         assert "probe window" in ih_section["note"].lower()
         assert "snapshot" in ih_section
+
+
+class TestPhase3ParserFailures:
+    @pytest.mark.asyncio
+    async def test_j2_invoked_with_time_range(self):
+        j2_result = {"failures": [{"source": "X", "failure_count": 42}], "total_failure_count": 42}
+        schema, ih, j2, diff = _make_deps(j2_result=j2_result)
+        tool = InvestigateIncidentTool(
+            query_engine=_make_engine(), schema_manager=schema,
+            ingestion_health_tool=ih, parser_triage_tool=j2, diff_tool=diff,
+            settings=_make_settings(), budget_tracker=_make_budget(),
+        )
+        report = await tool.run(query="*", time_range="last_24_hours", top_k=3)
+
+        j2.run.assert_awaited_once()
+        kwargs = j2.run.await_args.kwargs
+        assert kwargs["time_range"] == "last_24_hours"
+        assert kwargs["top_n"] == 10
+        assert report["parser_failures"]["total_failure_count"] == 42
