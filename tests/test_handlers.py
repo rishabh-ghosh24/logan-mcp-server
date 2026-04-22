@@ -1705,3 +1705,78 @@ class TestParserFailureTriage:
         payload = json.loads(result[0]["text"])
         assert payload["status"] == "error"
         handlers.parser_triage_tool.run.assert_not_awaited()
+
+
+class TestInvestigateIncident:
+    @pytest.mark.asyncio
+    async def test_routes_to_investigate_tool(self, handlers):
+        handlers.investigate_tool.run = AsyncMock(return_value={
+            "summary": "ok",
+            "seed": {"query": "'x' = 'y'", "seed_filter": "'x' = 'y'",
+                     "seed_filter_degraded": False, "time_range": "last_1_hour",
+                     "compartment_id": None},
+            "ingestion_health": None, "parser_failures": None,
+            "anomalous_sources": [], "cross_source_timeline": None,
+            "next_steps": [], "budget": {}, "partial": False,
+            "partial_reasons": [], "elapsed_seconds": 0.1,
+        })
+        result = await handlers.handle_tool_call(
+            "investigate_incident",
+            {"query": "'x' = 'y'", "time_range": "last_1_hour", "top_k": 3},
+        )
+        payload = json.loads(result[0]["text"])
+        assert payload["summary"] == "ok"
+        handlers.investigate_tool.run.assert_awaited_once_with(
+            query="'x' = 'y'",
+            time_range="last_1_hour",
+            top_k=3,
+            compartment_id=None,
+        )
+
+    @pytest.mark.asyncio
+    async def test_partial_report_forwarded_verbatim(self, handlers):
+        """A1 diverges from other triage tools: no {status: budget_exceeded} wrapper."""
+        handlers.investigate_tool.run = AsyncMock(return_value={
+            "summary": "partial", "seed": {},
+            "ingestion_health": None, "parser_failures": None,
+            "anomalous_sources": [], "cross_source_timeline": None,
+            "next_steps": [], "budget": {}, "partial": True,
+            "partial_reasons": ["budget_exceeded"], "elapsed_seconds": 3.0,
+        })
+        result = await handlers.handle_tool_call(
+            "investigate_incident",
+            {"query": "*"},
+        )
+        payload = json.loads(result[0]["text"])
+        # Partial report shape forwarded verbatim, NOT wrapped in {status: "..."}
+        assert "status" not in payload
+        assert payload["partial"] is True
+        assert payload["partial_reasons"] == ["budget_exceeded"]
+
+    @pytest.mark.asyncio
+    async def test_missing_query_returns_structured_error(self, handlers):
+        handlers.investigate_tool.run = AsyncMock()
+        result = await handlers.handle_tool_call("investigate_incident", {})
+        payload = json.loads(result[0]["text"])
+        assert payload["status"] == "error"
+        assert "query" in payload["error"]
+        handlers.investigate_tool.run.assert_not_awaited()
+
+    @pytest.mark.asyncio
+    async def test_bad_top_k_returns_structured_error(self, handlers):
+        handlers.investigate_tool.run = AsyncMock()
+        for bad in (-1, 0, 4, 10, "abc"):
+            result = await handlers.handle_tool_call(
+                "investigate_incident", {"query": "*", "top_k": bad},
+            )
+            payload = json.loads(result[0]["text"])
+            assert payload["status"] == "error", f"top_k={bad!r} did not error"
+        handlers.investigate_tool.run.assert_not_awaited()
+
+    @pytest.mark.asyncio
+    async def test_non_budget_exception_surfaces_as_error(self, handlers):
+        handlers.investigate_tool.run = AsyncMock(side_effect=RuntimeError("unexpected"))
+        result = await handlers.handle_tool_call("investigate_incident", {"query": "*"})
+        payload = json.loads(result[0]["text"])
+        # Falls through to handle_tool_call's generic exception path
+        assert "unexpected" in payload.get("error", "") or "unexpected" in result[0]["text"]

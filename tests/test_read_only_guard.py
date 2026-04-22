@@ -119,6 +119,7 @@ def test_all_registered_tools_are_classified():
         "pivot_on_entity",
         "ingestion_health",
         "parser_failure_triage",
+        "investigate_incident",
         "visualize", "export_results",
         "get_current_context", "list_compartments",
         "test_connection", "find_compartment",

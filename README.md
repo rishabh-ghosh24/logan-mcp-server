@@ -126,7 +126,7 @@ Click **Save**, then start a new Codex session to connect.
 | Capability | Tools | Examples |
 |---|---|---|
 | **Query logs** | `run_query`, `run_batch_queries`, `run_saved_search` | Search logs, run multiple queries in parallel, execute saved searches |
-| **Triage diffs** | `diff_time_windows`, `pivot_on_entity`, `ingestion_health`, `parser_failure_triage` | Compare a query across two time windows; pull all events for an entity across sources; probe per-source ingestion freshness; surface top parser failures with sample lines |
+| **Triage diffs** | `diff_time_windows`, `pivot_on_entity`, `ingestion_health`, `parser_failure_triage`, `investigate_incident` | Compare a query across two time windows; pull all events for an entity across sources; probe per-source ingestion freshness; surface top parser failures; one-call first-cut investigation orchestrator |
 | **Explore schema** | `list_log_sources`, `list_fields`, `list_entities`, `list_parsers`, `list_labels` | Discover what log data is available |
 | **Visualize** | `visualize` | Generate pie, bar, line, area, table, tile, treemap, heatmap, histogram charts |
 | **Dashboards** | `create_dashboard`, `add_dashboard_tile`, `list_dashboards`, `delete_dashboard` | Create OCI Management Dashboards with LA widgets, grid layout, and scope filters |
@@ -171,6 +171,35 @@ Surface the top log sources with parse failures, ranked by volume. Returns up to
 Returns `{failures: [...], total_failure_count: N}` where each entry carries `source`, `failure_count`, `first_seen`, `last_seen`, and `sample_raw_lines` (up to 3).
 
 If the session budget is exhausted between the stats and samples queries, the ranked failure list is preserved and the response adds `partial: true, partial_reason: "samples_budget_exceeded"` with empty `sample_raw_lines` on each entry — so you still see which sources are failing even when samples can't be fetched.
+
+### `investigate_incident` — one-call first-cut triage
+
+The flagship. Given a seed Logan query + time range, returns a structured investigation: stopped sources (J1), parser failures (J2), top_k anomalous sources vs. the prior equal-length window (A2), with per-source top error clusters (Logan `cluster`), top entities (host/user/request_id), and a recent-events timeline. Target: ≤20s p95 on dogfood data.
+
+```json
+{
+  "tool": "investigate_incident",
+  "query": "'Event' = 'error'",
+  "time_range": "last_1_hour",
+  "top_k": 3
+}
+```
+
+Returns `{summary, seed, ingestion_health, parser_failures, anomalous_sources: [{source, pct_change, top_error_clusters, top_entities, timeline, errors}], cross_source_timeline, next_steps, budget, partial, partial_reasons, elapsed_seconds}`.
+
+**P0 limitations** (documented honestly, not magic):
+- Only the seed's pre-pipe search clause is used for drill-down scoping. A seed like `'Event' = 'error' | where Severity = 'critical'` investigates **all** `'Event' = 'error'` rows — the `where` narrowing is dropped for drill-down. Fix: put all scoping in the pre-pipe filter.
+- `top_k` is clamped to `[1, 3]` — matches the ~21-query budget and ≤20s latency guarantee.
+- `alarm_ocid` seed and NL-to-query `description` seed are deferred (A6 will own alarm-OCID).
+- J1's freshness is evaluated over its configured `freshness_probe_window`, which may differ from the investigation `time_range`; the report's `ingestion_health.note` explains the difference.
+
+**Partial responses.** A1 never raises `BudgetExceededError` out of its boundary — instead, the report comes back with `partial: true` and specific `partial_reasons`:
+- `"budget_exceeded"` — session budget ran out mid-investigation
+- `"timeline_omitted"` — one or more per-source timeline queries errored
+- `"entity_discovery_partial"` — one or more entity fields weren't valid for a source (`InvalidParameter`)
+- `"source_errors"` — a non-budget, non-field-variance infrastructure failure occurred somewhere in a per-source branch (cluster query 5xx, unexpected ServiceError in entity discovery, transport timeout, or a whole-branch-level exception). Unlike `timeline_omitted`, this also covers failures in the cluster/entity sub-phases even if the rest of the branch completed — the sub-phase's empty result is accompanied by an `errors` entry naming the failure.
+
+Each condition is accompanied by `anomalous_sources[*].errors` entries describing exactly what went wrong per source.
 
 ## Multi-User Learning
 
