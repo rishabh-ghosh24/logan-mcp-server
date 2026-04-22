@@ -219,7 +219,7 @@ class TestOrchestration:
     async def test_probe_query_uses_configured_window(self, monkeypatch):
         frozen_now = datetime(2026, 4, 22, 10, 0, 0, tzinfo=timezone.utc)
         engine = _make_engine(_probe_result([]))
-        schema = _make_schema([])
+        schema = _make_schema(["Linux Syslog"])  # non-empty so probe actually runs
         settings = _make_settings(probe_window="last_4_hours")
         tool = IngestionHealthTool(engine, schema, settings)
 
@@ -280,6 +280,29 @@ class TestSourcesFilter:
         from oci_logan_mcp.ingestion_health import _compose_probe_query
         q = _compose_probe_query(["A", "B"])
         assert q == "'Log Source' in ('A', 'B') | stats max('Time') as last_log_ts by 'Log Source'"
+
+    def test_compose_probe_query_escapes_embedded_quotes(self):
+        from oci_logan_mcp.ingestion_health import _compose_probe_query
+        q = _compose_probe_query(["Bob's App"])
+        assert "'Log Source' in ('Bob''s App')" in q
+
+    @pytest.mark.asyncio
+    async def test_empty_sources_list_skips_probe_returns_empty(self, monkeypatch):
+        """sources=[] must short-circuit without running any query."""
+        engine = _make_engine(_probe_result([]))
+        schema = _make_schema(["UNEXPECTED"])
+        tool = IngestionHealthTool(engine, schema, _make_settings())
+
+        import oci_logan_mcp.ingestion_health as ih
+        monkeypatch.setattr(ih, "_utcnow", lambda: datetime(2026, 4, 22, 10, 0, 0, tzinfo=timezone.utc))
+
+        result = await tool.run(sources=[])
+
+        engine.execute.assert_not_called()
+        assert result["summary"] == {"sources_healthy": 0, "sources_stopped": 0, "sources_unknown": 0}
+        assert result["findings"] == []
+        assert result["metadata"]["sources_queried"] == []
+        assert result["metadata"]["probe_query"] is None
 
 
 class TestSeverityFilter:

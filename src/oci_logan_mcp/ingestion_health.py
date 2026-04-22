@@ -74,9 +74,9 @@ def _passes_severity_filter(severity: str, filter_level: str) -> bool:
 def _compose_probe_query(sources: Optional[List[str]]) -> str:
     """Build the `max(Time) by 'Log Source'` probe query, optionally filtered."""
     base = "* | stats max('Time') as last_log_ts by 'Log Source'"
-    if not sources:
+    if sources is None:
         return base
-    escaped = ", ".join(f"'{s}'" for s in sources)
+    escaped = ", ".join(f"'{s.replace(chr(39), chr(39) * 2)}'" for s in sources)
     return f"'Log Source' in ({escaped}) | stats max('Time') as last_log_ts by 'Log Source'"
 
 
@@ -124,7 +124,26 @@ class IngestionHealthTool:
         else:
             target_sources = list(sources)
 
-        # 2. Run the probe query.
+        # 2. Short-circuit if there is nothing to probe.
+        if not target_sources:
+            return {
+                "summary": {
+                    "sources_healthy": 0,
+                    "sources_stopped": 0,
+                    "sources_unknown": 0,
+                },
+                "checked_at": checked_at.isoformat(),
+                "findings": [],
+                "metadata": {
+                    "probe_query": None,
+                    "freshness_probe_window": ih_cfg.freshness_probe_window,
+                    "stoppage_threshold_seconds": ih_cfg.stoppage_threshold_seconds,
+                    "severity_filter": severity_filter,
+                    "sources_queried": target_sources,
+                },
+            }
+
+        # 3. Run the probe query.
         query = _compose_probe_query(sources)
         response = await self._engine.execute(
             query=query,
@@ -133,7 +152,7 @@ class IngestionHealthTool:
         )
         last_seen = _extract_last_seen_map(response)
 
-        # 3. Classify every target source.
+        # 4. Classify every target source.
         findings_all: List[Dict[str, Any]] = []
         summary = {"sources_healthy": 0, "sources_stopped": 0, "sources_unknown": 0}
         for name in target_sources:
@@ -151,7 +170,7 @@ class IngestionHealthTool:
                 "message": message,
             })
 
-        # 4. Apply severity filter to findings (summary counts stay global).
+        # 5. Apply severity filter to findings (summary counts stay global).
         findings = [
             f for f in findings_all
             if _passes_severity_filter(f["severity"], severity_filter)
