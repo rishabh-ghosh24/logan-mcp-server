@@ -117,6 +117,7 @@ def test_all_registered_tools_are_classified():
         "validate_query", "run_query", "run_saved_search", "run_batch_queries",
         "diff_time_windows",
         "pivot_on_entity",
+        "ingestion_health",
         "visualize", "export_results",
         "get_current_context", "list_compartments",
         "test_connection", "find_compartment",

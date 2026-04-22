@@ -28,6 +28,7 @@ from .audit import AuditLogger
 from .read_only_guard import ReadOnlyError, raise_if_read_only
 from .diff_tool import DiffTool
 from .pivot_tool import PivotTool
+from .ingestion_health import IngestionHealthTool
 from .budget_tracker import BudgetExceededError
 
 if TYPE_CHECKING:
@@ -95,6 +96,9 @@ class MCPHandlers:
         )
         self.diff_tool = DiffTool(self.query_engine)
         self.pivot_tool = PivotTool(self.query_engine)
+        self.ingestion_health_tool = IngestionHealthTool(
+            self.query_engine, self.schema_manager, settings,
+        )
         self.validator = QueryValidator(self.schema_manager)
         self.visualization = VisualizationEngine()
         self.saved_search = SavedSearchService(oci_client, cache)
@@ -131,6 +135,7 @@ class MCPHandlers:
             "run_batch_queries": self._run_batch_queries,
             "diff_time_windows": self._diff_time_windows,
             "pivot_on_entity": self._pivot_on_entity,
+            "ingestion_health": self._ingestion_health,
             # Visualization
             "visualize": self._visualize,
             # Export
@@ -681,6 +686,26 @@ class MCPHandlers:
             return [{"type": "text", "text": json.dumps(
                 {"status": "error", "error": str(e)}, indent=2
             )}]
+        return [{"type": "text", "text": json.dumps(result, indent=2, default=str)}]
+
+    async def _ingestion_health(self, args: Dict) -> List[Dict]:
+        """Run ingestion_health. Catch budget breaches and return them as a
+        structured payload instead of letting the generic exception path
+        stringify them — keeps the shape consistent with A2/A4."""
+        try:
+            result = await self.ingestion_health_tool.run(
+                compartment_id=args.get("compartment_id"),
+                sources=args.get("sources"),
+                severity_filter=args.get("severity_filter", "warn"),
+            )
+        except BudgetExceededError as e:
+            payload = {
+                "status": "budget_exceeded",
+                "error": str(e),
+                "partial": None,
+                "budget": self._budget_tracker.snapshot().to_dict(),
+            }
+            return [{"type": "text", "text": json.dumps(payload, indent=2, default=str)}]
         return [{"type": "text", "text": json.dumps(result, indent=2, default=str)}]
 
     async def _visualize(self, args: Dict) -> List[Dict]:

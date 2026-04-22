@@ -1558,3 +1558,43 @@ class TestPivotOnEntity:
         payload = json.loads(result[0]["text"])
         assert payload["status"] == "error"
         assert "field_name is required" in payload["error"]
+
+
+class TestIngestionHealth:
+    @pytest.mark.asyncio
+    async def test_ingestion_health_routes_through_handler(self, handlers):
+        """ingestion_health tool routes to IngestionHealthTool and returns JSON."""
+        handlers.ingestion_health_tool.run = AsyncMock(return_value={
+            "summary": {"sources_healthy": 1, "sources_stopped": 0, "sources_unknown": 0},
+            "checked_at": "2026-04-22T10:00:00+00:00",
+            "findings": [],
+            "metadata": {},
+        })
+
+        result = await handlers.handle_tool_call(
+            "ingestion_health",
+            {"severity_filter": "warn"},
+        )
+
+        assert result[0]["type"] == "text"
+        payload = json.loads(result[0]["text"])
+        assert payload["summary"]["sources_healthy"] == 1
+        handlers.ingestion_health_tool.run.assert_awaited_once_with(
+            compartment_id=None,
+            sources=None,
+            severity_filter="warn",
+        )
+
+    @pytest.mark.asyncio
+    async def test_ingestion_health_budget_exceeded_structured(self, handlers):
+        """BudgetExceededError surfaces as a structured payload, not plain text."""
+        from oci_logan_mcp.budget_tracker import BudgetExceededError
+        handlers.ingestion_health_tool.run = AsyncMock(
+            side_effect=BudgetExceededError("bytes limit hit")
+        )
+
+        result = await handlers.handle_tool_call("ingestion_health", {})
+
+        payload = json.loads(result[0]["text"])
+        assert payload["status"] == "budget_exceeded"
+        assert "bytes limit hit" in payload["error"]

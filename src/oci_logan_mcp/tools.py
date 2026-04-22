@@ -287,6 +287,35 @@ def get_tools() -> List[Dict[str, Any]]:
                 "required": ["entity_type", "entity_value", "time_range"],
             },
         },
+        {
+            "name": "ingestion_health",
+            "description": (
+                "Check whether log ingestion is currently working. Runs one aggregate "
+                "probe query and classifies each source as healthy (emitted recently), "
+                "stopped (last record older than threshold), or unknown (no records in "
+                "probe window). Answers 'is ingestion even working right now?' and is "
+                "a foundational input to investigate_incident."
+            ),
+            "inputSchema": {
+                "type": "object",
+                "properties": {
+                    "compartment_id": {
+                        "type": "string",
+                        "description": "Optional compartment OCID. Uses default if not specified.",
+                    },
+                    "sources": {
+                        "type": "array",
+                        "items": {"type": "string"},
+                        "description": "Optional. Limit the probe to these source names. If omitted, all discovered sources are probed.",
+                    },
+                    "severity_filter": {
+                        "type": "string",
+                        "enum": ["all", "warn", "critical"],
+                        "description": "Drop findings below this severity tier. Default: 'warn' (shows warn + critical).",
+                    },
+                },
+            },
+        },
         # Visualization Tools
         {
             "name": "visualize",
