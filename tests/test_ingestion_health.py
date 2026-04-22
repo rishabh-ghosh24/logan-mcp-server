@@ -231,3 +231,52 @@ class TestOrchestration:
         kwargs = engine.execute.call_args.kwargs
         assert kwargs["time_range"] == "last_4_hours"
         assert "stats max('Time') as last_log_ts by 'Log Source'" in kwargs["query"]
+
+
+class TestSourcesFilter:
+    @pytest.mark.asyncio
+    async def test_sources_arg_limits_probe_and_skips_enumeration(self, monkeypatch):
+        frozen_now = datetime(2026, 4, 22, 10, 0, 0, tzinfo=timezone.utc)
+        # Probe returns only web; audit was in the request but had no records.
+        engine = _make_engine(_probe_result([
+            ("web", "2026-04-22T09:59:00Z"),
+        ]))
+        # Schema returns something wildly different — must NOT be used.
+        schema = _make_schema(["UNEXPECTED"])
+        tool = IngestionHealthTool(engine, schema, _make_settings())
+
+        import oci_logan_mcp.ingestion_health as ih
+        monkeypatch.setattr(ih, "_utcnow", lambda: frozen_now)
+
+        result = await tool.run(
+            sources=["web", "audit"],
+            severity_filter="all",
+        )
+
+        # schema.get_log_sources was not called — caller's list wins.
+        schema.get_log_sources.assert_not_called()
+
+        # Probe query filters to the caller's two sources.
+        query = engine.execute.call_args.kwargs["query"]
+        assert "'Log Source' in ('web', 'audit')" in query
+
+        # Findings cover exactly the caller's two sources, one healthy, one unknown.
+        by_source = {f["source"]: f for f in result["findings"]}
+        assert set(by_source.keys()) == {"web", "audit"}
+        assert by_source["web"]["status"] == "healthy"
+        assert by_source["audit"]["status"] == "unknown"
+        assert result["summary"] == {
+            "sources_healthy": 1,
+            "sources_stopped": 0,
+            "sources_unknown": 1,
+        }
+
+    def test_compose_probe_query_no_filter(self):
+        from oci_logan_mcp.ingestion_health import _compose_probe_query
+        q = _compose_probe_query(None)
+        assert q == "* | stats max('Time') as last_log_ts by 'Log Source'"
+
+    def test_compose_probe_query_with_sources(self):
+        from oci_logan_mcp.ingestion_health import _compose_probe_query
+        q = _compose_probe_query(["A", "B"])
+        assert q == "'Log Source' in ('A', 'B') | stats max('Time') as last_log_ts by 'Log Source'"
