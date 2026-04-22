@@ -111,3 +111,37 @@ def _merge_results(
             "sample_raw_lines": samples.get(entry["parser_name"], []),
         })
     return out
+
+
+class ParserTriageTool:
+    """Run two Logan queries to surface top parser failures with sample lines."""
+
+    def __init__(self, query_engine):
+        self._engine = query_engine
+
+    async def run(
+        self,
+        time_range: str = "last_24h",
+        top_n: int = 20,
+    ) -> Dict[str, Any]:
+        stats_query = _build_stats_query(top_n)
+        stats_resp = await self._engine.execute(
+            query=stats_query,
+            time_range=time_range,
+        )
+        stats = _parse_stats_response(stats_resp)
+
+        if not stats:
+            return {"failures": [], "total_failure_count": 0}
+
+        parser_names = [s["parser_name"] for s in stats]
+        samples_query = _build_samples_query(parser_names)
+        samples_resp = await self._engine.execute(
+            query=samples_query,
+            time_range=time_range,
+        )
+        samples = _parse_samples_response(samples_resp)
+
+        failures = _merge_results(stats, samples)
+        total = sum(f["failure_count"] for f in failures)
+        return {"failures": failures, "total_failure_count": total}

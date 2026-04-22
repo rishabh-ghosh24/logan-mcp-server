@@ -8,6 +8,7 @@ from oci_logan_mcp.parser_triage import (
     _parse_stats_response,
     _parse_samples_response,
     _merge_results,
+    ParserTriageTool,
 )
 
 
@@ -161,3 +162,84 @@ class TestResponseParsers:
         assert r["first_seen"] == "2026-04-22T00:00:00Z"
         assert r["last_seen"] == "2026-04-22T09:00:00Z"
         assert r["sample_raw_lines"] == ["line1"]
+
+
+# ---------------------------------------------------------------------------
+# Orchestration fixtures
+# ---------------------------------------------------------------------------
+
+def _make_engine(*responses):
+    """Mock engine whose execute() returns responses in order."""
+    from unittest.mock import AsyncMock, MagicMock
+    engine = MagicMock()
+    engine.execute = AsyncMock(side_effect=list(responses))
+    return engine
+
+
+class TestOrchestration:
+    @pytest.mark.asyncio
+    async def test_run_aggregates_failures_and_attaches_samples(self):
+        stats_resp = _stats_resp([
+            ["Apache Parser", "Apache Access", 42,
+             "2026-04-22T00:00:00Z", "2026-04-22T09:00:00Z"],
+            ["Syslog Parser", "Linux Syslog", 7,
+             "2026-04-22T01:00:00Z", "2026-04-22T08:00:00Z"],
+        ])
+        samples_resp = _samples_resp([
+            ["Apache Parser", "malformed line 1"],
+            ["Apache Parser", "malformed line 2"],
+            ["Syslog Parser", "bad syslog line"],
+        ])
+        engine = _make_engine(stats_resp, samples_resp)
+        tool = ParserTriageTool(engine)
+
+        result = await tool.run(time_range="last_24h", top_n=20)
+
+        assert result["total_failure_count"] == 49  # 42 + 7
+        assert len(result["failures"]) == 2
+        by_parser = {f["parser_name"]: f for f in result["failures"]}
+        assert by_parser["Apache Parser"]["failure_count"] == 42
+        assert by_parser["Apache Parser"]["sample_raw_lines"] == [
+            "malformed line 1", "malformed line 2",
+        ]
+        assert by_parser["Syslog Parser"]["sample_raw_lines"] == ["bad syslog line"]
+
+    @pytest.mark.asyncio
+    async def test_run_empty_result_skips_samples_query(self):
+        engine = _make_engine(_stats_resp([]))
+        tool = ParserTriageTool(engine)
+
+        result = await tool.run()
+
+        assert result["total_failure_count"] == 0
+        assert result["failures"] == []
+        # samples query must NOT be called when stats are empty
+        assert engine.execute.call_count == 1
+
+    @pytest.mark.asyncio
+    async def test_run_passes_time_range_and_top_n_to_engine(self):
+        engine = _make_engine(_stats_resp([]))
+        tool = ParserTriageTool(engine)
+
+        await tool.run(time_range="last_4_hours", top_n=5)
+
+        kwargs = engine.execute.call_args.kwargs
+        assert kwargs["time_range"] == "last_4_hours"
+        assert "| head 5" in kwargs["query"]
+
+    @pytest.mark.asyncio
+    async def test_run_samples_capped_at_three_per_parser(self):
+        stats_resp = _stats_resp([
+            ["Noisy Parser", "Source A", 100,
+             "2026-04-22T00:00:00Z", "2026-04-22T09:00:00Z"],
+        ])
+        # Engine returns 5 sample lines for the one parser.
+        samples_resp = _samples_resp([
+            ["Noisy Parser", f"raw line {i}"] for i in range(5)
+        ])
+        engine = _make_engine(stats_resp, samples_resp)
+        tool = ParserTriageTool(engine)
+
+        result = await tool.run()
+
+        assert len(result["failures"][0]["sample_raw_lines"]) == 3
