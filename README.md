@@ -197,7 +197,7 @@ Returns `{summary, seed, ingestion_health, parser_failures, anomalous_sources: [
 - `"budget_exceeded"` — session budget ran out mid-investigation
 - `"timeline_omitted"` — one or more per-source timeline queries errored
 - `"entity_discovery_partial"` — one or more entity fields weren't valid for a source (`InvalidParameter`)
-- `"source_errors"` — a per-source branch failed wholesale
+- `"source_errors"` — a non-budget, non-field-variance infrastructure failure occurred somewhere in a per-source branch (cluster query 5xx, unexpected ServiceError in entity discovery, transport timeout, or a whole-branch-level exception). Unlike `timeline_omitted`, this also covers failures in the cluster/entity sub-phases even if the rest of the branch completed — the sub-phase's empty result is accompanied by an `errors` entry naming the failure.
 
 Each condition is accompanied by `anomalous_sources[*].errors` entries describing exactly what went wrong per source.
 
