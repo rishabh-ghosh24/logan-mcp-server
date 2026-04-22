@@ -345,7 +345,39 @@ class InvestigateIncidentTool:
                 time_range=time_range,
                 top_n=10,
             )
-            # Phases 4-7 are added by subsequent tasks.
+            # Phase 4 — A2 anomaly ranking with anchored windows
+            anchor = _utcnow()
+            current_w, comparison_w = _compute_windows(time_range, anchor)
+            if seed_filter == "*":
+                ranking_query = "* | stats count as n by 'Log Source'"
+            else:
+                ranking_query = f"{seed_filter} | stats count as n by 'Log Source'"
+            diff_result = await self._diff_tool.run(
+                query=ranking_query,
+                current_window=current_w,
+                comparison_window=comparison_w,
+            )
+            acc["diff"] = diff_result
+
+            # Identify stopped sources from J1 to exclude from ranking.
+            stopped: Set[str] = set()
+            ih_section = acc.get("ingestion_health") or {}
+            for finding in ((ih_section.get("snapshot") or {}).get("findings") or []):
+                if finding.get("status") == "stopped":
+                    stopped.add(str(finding.get("source")))
+
+            acc["anomalous_sources"] = _rank_anomalous_sources(
+                diff_result.get("delta") or [], stopped, top_k,
+            )
+            # Seed per_source entries for drill-down phases.
+            for s in acc["anomalous_sources"]:
+                acc["per_source"][s["source"]] = {
+                    "top_error_clusters": [],
+                    "top_entities": [],
+                    "timeline": None,
+                    "errors": [],
+                }
+            # Phases 5-7 are added by subsequent tasks.
         except BudgetExceededError:
             acc["partial_reasons"].add("budget_exceeded")
         return _finalize(acc, self._budget)

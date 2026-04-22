@@ -535,3 +535,73 @@ class TestPhase3ParserFailures:
         assert kwargs["time_range"] == "last_24_hours"
         assert kwargs["top_n"] == 10
         assert report["parser_failures"]["total_failure_count"] == 42
+
+
+class TestPhase4AnomalyRanking:
+    @pytest.mark.asyncio
+    async def test_diff_query_is_seed_scoped_by_log_source(self):
+        schema, ih, j2, diff = _make_deps()
+        tool = InvestigateIncidentTool(
+            query_engine=_make_engine(), schema_manager=schema,
+            ingestion_health_tool=ih, parser_triage_tool=j2, diff_tool=diff,
+            settings=_make_settings(), budget_tracker=_make_budget(),
+        )
+        await tool.run(query="'Event' = 'error'", time_range="last_1_hour", top_k=3)
+
+        diff.run.assert_awaited_once()
+        kwargs = diff.run.await_args.kwargs
+        assert kwargs["query"] == "'Event' = 'error' | stats count as n by 'Log Source'"
+        # Both windows are absolute timestamps (anchored).
+        assert "time_start" in kwargs["current_window"]
+        assert "time_end" in kwargs["current_window"]
+        assert "time_start" in kwargs["comparison_window"]
+        assert "time_end" in kwargs["comparison_window"]
+        assert kwargs["current_window"]["time_start"] == kwargs["comparison_window"]["time_end"]
+
+    @pytest.mark.asyncio
+    async def test_anomalous_sources_populated_from_diff_delta(self):
+        diff_result = {
+            "current": {}, "comparison": {}, "summary": "",
+            "delta": [
+                {"dimension": "A", "current": 100, "comparison": 50, "pct_change": 100.0},
+                {"dimension": "B", "current": 30, "comparison": 60, "pct_change": -50.0},
+                {"dimension": "C", "current": 15, "comparison": 10, "pct_change": 50.0},
+                {"dimension": "D", "current": 5, "comparison": 5, "pct_change": 0.0},
+            ],
+        }
+        schema, ih, j2, diff = _make_deps()
+        diff.run = AsyncMock(return_value=diff_result)
+        tool = InvestigateIncidentTool(
+            query_engine=_make_engine(), schema_manager=schema,
+            ingestion_health_tool=ih, parser_triage_tool=j2, diff_tool=diff,
+            settings=_make_settings(), budget_tracker=_make_budget(),
+        )
+        report = await tool.run(query="*", time_range="last_1_hour", top_k=3)
+        srcs = [s["source"] for s in report["anomalous_sources"]]
+        assert srcs == ["A", "B", "C"]  # by |pct_change|: 100, 50, 50
+
+    @pytest.mark.asyncio
+    async def test_stopped_sources_excluded_from_ranking(self):
+        ih_result = {
+            "summary": {"sources_healthy": 1, "sources_stopped": 1, "sources_unknown": 0},
+            "findings": [{"source": "Broken", "status": "stopped", "severity": "critical"}],
+            "checked_at": "2026-04-22T10:00:00+00:00", "metadata": {},
+        }
+        diff_result = {
+            "current": {}, "comparison": {}, "summary": "",
+            "delta": [
+                {"dimension": "Broken", "current": 999, "comparison": 0, "pct_change": 9999.0},
+                {"dimension": "Working", "current": 10, "comparison": 5, "pct_change": 100.0},
+            ],
+        }
+        schema, ih, j2, diff = _make_deps(ih_result=ih_result)
+        diff.run = AsyncMock(return_value=diff_result)
+        tool = InvestigateIncidentTool(
+            query_engine=_make_engine(), schema_manager=schema,
+            ingestion_health_tool=ih, parser_triage_tool=j2, diff_tool=diff,
+            settings=_make_settings(), budget_tracker=_make_budget(),
+        )
+        report = await tool.run(query="*", time_range="last_1_hour", top_k=3)
+        srcs = [s["source"] for s in report["anomalous_sources"]]
+        assert "Broken" not in srcs
+        assert "Working" in srcs
