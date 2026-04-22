@@ -113,6 +113,17 @@ class BudgetConfig:
 
 
 @dataclass
+class IngestionHealthConfig:
+    """J1 — ingestion health tool configuration."""
+
+    # A source whose most recent log is older than this is classified `stopped/critical`.
+    stoppage_threshold_seconds: int = 600
+    # Time window for the freshness probe query; any source with no record in
+    # this window is classified `unknown/warn`.
+    freshness_probe_window: str = "last_1_hour"
+
+
+@dataclass
 class Settings:
     """Main settings container."""
 
@@ -125,6 +136,7 @@ class Settings:
     notifications: NotificationsConfig = field(default_factory=NotificationsConfig)
     cost: CostConfig = field(default_factory=CostConfig)
     budget: BudgetConfig = field(default_factory=BudgetConfig)
+    ingestion_health: IngestionHealthConfig = field(default_factory=IngestionHealthConfig)
     read_only: bool = False
     transcript_dir: Path = field(default_factory=lambda: Path.home() / ".oci-logan-mcp" / "transcripts")
 
@@ -184,6 +196,10 @@ class Settings:
                 "max_queries_per_session": self.budget.max_queries_per_session,
                 "max_bytes_per_session": self.budget.max_bytes_per_session,
                 "max_cost_usd_per_session": self.budget.max_cost_usd_per_session,
+            },
+            "ingestion_health": {
+                "stoppage_threshold_seconds": self.ingestion_health.stoppage_threshold_seconds,
+                "freshness_probe_window": self.ingestion_health.freshness_probe_window,
             },
             "transcript_dir": str(self.transcript_dir),
             "read_only": self.read_only,
@@ -313,6 +329,18 @@ def _parse_config(data: Dict[str, Any]) -> Settings:
             ),
             max_cost_usd_per_session=budget_data.get(
                 "max_cost_usd_per_session", settings.budget.max_cost_usd_per_session
+            ),
+        )
+
+    if ih_data := data.get("ingestion_health"):
+        settings.ingestion_health = IngestionHealthConfig(
+            stoppage_threshold_seconds=ih_data.get(
+                "stoppage_threshold_seconds",
+                settings.ingestion_health.stoppage_threshold_seconds,
+            ),
+            freshness_probe_window=ih_data.get(
+                "freshness_probe_window",
+                settings.ingestion_health.freshness_probe_window,
             ),
         )
 

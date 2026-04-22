@@ -235,3 +235,28 @@ def test_transcript_dir_round_trips_through_save_and_load(tmp_path):
     save_config(s, config_path=cfg_path)
     loaded = load_config(config_path=cfg_path)
     assert loaded.transcript_dir == custom
+
+
+def test_ingestion_health_defaults():
+    """IngestionHealthConfig defaults match the spec."""
+    from oci_logan_mcp.config import Settings
+
+    s = Settings()
+    assert s.ingestion_health.stoppage_threshold_seconds == 600
+    assert s.ingestion_health.freshness_probe_window == "last_1_hour"
+
+
+def test_ingestion_health_roundtrip(tmp_path):
+    """to_dict()/_parse_config() preserve ingestion_health overrides."""
+    from oci_logan_mcp.config import Settings, save_config, load_config
+
+    s = Settings()
+    s.ingestion_health.stoppage_threshold_seconds = 120
+    s.ingestion_health.freshness_probe_window = "last_4_hours"
+
+    cfg_path = tmp_path / "cfg.yaml"
+    save_config(s, cfg_path)
+    loaded = load_config(cfg_path)
+
+    assert loaded.ingestion_health.stoppage_threshold_seconds == 120
+    assert loaded.ingestion_health.freshness_probe_window == "last_4_hours"
