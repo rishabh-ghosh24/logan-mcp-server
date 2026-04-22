@@ -1,7 +1,6 @@
 """Tests for parser_failure_triage tool."""
 
 import pytest
-from unittest.mock import AsyncMock, MagicMock
 
 from oci_logan_mcp.parser_triage import _build_stats_query, _build_samples_query
 

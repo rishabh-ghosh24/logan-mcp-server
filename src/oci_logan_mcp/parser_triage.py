@@ -25,19 +25,16 @@ def _build_stats_query(top_n: int) -> str:
 
 
 def _build_samples_query(parser_names: List[str]) -> str:
-    """Build query to fetch sample raw log lines for given parsers.
+    """Fetch raw failure lines for the given parsers.
 
-    Escapes single quotes in parser names and returns a Log Analytics query that:
-    - Filters to Parser Failure log source
-    - Filters to the given set of parser names (escaped for SQL)
-    - Extracts Parser Name and raw Original Log Content
-    - Limits to 3 samples per parser (len(parser_names) × 3)
+    The `head` limit is a global cap (`len(parser_names) * 3`); per-parser
+    capping to 3 lines happens in `_parse_samples_response`.
     """
     escaped = ", ".join(
         f"'{n.replace(chr(39), chr(39) * 2)}'" for n in parser_names
     )
     return (
         f"'Log Source' = 'Parser Failure' AND 'Parser Name' in ({escaped}) | "
-        f"fields 'Parser Name', 'Original Log Content' | "
+        "fields 'Parser Name', 'Original Log Content' | "
         f"head {len(parser_names) * 3}"
     )
