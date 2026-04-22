@@ -243,3 +243,17 @@ class TestOrchestration:
         result = await tool.run()
 
         assert len(result["failures"][0]["sample_raw_lines"]) == 3
+
+
+class TestToolSchema:
+    def test_parser_failure_triage_schema_present(self):
+        from oci_logan_mcp.tools import get_tools
+        names = [t["name"] for t in get_tools()]
+        assert "parser_failure_triage" in names
+
+    def test_parser_failure_triage_schema_properties(self):
+        from oci_logan_mcp.tools import get_tools
+        tool = next(t for t in get_tools() if t["name"] == "parser_failure_triage")
+        props = tool["inputSchema"]["properties"]
+        assert "time_range" in props
+        assert "top_n" in props

@@ -316,6 +316,36 @@ def get_tools() -> List[Dict[str, Any]]:
                 },
             },
         },
+        {
+            "name": "parser_failure_triage",
+            "description": (
+                "Surface the top parser failures ranked by failure count. "
+                "Returns up to top_n parsers, each with failure_count, "
+                "the source they belong to, first/last seen timestamps, "
+                "and up to 3 sample raw lines that failed to parse. "
+                "Use this to identify which parsers need fixing."
+            ),
+            "inputSchema": {
+                "type": "object",
+                "properties": {
+                    "time_range": {
+                        "type": "string",
+                        "description": (
+                            "Time window to scan for parser failures. "
+                            "Default: 'last_24h'. Accepts Logan time strings "
+                            "such as 'last_1_hour', 'last_7_days'."
+                        ),
+                    },
+                    "top_n": {
+                        "type": "integer",
+                        "description": (
+                            "Maximum number of parsers to return, ranked by "
+                            "failure count descending. Default: 20."
+                        ),
+                    },
+                },
+            },
+        },
         # Visualization Tools
         {
             "name": "visualize",
