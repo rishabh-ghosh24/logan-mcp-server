@@ -6,7 +6,10 @@ Design: docs/phase-2/specs/2026-04-22-a1-investigate-incident-design.md
 
 from __future__ import annotations
 
-from typing import Any
+from datetime import datetime
+from typing import Any, Dict, List, Optional, Set, Tuple
+
+from .time_parser import TIME_RANGES
 
 
 def _extract_seed_filter(query: str) -> str:
@@ -74,3 +77,34 @@ def _compose_source_scoped_query(seed_filter: str, source: str, tail: str) -> st
     else:
         base = f"({seed_filter}) and {src_pred}"
     return f"{base} | {tail}"
+
+
+def _compute_windows(
+    time_range: str, anchor: datetime,
+) -> Tuple[Dict[str, str], Dict[str, str]]:
+    """Compute current and comparison windows as absolute ISO timestamps.
+
+    Both windows derive from the single `anchor` so they are guaranteed
+    equal-length and zero-gap adjacent (comparison.end == current.start).
+    This defends against the drift that would occur if the current window
+    were passed as a relative `time_range` token — `parse_time_range()`
+    captures its own `now` inside the engine at query time, which differs
+    from A1's anchor by the wall-clock latency of intervening phases.
+
+    Raises ValueError if `time_range` isn't in TIME_RANGES.
+    """
+    if time_range not in TIME_RANGES:
+        raise ValueError(
+            f"Unknown time_range: {time_range}. "
+            f"Valid: {sorted(TIME_RANGES.keys())}"
+        )
+    delta = TIME_RANGES[time_range]
+    current = {
+        "time_start": (anchor - delta).isoformat(),
+        "time_end":   anchor.isoformat(),
+    }
+    comparison = {
+        "time_start": (anchor - 2 * delta).isoformat(),
+        "time_end":   (anchor - delta).isoformat(),
+    }
+    return current, comparison

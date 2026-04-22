@@ -1,7 +1,9 @@
 """Tests for investigate_incident (A1) module."""
+from datetime import datetime, timedelta, timezone
+
 import pytest
 
-from oci_logan_mcp.investigate import _extract_seed_filter, _compose_source_scoped_query
+from oci_logan_mcp.investigate import _extract_seed_filter, _compose_source_scoped_query, _compute_windows
 
 
 class TestExtractSeedFilter:
@@ -83,3 +85,40 @@ class TestComposeSourceScopedQuery:
         # correctly returns no rows for X != Y (desired).
         q = _compose_source_scoped_query("'Log Source' = 'Y'", "X", "cluster")
         assert q == "('Log Source' = 'Y') and 'Log Source' = 'X' | cluster"
+
+
+class TestComputeWindows:
+    def test_equal_length_and_zero_gap_adjacency(self):
+        anchor = datetime(2026, 4, 22, 10, 0, 0, tzinfo=timezone.utc)
+        current, comparison = _compute_windows("last_1_hour", anchor)
+        # Zero-gap: comparison.end == current.start
+        assert comparison["time_end"] == current["time_start"]
+        # Equal length
+        c_start = datetime.fromisoformat(current["time_start"])
+        c_end = datetime.fromisoformat(current["time_end"])
+        p_start = datetime.fromisoformat(comparison["time_start"])
+        p_end = datetime.fromisoformat(comparison["time_end"])
+        assert (c_end - c_start) == (p_end - p_start) == timedelta(hours=1)
+
+    def test_current_ends_at_anchor(self):
+        anchor = datetime(2026, 4, 22, 10, 0, 0, tzinfo=timezone.utc)
+        current, _ = _compute_windows("last_1_hour", anchor)
+        assert current["time_end"] == anchor.isoformat()
+
+    def test_comparison_starts_at_anchor_minus_2_delta(self):
+        anchor = datetime(2026, 4, 22, 10, 0, 0, tzinfo=timezone.utc)
+        _, comparison = _compute_windows("last_1_hour", anchor)
+        expected = (anchor - timedelta(hours=2)).isoformat()
+        assert comparison["time_start"] == expected
+
+    def test_supports_longer_ranges(self):
+        anchor = datetime(2026, 4, 22, 10, 0, 0, tzinfo=timezone.utc)
+        current, comparison = _compute_windows("last_7_days", anchor)
+        c_start = datetime.fromisoformat(current["time_start"])
+        c_end = datetime.fromisoformat(current["time_end"])
+        assert (c_end - c_start) == timedelta(days=7)
+        assert comparison["time_end"] == current["time_start"]
+
+    def test_unknown_time_range_raises(self):
+        with pytest.raises(ValueError, match="Unknown time_range"):
+            _compute_windows("last_42_years", datetime(2026, 4, 22, tzinfo=timezone.utc))
