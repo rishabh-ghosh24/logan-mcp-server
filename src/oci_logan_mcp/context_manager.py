@@ -3,7 +3,7 @@
 import logging
 import os
 import tempfile
-from datetime import datetime
+from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any, Dict, List, Optional
 
@@ -84,7 +84,7 @@ class ContextManager:
 
     def _save_tenancy_context(self) -> None:
         """Save tenancy context to YAML file atomically."""
-        self._tenancy_context["last_updated"] = datetime.utcnow().isoformat()
+        self._tenancy_context["last_updated"] = datetime.now(timezone.utc).isoformat()
         self._atomic_yaml_write(self._context_file, self._tenancy_context)
 
     def _atomic_yaml_write(self, filepath: Path, data: Any) -> None:
