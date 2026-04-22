@@ -8,17 +8,17 @@ from typing import Any, Dict, List
 def _build_stats_query(top_n: int) -> str:
     """Build query to find top N parser failures by count.
 
-    Note: we intentionally group only by 'Parser Name'. The filter above pins
-    'Log Source' to the constant 'Parser Failure', so including it in the
-    `by` clause would add a redundant constant column without identifying the
-    underlying source the broken parser was attached to.
+    Filters to records where `'Parse Failed' = 1` — the per-record flag Log
+    Analytics sets when parsing a raw line fails. Groups by 'Parser Name'
+    and 'Log Source' so each result row identifies both the broken parser
+    and the originating source it was attached to.
     """
     return (
-        "'Log Source' = 'Parser Failure' | "
+        "'Parse Failed' = 1 | "
         "stats count as failure_count, "
         "earliest('Time') as first_seen, "
         "latest('Time') as last_seen "
-        "by 'Parser Name' | "
+        "by 'Parser Name', 'Log Source' | "
         f"sort -failure_count | head {top_n}"
     )
 
@@ -36,7 +36,7 @@ def _build_samples_query(parser_names: List[str]) -> str:
         f"'{n.replace(chr(39), chr(39) * 2)}'" for n in parser_names
     )
     return (
-        f"'Log Source' = 'Parser Failure' AND 'Parser Name' in ({escaped}) | "
+        f"'Parse Failed' = 1 AND 'Parser Name' in ({escaped}) | "
         "fields 'Parser Name', 'Original Log Content' | "
         f"head {len(parser_names) * 3}"
     )
@@ -45,16 +45,17 @@ def _build_samples_query(parser_names: List[str]) -> str:
 def _parse_stats_response(response: Dict[str, Any]) -> List[Dict[str, Any]]:
     """Parse stats query response into list of parser failure records.
 
-    Expected columns: Parser Name, failure_count, first_seen, last_seen
+    Expected columns: Parser Name, Log Source, failure_count, first_seen, last_seen
     Returns empty list if response is malformed or missing required columns.
     """
     data = response.get("data", {}) or {}
     columns = [c.get("name") for c in data.get("columns", [])]
     rows = data.get("rows", [])
-    required = {"Parser Name", "failure_count", "first_seen", "last_seen"}
+    required = {"Parser Name", "Log Source", "failure_count", "first_seen", "last_seen"}
     if not required.issubset(columns):
         return []
     pn_idx = columns.index("Parser Name")
+    src_idx = columns.index("Log Source")
     cnt_idx = columns.index("failure_count")
     fs_idx = columns.index("first_seen")
     ls_idx = columns.index("last_seen")
@@ -64,6 +65,7 @@ def _parse_stats_response(response: Dict[str, Any]) -> List[Dict[str, Any]]:
             continue
         out.append({
             "parser_name": str(row[pn_idx]),
+            "source": str(row[src_idx]),
             "failure_count": int(row[cnt_idx]) if row[cnt_idx] is not None else 0,
             "first_seen": str(row[fs_idx]) if row[fs_idx] is not None else None,
             "last_seen": str(row[ls_idx]) if row[ls_idx] is not None else None,

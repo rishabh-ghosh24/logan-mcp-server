@@ -13,19 +13,18 @@ from oci_logan_mcp.parser_triage import (
 
 
 class TestQueryBuilders:
-    def test_stats_query_includes_failure_source_filter(self):
+    def test_stats_query_uses_parse_failed_filter(self):
         q = _build_stats_query(top_n=10)
-        assert "'Log Source' = 'Parser Failure'" in q
+        assert "'Parse Failed' = 1" in q
 
     def test_stats_query_aggregates_count_first_last(self):
         q = _build_stats_query(top_n=10)
         assert "stats count as failure_count" in q
         assert "earliest('Time') as first_seen" in q
         assert "latest('Time') as last_seen" in q
-        assert "by 'Parser Name'" in q
-        # Log Source is a constant (= 'Parser Failure') after filter, so do not
-        # include it in the `by` clause.
-        assert "'Log Source'" not in q.split("by ", 1)[1]
+        # With `'Parse Failed' = 1` as the filter, 'Log Source' in the by-clause
+        # identifies the actual source each failed line came from.
+        assert "by 'Parser Name', 'Log Source'" in q
 
     def test_stats_query_sorts_and_limits_to_top_n(self):
         q = _build_stats_query(top_n=7)
@@ -34,7 +33,7 @@ class TestQueryBuilders:
 
     def test_samples_query_filters_to_given_parser_names(self):
         q = _build_samples_query(["Apache Parser", "Syslog"])
-        assert "'Log Source' = 'Parser Failure'" in q
+        assert "'Parse Failed' = 1" in q
         assert "'Parser Name' in ('Apache Parser', 'Syslog')" in q
         assert "'Original Log Content'" in q
 
@@ -55,7 +54,7 @@ def _stats_resp(rows):
     return {
         "data": {
             "columns": [
-                {"name": "Parser Name"},
+                {"name": "Parser Name"}, {"name": "Log Source"},
                 {"name": "failure_count"}, {"name": "first_seen"}, {"name": "last_seen"},
             ],
             "rows": rows,
@@ -77,14 +76,14 @@ def _samples_resp(rows):
 class TestResponseParsers:
     def test_parse_stats_basic(self):
         resp = _stats_resp([
-            ["Apache Parser", 42,
+            ["Apache Parser", "Apache Access", 42,
              "2026-04-22T00:00:00Z", "2026-04-22T09:00:00Z"],
         ])
         result = _parse_stats_response(resp)
         assert len(result) == 1
         r = result[0]
         assert r["parser_name"] == "Apache Parser"
-        assert "source" not in r
+        assert r["source"] == "Apache Access"
         assert r["failure_count"] == 42
         assert r["first_seen"] == "2026-04-22T00:00:00Z"
         assert r["last_seen"] == "2026-04-22T09:00:00Z"
@@ -116,6 +115,7 @@ class TestResponseParsers:
     def test_merge_results_attaches_samples(self):
         stats = [{
             "parser_name": "Apache Parser",
+            "source": "Apache Access",
             "failure_count": 10,
             "first_seen": "2026-04-22T00:00:00Z",
             "last_seen": "2026-04-22T09:00:00Z",
@@ -127,6 +127,7 @@ class TestResponseParsers:
     def test_merge_results_empty_samples_for_parser_with_no_raw_data(self):
         stats = [{
             "parser_name": "Silent Parser",
+            "source": "X",
             "failure_count": 5,
             "first_seen": "2026-04-22T00:00:00Z",
             "last_seen": "2026-04-22T09:00:00Z",
@@ -136,7 +137,7 @@ class TestResponseParsers:
 
     def test_parse_stats_none_failure_count_defaults_to_zero(self):
         resp = _stats_resp([
-            ["Apache Parser", None,
+            ["Apache Parser", "Apache Access", None,
              "2026-04-22T00:00:00Z", "2026-04-22T09:00:00Z"],
         ])
         result = _parse_stats_response(resp)
@@ -150,6 +151,7 @@ class TestResponseParsers:
     def test_merge_results_preserves_all_stats_fields(self):
         stats = [{
             "parser_name": "Apache Parser",
+            "source": "Apache Access",
             "failure_count": 10,
             "first_seen": "2026-04-22T00:00:00Z",
             "last_seen": "2026-04-22T09:00:00Z",
@@ -157,6 +159,7 @@ class TestResponseParsers:
         result = _merge_results(stats, {"Apache Parser": ["line1"]})
         r = result[0]
         assert r["parser_name"] == "Apache Parser"
+        assert r["source"] == "Apache Access"
         assert r["failure_count"] == 10
         assert r["first_seen"] == "2026-04-22T00:00:00Z"
         assert r["last_seen"] == "2026-04-22T09:00:00Z"
@@ -179,9 +182,9 @@ class TestOrchestration:
     @pytest.mark.asyncio
     async def test_run_aggregates_failures_and_attaches_samples(self):
         stats_resp = _stats_resp([
-            ["Apache Parser", 42,
+            ["Apache Parser", "Apache Access", 42,
              "2026-04-22T00:00:00Z", "2026-04-22T09:00:00Z"],
-            ["Syslog Parser", 7,
+            ["Syslog Parser", "Linux Syslog", 7,
              "2026-04-22T01:00:00Z", "2026-04-22T08:00:00Z"],
         ])
         samples_resp = _samples_resp([
@@ -229,7 +232,7 @@ class TestOrchestration:
     @pytest.mark.asyncio
     async def test_run_samples_capped_at_three_per_parser(self):
         stats_resp = _stats_resp([
-            ["Noisy Parser", 100,
+            ["Noisy Parser", "Source A", 100,
              "2026-04-22T00:00:00Z", "2026-04-22T09:00:00Z"],
         ])
         # Engine returns 5 sample lines for the one parser.
@@ -249,9 +252,9 @@ class TestOrchestration:
         samples for every parser. If one parser dominates the first head rows, others
         receive no samples. This is acceptable per spec ('up to 3 samples')."""
         stats_resp = _stats_resp([
-            ["Dominant Parser", 200,
+            ["Dominant Parser", "Source A", 200,
              "2026-04-22T00:00:00Z", "2026-04-22T09:00:00Z"],
-            ["Quiet Parser", 1,
+            ["Quiet Parser", "Source B", 1,
              "2026-04-22T00:00:00Z", "2026-04-22T09:00:00Z"],
         ])
         # Engine returns only Dominant Parser rows — Quiet Parser gets nothing.

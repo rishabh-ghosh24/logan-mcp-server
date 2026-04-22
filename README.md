@@ -168,7 +168,7 @@ Surface the top parser failures ranked by volume. Returns up to 20 parsers, each
 }
 ```
 
-Returns `{failures: [...], total_failure_count: N}` where each entry carries `parser_name`, `failure_count`, `first_seen`, `last_seen`, and `sample_raw_lines` (up to 3).
+Returns `{failures: [...], total_failure_count: N}` where each entry carries `parser_name`, `source` (the log source the parser was attached to), `failure_count`, `first_seen`, `last_seen`, and `sample_raw_lines` (up to 3).
 
 ## Multi-User Learning
 

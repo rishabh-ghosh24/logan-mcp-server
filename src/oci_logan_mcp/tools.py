@@ -320,10 +320,10 @@ def get_tools() -> List[Dict[str, Any]]:
             "name": "parser_failure_triage",
             "description": (
                 "Surface the top parser failures ranked by failure count. "
-                "Returns up to top_n parsers, each with failure_count, "
-                "first/last seen timestamps, and up to 3 sample raw lines "
-                "that failed to parse. Use this to identify which parsers "
-                "need fixing."
+                "Returns up to top_n parsers, each with failure_count, the "
+                "source they were attached to, first/last seen timestamps, "
+                "and up to 3 sample raw lines that failed to parse. Use this "
+                "to identify which parsers need fixing."
             ),
             "inputSchema": {
                 "type": "object",
