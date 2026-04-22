@@ -345,11 +345,14 @@ def get_tools() -> List[Dict[str, Any]]:
                     },
                     "top_n": {
                         "type": "integer",
+                        "minimum": 1,
+                        "maximum": 50000,
                         "description": (
                             "Maximum number of log sources to return, ranked "
                             "by failure count descending. Each source has one "
                             "parser, so this caps the number of broken "
-                            "parsers surfaced. Default: 20."
+                            "parsers surfaced. Default: 20. Must be in "
+                            "[1, 50000] (Logan's LIMIT bound)."
                         ),
                     },
                 },

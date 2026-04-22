@@ -719,6 +719,14 @@ class MCPHandlers:
             return [{"type": "text", "text": json.dumps(
                 {"status": "error", "error": "top_n must be an integer"}, indent=2
             )}]
+        # Logan's LIMIT clause accepts 0..50000; zero is valid but useless, so
+        # reject anything outside [1, 50000] at the handler rather than let it
+        # reach the engine and come back as an opaque 400.
+        if top_n < 1 or top_n > 50000:
+            return [{"type": "text", "text": json.dumps(
+                {"status": "error", "error": "top_n must be between 1 and 50000"},
+                indent=2,
+            )}]
         try:
             result = await self.parser_triage_tool.run(
                 time_range=args.get("time_range", "last_24_hours"),

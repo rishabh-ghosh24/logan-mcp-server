@@ -1664,3 +1664,44 @@ class TestParserFailureTriage:
         payload = json.loads(result[0]["text"])
         assert payload["status"] == "error"
         assert "top_n" in payload["error"]
+
+    @pytest.mark.asyncio
+    async def test_negative_top_n_rejected_before_engine_call(self, handlers):
+        """Negative top_n would produce `| head -N`, which Logan rejects with a 400.
+        Verified live: `InvalidParameter: Invalid value for LIMIT: -1 must be
+        between 0 and 50000.` Reject at the handler instead of letting the
+        engine bounce it back as an opaque error."""
+        handlers.parser_triage_tool.run = AsyncMock()
+        result = await handlers.handle_tool_call(
+            "parser_failure_triage",
+            {"top_n": -1},
+        )
+        payload = json.loads(result[0]["text"])
+        assert payload["status"] == "error"
+        assert "between 1 and 50000" in payload["error"]
+        # Never reached the engine.
+        handlers.parser_triage_tool.run.assert_not_awaited()
+
+    @pytest.mark.asyncio
+    async def test_zero_top_n_rejected(self, handlers):
+        """top_n=0 is a syntactically valid but useless Logan query; reject it."""
+        handlers.parser_triage_tool.run = AsyncMock()
+        result = await handlers.handle_tool_call(
+            "parser_failure_triage",
+            {"top_n": 0},
+        )
+        payload = json.loads(result[0]["text"])
+        assert payload["status"] == "error"
+        handlers.parser_triage_tool.run.assert_not_awaited()
+
+    @pytest.mark.asyncio
+    async def test_top_n_exceeding_logan_limit_rejected(self, handlers):
+        """Logan's LIMIT bound is 50000 (verified live). Reject above that."""
+        handlers.parser_triage_tool.run = AsyncMock()
+        result = await handlers.handle_tool_call(
+            "parser_failure_triage",
+            {"top_n": 50001},
+        )
+        payload = json.loads(result[0]["text"])
+        assert payload["status"] == "error"
+        handlers.parser_triage_tool.run.assert_not_awaited()
