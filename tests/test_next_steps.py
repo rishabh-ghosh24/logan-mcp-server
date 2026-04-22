@@ -50,7 +50,9 @@ def test_small_result_does_not_suggest_narrower_window():
     assert "run_query" not in tools
 
 
-def test_request_id_field_suggests_trace():
+def test_request_id_field_suggests_pivot_on_entity():
+    """A request_id column should produce a pivot_on_entity hint,
+    not a trace_request_id hint (that tool does not exist)."""
     result = {
         "data": {
             "rows": [["2026-04-20T10:00:00Z", "abc-123-def"]],
@@ -60,10 +62,16 @@ def test_request_id_field_suggests_trace():
     }
     steps = suggest("*", result)
     tools = [s.tool_name for s in steps]
-    assert "trace_request_id" in tools
+    assert "pivot_on_entity" in tools
+    assert "trace_request_id" not in tools
+    pivot = next(s for s in steps if s.tool_name == "pivot_on_entity")
+    assert pivot.suggested_args.get("entity_type") == "request_id"
+    assert pivot.suggested_args.get("entity_value") == "abc-123-def"
+    # field_name lets pivot_on_entity filter on the exact column name
+    assert pivot.suggested_args.get("field_name") == "Request ID"
 
 
-def test_populated_trace_id_field_suggests_trace():
+def test_populated_trace_id_field_suggests_pivot_on_entity():
     result = {
         "data": {
             "rows": [["2026-04-20", "my-trace-42"]],
@@ -72,10 +80,11 @@ def test_populated_trace_id_field_suggests_trace():
         "metadata": {},
     }
     steps = suggest("*", result)
-    assert any(s.tool_name == "trace_request_id" for s in steps)
+    assert any(s.tool_name == "pivot_on_entity" for s in steps)
+    assert not any(s.tool_name == "trace_request_id" for s in steps)
 
 
-def test_empty_id_field_does_not_suggest_trace():
+def test_empty_id_field_does_not_suggest_pivot():
     result = {
         "data": {
             "rows": [["2026-04-20", None], ["2026-04-20", ""]],
@@ -84,10 +93,12 @@ def test_empty_id_field_does_not_suggest_trace():
         "metadata": {},
     }
     steps = suggest("*", result)
-    assert not any(s.tool_name == "trace_request_id" for s in steps)
+    tools = [s.tool_name for s in steps]
+    assert "pivot_on_entity" not in tools
+    assert "trace_request_id" not in tools
 
 
-def test_no_id_field_no_suggestion():
+def test_no_id_field_no_id_suggestion():
     result = {
         "data": {
             "rows": [["a", "b"]],
@@ -96,7 +107,13 @@ def test_no_id_field_no_suggestion():
         "metadata": {},
     }
     steps = suggest("*", result)
+    # Neither the (nonexistent) trace tool nor a request_id pivot should appear
     assert not any(s.tool_name == "trace_request_id" for s in steps)
+    assert not any(
+        s.tool_name == "pivot_on_entity"
+        and s.suggested_args.get("entity_type") == "request_id"
+        for s in steps
+    )
 
 
 def test_http_5xx_status_suggests_pivot_and_stats():

@@ -26,6 +26,11 @@ from .confirmation import ConfirmationManager
 from .secret_store import SecretStore
 from .audit import AuditLogger
 from .read_only_guard import ReadOnlyError, raise_if_read_only
+from .diff_tool import DiffTool
+from .pivot_tool import PivotTool
+from .ingestion_health import IngestionHealthTool
+from .parser_triage import ParserTriageTool
+from .budget_tracker import BudgetExceededError
 
 if TYPE_CHECKING:
     from .catalog import CatalogEntry
@@ -90,6 +95,12 @@ class MCPHandlers:
             estimator=self._query_estimator,
             budget_tracker=self._budget_tracker,
         )
+        self.diff_tool = DiffTool(self.query_engine)
+        self.pivot_tool = PivotTool(self.query_engine)
+        self.ingestion_health_tool = IngestionHealthTool(
+            self.query_engine, self.schema_manager, settings,
+        )
+        self.parser_triage_tool = ParserTriageTool(self.query_engine)
         self.validator = QueryValidator(self.schema_manager)
         self.visualization = VisualizationEngine()
         self.saved_search = SavedSearchService(oci_client, cache)
@@ -124,6 +135,10 @@ class MCPHandlers:
             "run_query": self._run_query,
             "run_saved_search": self._run_saved_search,
             "run_batch_queries": self._run_batch_queries,
+            "diff_time_windows": self._diff_time_windows,
+            "pivot_on_entity": self._pivot_on_entity,
+            "ingestion_health": self._ingestion_health,
+            "parser_failure_triage": self._parser_failure_triage,
             # Visualization
             "visualize": self._visualize,
             # Export
@@ -579,13 +594,28 @@ class MCPHandlers:
         search_id = args.get("id")
         search_name = args.get("name")
 
+        if not search_id and not search_name:
+            return [{"type": "text", "text": json.dumps({
+                "status": "error",
+                "error_code": "MISSING_ARGUMENT",
+                "message": "run_saved_search requires either `name` or `id`.",
+                "next_step": "Call list_saved_searches to see available searches, "
+                             "then retry with name=<display_name> or id=<ocid>.",
+            }, indent=2)}]
+
         if not search_id and search_name:
             search = await self.saved_search.get_search_by_name(search_name)
             if search:
                 search_id = search.get("id")
 
         if not search_id:
-            return [{"type": "text", "text": "Saved search not found"}]
+            return [{"type": "text", "text": json.dumps({
+                "status": "error",
+                "error_code": "NOT_FOUND",
+                "message": f"No saved search found with name={search_name!r}.",
+                "next_step": "Call list_saved_searches to see valid names, "
+                             "or pass the OCID via the `id` argument.",
+            }, indent=2)}]
 
         saved = await self.saved_search.get_search_by_id(search_id)
         query = saved.get("query", "")
@@ -610,6 +640,107 @@ class MCPHandlers:
             if isinstance(r, dict) and "error" not in r:
                 self.auto_saver.process_successful_query(q_spec["query"], r)
         return [{"type": "text", "text": json.dumps(results, indent=2, default=str)}]
+
+    async def _diff_time_windows(self, args: Dict) -> List[Dict]:
+        """Run diff_time_windows. Catches budget breaches and returns them as a
+        structured payload instead of letting the generic exception path
+        stringify them — A1 relies on this shape."""
+        try:
+            result = await self.diff_tool.run(
+                query=args["query"],
+                current_window=args["current_window"],
+                comparison_window=args["comparison_window"],
+                dimensions=args.get("dimensions"),
+            )
+        except BudgetExceededError as e:
+            payload = {
+                "status": "budget_exceeded",
+                "error": str(e),
+                "partial": None,
+                "budget": self._budget_tracker.snapshot().to_dict(),
+            }
+            return [{"type": "text", "text": json.dumps(payload, indent=2, default=str)}]
+        return [{"type": "text", "text": json.dumps(result, indent=2, default=str)}]
+
+    async def _pivot_on_entity(self, args: Dict) -> List[Dict]:
+        """Run pivot_on_entity. Catches BudgetExceededError and ValueError and
+        returns them as structured payloads rather than letting the generic
+        exception path stringify them."""
+        try:
+            result = await self.pivot_tool.run(
+                entity_type=args["entity_type"],
+                entity_value=args["entity_value"],
+                time_range=args["time_range"],
+                sources=args.get("sources"),
+                max_rows_per_source=args.get("max_rows_per_source", 100),
+                field_name=args.get("field_name"),
+            )
+        except BudgetExceededError as e:
+            # Budget exceeded during source discovery; per-source partial results
+            # are handled inside PivotTool._query_sources and never reach here.
+            payload = {
+                "status": "budget_exceeded",
+                "error": str(e),
+                "partial": None,
+                "budget": self._budget_tracker.snapshot().to_dict(),
+            }
+            return [{"type": "text", "text": json.dumps(payload, indent=2, default=str)}]
+        except ValueError as e:
+            return [{"type": "text", "text": json.dumps(
+                {"status": "error", "error": str(e)}, indent=2
+            )}]
+        return [{"type": "text", "text": json.dumps(result, indent=2, default=str)}]
+
+    async def _ingestion_health(self, args: Dict) -> List[Dict]:
+        """Run ingestion_health. Catch budget breaches and return them as a
+        structured payload instead of letting the generic exception path
+        stringify them — keeps the shape consistent with A2/A4."""
+        try:
+            result = await self.ingestion_health_tool.run(
+                compartment_id=args.get("compartment_id"),
+                sources=args.get("sources"),
+                severity_filter=args.get("severity_filter", "warn"),
+            )
+        except BudgetExceededError as e:
+            payload = {
+                "status": "budget_exceeded",
+                "error": str(e),
+                "partial": None,
+                "budget": self._budget_tracker.snapshot().to_dict(),
+            }
+            return [{"type": "text", "text": json.dumps(payload, indent=2, default=str)}]
+        return [{"type": "text", "text": json.dumps(result, indent=2, default=str)}]
+
+    async def _parser_failure_triage(self, args: Dict) -> List[Dict]:
+        """Run parser_failure_triage. BudgetExceededError returns structured payload."""
+        try:
+            top_n = int(args.get("top_n", 20))
+        except (TypeError, ValueError):
+            return [{"type": "text", "text": json.dumps(
+                {"status": "error", "error": "top_n must be an integer"}, indent=2
+            )}]
+        # Logan's LIMIT clause accepts 0..50000; zero is valid but useless, so
+        # reject anything outside [1, 50000] at the handler rather than let it
+        # reach the engine and come back as an opaque 400.
+        if top_n < 1 or top_n > 50000:
+            return [{"type": "text", "text": json.dumps(
+                {"status": "error", "error": "top_n must be between 1 and 50000"},
+                indent=2,
+            )}]
+        try:
+            result = await self.parser_triage_tool.run(
+                time_range=args.get("time_range", "last_24_hours"),
+                top_n=top_n,
+            )
+        except BudgetExceededError as e:
+            payload = {
+                "status": "budget_exceeded",
+                "error": str(e),
+                "partial": None,
+                "budget": self._budget_tracker.snapshot().to_dict(),
+            }
+            return [{"type": "text", "text": json.dumps(payload, indent=2, default=str)}]
+        return [{"type": "text", "text": json.dumps(result, indent=2, default=str)}]
 
     async def _visualize(self, args: Dict) -> List[Dict]:
         """Generate visualization."""

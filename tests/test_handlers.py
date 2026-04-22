@@ -812,18 +812,26 @@ class TestConfirmationFlow:
         assert "confirmation_unavailable" not in text
 
     @pytest.mark.asyncio
-    async def test_create_alert_not_guarded(self, handlers_with_secret):
-        """create_* tools are additive and not guarded."""
+    async def test_create_alert_is_guarded(self, handlers_with_secret):
+        """create_* tools go through the same two-factor confirmation flow
+        as update_* and delete_*. Previously these were ungated despite
+        descriptions claiming "APPROVAL REQUIRED" — see docs/reviews/
+        2026-04-22-mcp-builder-review.md.
+        """
         handlers_with_secret.alarm_service.create_alert = AsyncMock(
             return_value={"alarm_id": "new"}
         )
+        # First call (no token) must return a confirmation request, not execute.
         result = await handlers_with_secret.handle_tool_call(
             "create_alert",
             {"display_name": "Test", "query": "* | stats count",
              "destination_topic_id": "ocid1.topic.1"},
         )
         text = json.loads(result[0]["text"])
-        assert text.get("status") != "confirmation_required"
+        assert text.get("status") == "confirmation_required"
+        assert "confirmation_token" in text
+        # The underlying service must NOT be called on the first (unconfirmed) call.
+        handlers_with_secret.alarm_service.create_alert.assert_not_called()
 
     @pytest.mark.asyncio
     async def test_setup_confirmation_secret_succeeds(self, handlers):
@@ -1423,3 +1431,277 @@ async def test_export_transcript_tool_returns_path_and_count(handlers, tmp_path)
     assert "event_count" in payload
     assert payload["event_count"] >= 2
     assert os.path.isfile(payload["path"])
+
+
+class TestDiffTimeWindows:
+    @pytest.mark.asyncio
+    async def test_diff_time_windows_routes_through_handler(self, handlers):
+        """diff_time_windows tool routes to DiffTool and returns JSON payload."""
+        # Stub DiffTool.run to avoid calling QueryEngine in unit tests.
+        handlers.diff_tool.run = AsyncMock(return_value={
+            "current": {"total": 100, "rows": []},
+            "comparison": {"total": 100, "rows": []},
+            "delta": [],
+            "summary": "No significant change between windows.",
+            "metadata": {},
+        })
+
+        result = await handlers.handle_tool_call(
+            "diff_time_windows",
+            {
+                "query": "'Log Source' = 'Audit Logs'",
+                "current_window": {"time_range": "last_1_hour"},
+                "comparison_window": {"time_range": "last_1_hour"},
+            },
+        )
+
+        assert result[0]["type"] == "text"
+        payload = json.loads(result[0]["text"])
+        assert payload["summary"] == "No significant change between windows."
+        handlers.diff_tool.run.assert_awaited_once_with(
+            query="'Log Source' = 'Audit Logs'",
+            current_window={"time_range": "last_1_hour"},
+            comparison_window={"time_range": "last_1_hour"},
+            dimensions=None,
+        )
+
+    @pytest.mark.asyncio
+    async def test_diff_time_windows_budget_exceeded_structured(self, handlers):
+        """BudgetExceededError surfaces as a structured payload, not plain text."""
+        from oci_logan_mcp.budget_tracker import BudgetExceededError
+        handlers.diff_tool.run = AsyncMock(side_effect=BudgetExceededError("bytes limit hit"))
+
+        result = await handlers.handle_tool_call(
+            "diff_time_windows",
+            {
+                "query": "*",
+                "current_window": {"time_range": "last_1_hour"},
+                "comparison_window": {"time_range": "last_1_hour"},
+            },
+        )
+
+        payload = json.loads(result[0]["text"])
+        assert payload["status"] == "budget_exceeded"
+        assert "bytes limit hit" in payload["error"]
+        # Pin the snapshot-to-dict wiring so a rename of snapshot()/to_dict()
+        # fails here instead of silently degrading A1's budget awareness.
+        assert "budget" in payload
+        assert isinstance(payload["budget"], dict)
+
+
+class TestPivotOnEntity:
+    @pytest.mark.asyncio
+    async def test_pivot_on_entity_routes_through_handler(self, handlers):
+        """pivot_on_entity tool routes to PivotTool and returns JSON payload."""
+        handlers.pivot_tool.run = AsyncMock(return_value={
+            "entity": {"type": "host", "value": "web-01", "field": "Host"},
+            "by_source": [{"source": "Audit Logs", "rows": [{"Time": "2026-04-20T10:00:00Z"}], "truncated": False}],
+            "cross_source_timeline": [{"timestamp": "2026-04-20T10:00:00Z", "source": "Audit Logs"}],
+            "stats": {"total_events": 1, "sources_matched": 1},
+            "partial": False,
+            "metadata": {},
+        })
+
+        result = await handlers.handle_tool_call(
+            "pivot_on_entity",
+            {
+                "entity_type": "host",
+                "entity_value": "web-01",
+                "time_range": {"time_range": "last_1_hour"},
+            },
+        )
+
+        assert result[0]["type"] == "text"
+        payload = json.loads(result[0]["text"])
+        assert payload["entity"]["value"] == "web-01"
+        assert payload["stats"]["total_events"] == 1
+        handlers.pivot_tool.run.assert_awaited_once_with(
+            entity_type="host",
+            entity_value="web-01",
+            time_range={"time_range": "last_1_hour"},
+            sources=None,
+            max_rows_per_source=100,
+            field_name=None,
+        )
+
+    @pytest.mark.asyncio
+    async def test_pivot_on_entity_budget_exceeded_structured(self, handlers):
+        """BudgetExceededError returns structured payload, not plain text."""
+        from oci_logan_mcp.budget_tracker import BudgetExceededError
+        handlers.pivot_tool.run = AsyncMock(side_effect=BudgetExceededError("cost limit hit"))
+
+        result = await handlers.handle_tool_call(
+            "pivot_on_entity",
+            {
+                "entity_type": "host",
+                "entity_value": "web-01",
+                "time_range": {"time_range": "last_1_hour"},
+            },
+        )
+
+        payload = json.loads(result[0]["text"])
+        assert payload["status"] == "budget_exceeded"
+        assert "cost limit hit" in payload["error"]
+        assert "budget" in payload
+        assert isinstance(payload["budget"], dict)
+
+    @pytest.mark.asyncio
+    async def test_pivot_on_entity_value_error_structured(self, handlers):
+        """ValueError (e.g. custom entity_type without field_name) returns structured error."""
+        handlers.pivot_tool.run = AsyncMock(side_effect=ValueError("field_name is required"))
+
+        result = await handlers.handle_tool_call(
+            "pivot_on_entity",
+            {"entity_type": "custom", "entity_value": "x", "time_range": {"time_range": "last_1_hour"}},
+        )
+
+        payload = json.loads(result[0]["text"])
+        assert payload["status"] == "error"
+        assert "field_name is required" in payload["error"]
+
+
+class TestIngestionHealth:
+    @pytest.mark.asyncio
+    async def test_ingestion_health_routes_through_handler(self, handlers):
+        """ingestion_health tool routes to IngestionHealthTool and returns JSON."""
+        handlers.ingestion_health_tool.run = AsyncMock(return_value={
+            "summary": {"sources_healthy": 1, "sources_stopped": 0, "sources_unknown": 0},
+            "checked_at": "2026-04-22T10:00:00+00:00",
+            "findings": [],
+            "metadata": {},
+        })
+
+        result = await handlers.handle_tool_call(
+            "ingestion_health",
+            {"severity_filter": "warn"},
+        )
+
+        assert result[0]["type"] == "text"
+        payload = json.loads(result[0]["text"])
+        assert payload["summary"]["sources_healthy"] == 1
+        handlers.ingestion_health_tool.run.assert_awaited_once_with(
+            compartment_id=None,
+            sources=None,
+            severity_filter="warn",
+        )
+
+    @pytest.mark.asyncio
+    async def test_ingestion_health_budget_exceeded_structured(self, handlers):
+        """BudgetExceededError surfaces as a structured payload, not plain text."""
+        from oci_logan_mcp.budget_tracker import BudgetExceededError
+        handlers.ingestion_health_tool.run = AsyncMock(
+            side_effect=BudgetExceededError("bytes limit hit")
+        )
+
+        result = await handlers.handle_tool_call("ingestion_health", {})
+
+        payload = json.loads(result[0]["text"])
+        assert payload["status"] == "budget_exceeded"
+        assert "bytes limit hit" in payload["error"]
+
+
+class TestParserFailureTriage:
+    @pytest.mark.asyncio
+    async def test_routes_to_parser_triage_tool(self, handlers):
+        """parser_failure_triage routes to ParserTriageTool and returns JSON."""
+        handlers.parser_triage_tool.run = AsyncMock(return_value={
+            "failures": [],
+            "total_failure_count": 0,
+        })
+
+        result = await handlers.handle_tool_call(
+            "parser_failure_triage",
+            {"time_range": "last_7_days", "top_n": 5},
+        )
+
+        assert result[0]["type"] == "text"
+        payload = json.loads(result[0]["text"])
+        assert "failures" in payload
+        assert payload["total_failure_count"] == 0
+        handlers.parser_triage_tool.run.assert_awaited_once_with(
+            time_range="last_7_days",
+            top_n=5,
+        )
+
+    @pytest.mark.asyncio
+    async def test_default_time_range_is_valid_token(self, handlers):
+        """Default time_range must be a token the time_parser accepts."""
+        from oci_logan_mcp.time_parser import TIME_RANGES
+        handlers.parser_triage_tool.run = AsyncMock(return_value={
+            "failures": [], "total_failure_count": 0,
+        })
+
+        await handlers.handle_tool_call("parser_failure_triage", {})
+
+        kwargs = handlers.parser_triage_tool.run.await_args.kwargs
+        assert kwargs["time_range"] in TIME_RANGES
+
+    @pytest.mark.asyncio
+    async def test_budget_exceeded_returns_structured_payload(self, handlers):
+        """BudgetExceededError surfaces as structured payload, not plain text."""
+        from oci_logan_mcp.budget_tracker import BudgetExceededError
+        handlers.parser_triage_tool.run = AsyncMock(
+            side_effect=BudgetExceededError("query limit hit")
+        )
+
+        result = await handlers.handle_tool_call(
+            "parser_failure_triage",
+            {},
+        )
+
+        payload = json.loads(result[0]["text"])
+        assert payload["status"] == "budget_exceeded"
+        assert "query limit hit" in payload["error"]
+        assert "budget" in payload
+
+    @pytest.mark.asyncio
+    async def test_bad_top_n_returns_structured_error(self, handlers):
+        """Non-integer top_n returns a structured error, not a stringified ValueError."""
+        result = await handlers.handle_tool_call(
+            "parser_failure_triage",
+            {"top_n": "abc"},
+        )
+        payload = json.loads(result[0]["text"])
+        assert payload["status"] == "error"
+        assert "top_n" in payload["error"]
+
+    @pytest.mark.asyncio
+    async def test_negative_top_n_rejected_before_engine_call(self, handlers):
+        """Negative top_n would produce `| head -N`, which Logan rejects with a 400.
+        Verified live: `InvalidParameter: Invalid value for LIMIT: -1 must be
+        between 0 and 50000.` Reject at the handler instead of letting the
+        engine bounce it back as an opaque error."""
+        handlers.parser_triage_tool.run = AsyncMock()
+        result = await handlers.handle_tool_call(
+            "parser_failure_triage",
+            {"top_n": -1},
+        )
+        payload = json.loads(result[0]["text"])
+        assert payload["status"] == "error"
+        assert "between 1 and 50000" in payload["error"]
+        # Never reached the engine.
+        handlers.parser_triage_tool.run.assert_not_awaited()
+
+    @pytest.mark.asyncio
+    async def test_zero_top_n_rejected(self, handlers):
+        """top_n=0 is a syntactically valid but useless Logan query; reject it."""
+        handlers.parser_triage_tool.run = AsyncMock()
+        result = await handlers.handle_tool_call(
+            "parser_failure_triage",
+            {"top_n": 0},
+        )
+        payload = json.loads(result[0]["text"])
+        assert payload["status"] == "error"
+        handlers.parser_triage_tool.run.assert_not_awaited()
+
+    @pytest.mark.asyncio
+    async def test_top_n_exceeding_logan_limit_rejected(self, handlers):
+        """Logan's LIMIT bound is 50000 (verified live). Reject above that."""
+        handlers.parser_triage_tool.run = AsyncMock()
+        result = await handlers.handle_tool_call(
+            "parser_failure_triage",
+            {"top_n": 50001},
+        )
+        payload = json.loads(result[0]["text"])
+        assert payload["status"] == "error"
+        handlers.parser_triage_tool.run.assert_not_awaited()

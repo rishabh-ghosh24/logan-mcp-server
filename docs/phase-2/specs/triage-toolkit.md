@@ -44,7 +44,7 @@ diff_time_windows(
   query: str,                  # base query to execute in both windows
   current_window: TimeRange,
   comparison_window: TimeRange,
-  dimensions: list[str] | None = None,  # fields to break out (default: auto-detect top-k)
+  dimensions: list[str] | None = None,  # fields to break out. If None and the query has a `by <fields>` clause, reuse it; else return a scalar total delta. A1 passes explicit dimensions when it wants a breakout.
 ) -> {
   current: AggregateResult,
   comparison: AggregateResult,
@@ -61,7 +61,7 @@ diff_time_windows(
 ### Test outline
 1. Test: two identical windows → empty delta, summary "no significant change."
 2. Test: window with 2× volume → delta shows +100%, summary names the spike.
-3. Test: dimension auto-detect picks top categorical fields when not provided.
+3. Test: when `dimensions` is omitted and the query already contains a `by <fields>` clause, those fields are reused (no source-side field discovery in P0).
 4. Test: missing dimension in one window → handled gracefully.
 
 ### Dependencies
@@ -172,27 +172,33 @@ No DROP/LAG classifications in P0 — those require a baseline reference.
 ### Purpose
 Surface recent parser failures with sample raw lines, ranked by volume. Tells admins which parsers need fixing.
 
+### OCI LA schema notes (verified live)
+Parse-failure records carry four fields: `'Parse Failed'` (LONG, set to 1 when a line fails to parse), `'Log Source'`, `'Original Log Content'`, and `'_Truncated'`. **There is no `'Parser Name'` field.** Each log source in OCI LA has exactly one parser configured, so reporting by `'Log Source'` is operationally equivalent to "which parser is broken."
+
 ### Tool interface
 ```
 parser_failure_triage(
-  time_range: TimeRange = "last_24h",
+  time_range: TimeRange = "last_24_hours",
   top_n: int = 20,
 ) -> {
   failures: list[{
-    parser_name: str,
-    source: str,
+    source: str,                   # the Log Source whose parser failed
     failure_count: int,
-    sample_raw_lines: list[str],  # up to 3 samples
+    sample_raw_lines: list[str],   # up to 3 samples (best-effort)
     first_seen: datetime,
     last_seen: datetime,
   }],
   total_failure_count: int,
+  partial?: bool,                  # present only if samples query was truncated
+  partial_reason?: str,            # e.g. "samples_budget_exceeded"
 }
 ```
 
 ### Approach
-- Query Logan for parser-failure events (known query pattern in OCI Log Analytics: `Log Source = 'Parser Failure' | ...`).
-- Aggregate, rank, sample — pure query + post-processing.
+- Stats query: `'Parse Failed' = 1 | stats count as failure_count, earliest('Time') as first_seen, latest('Time') as last_seen by 'Log Source' | sort -failure_count | head {top_n}`.
+- Samples query (only if stats non-empty): `'Parse Failed' = 1 AND 'Log Source' in (<top_sources>) | fields 'Log Source', 'Original Log Content' | head {len(sources) * 3}`.
+- Python merge caps samples at 3 per source.
+- Budget handling: budget exhaustion on the stats query propagates as a hard error via the handler. Budget exhaustion on the samples query returns the ranked stats with empty `sample_raw_lines` and sets `partial=true, partial_reason="samples_budget_exceeded"`.
 
 ### Files
 - Create: `src/oci_logan_mcp/parser_triage.py`.
@@ -201,8 +207,9 @@ parser_failure_triage(
 
 ### Test outline
 1. Test: mock Logan returning N failure events → aggregated correctly.
-2. Test: samples limited to 3 per parser.
+2. Test: samples limited to 3 per source.
 3. Test: empty result → returns empty list, `total_failure_count=0`.
+4. Test: samples-query budget exhaustion → `partial=true` with empty samples.
 
 ### Dependencies
 - None beyond existing query engine.
@@ -239,7 +246,7 @@ investigate_incident(
 ### Orchestration flow
 1. **Resolve seed** — if `alarm_ocid`, pull alarm context + fire-time. If `query`, run it to get seed rows. If `description`, use it as an NL prompt against current NL-to-query path.
 2. **Enumerate stopped sources** — call J1 `ingestion_health` (freshness) to find sources not emitting during the investigation window. These are candidate culprits regardless of volume.
-3. **Enumerate anomalous sources** — call A2 `diff_time_windows` with the investigation window vs. the prior equal-length window, per source. Top-K by delta magnitude. This replaces the old "baseline diff" step — A2 gives us spike/drop detection without a persistent baseline.
+3. **Enumerate anomalous sources** — call A2 `diff_time_windows` with the investigation window vs. the prior equal-length window, per source. Top-K by delta magnitude. This replaces the old "baseline diff" step — A2 gives us spike/drop detection without a persistent baseline. A1 passes explicit `dimensions` (from field knowledge it already has via `list_fields`/learned queries) when it wants a per-field breakout; A2 does not perform field discovery in P0.
 4. **For each top-K source, in parallel:**
    - Extract top error patterns (reuse Logan `cluster` command).
    - Collect top entities (hosts/users/request-ids) via A4 `pivot_on_entity`.

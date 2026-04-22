@@ -160,19 +160,27 @@ def get_tools() -> List[Dict[str, Any]]:
         },
         {
             "name": "run_saved_search",
-            "description": "Execute a saved search by name or ID.",
+            "description": (
+                "Execute a saved search by name or ID. Provide at least one of "
+                "`name` or `id` (if both are given, `id` wins). If you don't "
+                "know what exists, call list_saved_searches first."
+            ),
             "inputSchema": {
                 "type": "object",
                 "properties": {
                     "name": {
                         "type": "string",
-                        "description": "Name of the saved search",
+                        "description": "Name of the saved search (case-sensitive).",
                     },
                     "id": {
                         "type": "string",
-                        "description": "OCID of the saved search",
+                        "description": "OCID of the saved search.",
                     },
                 },
+                "anyOf": [
+                    {"required": ["name"]},
+                    {"required": ["id"]},
+                ],
             },
         },
         {
@@ -205,6 +213,149 @@ def get_tools() -> List[Dict[str, Any]]:
                     },
                 },
                 "required": ["queries"],
+            },
+        },
+        {
+            "name": "diff_time_windows",
+            "description": (
+                "Compare the same query across two time windows. Returns per-dimension "
+                "deltas (spike/drop/new/disappeared) plus a one-line summary. Cheapest "
+                "triage primitive: 'what's different about this hour vs. yesterday?'"
+            ),
+            "inputSchema": {
+                "type": "object",
+                "properties": {
+                    "query": {
+                        "type": "string",
+                        "description": "Base Log Analytics query run in both windows",
+                    },
+                    "current_window": {
+                        "type": "object",
+                        "description": "Current window: {time_range: '...'} OR {time_start, time_end} (ISO 8601)",
+                    },
+                    "comparison_window": {
+                        "type": "object",
+                        "description": "Comparison window, same shape as current_window",
+                    },
+                    "dimensions": {
+                        "type": "array",
+                        "items": {"type": "string"},
+                        "description": "Optional. Fields to break out by. If omitted, extracted from the query's 'by' clause; else a scalar total delta.",
+                    },
+                },
+                "required": ["query", "current_window", "comparison_window"],
+            },
+        },
+        {
+            "name": "pivot_on_entity",
+            "description": (
+                "Pull everything about an entity (host/user/IP/request-id) across all "
+                "matching log sources in one call. Runs source discovery, then queries "
+                "each source for the entity value. Returns per-source rows and a "
+                "merged, time-ordered cross-source timeline."
+            ),
+            "inputSchema": {
+                "type": "object",
+                "properties": {
+                    "entity_type": {
+                        "type": "string",
+                        "enum": ["host", "user", "request_id", "ip", "custom"],
+                        "description": "Type of entity to pivot on",
+                    },
+                    "entity_value": {
+                        "type": "string",
+                        "description": "Entity value to search for (e.g. 'web-01', 'alice')",
+                    },
+                    "time_range": {
+                        "type": "object",
+                        "description": "Time window: {time_range: '...'} OR {time_start, time_end} (ISO 8601)",
+                    },
+                    "sources": {
+                        "type": "array",
+                        "items": {"type": "string"},
+                        "description": "Optional. Limit to these log sources. If omitted, auto-discovers sources with matching data.",
+                    },
+                    "max_rows_per_source": {
+                        "type": "integer",
+                        "description": "Max rows to return per source. Default: 100",
+                    },
+                    "field_name": {
+                        "type": "string",
+                        "description": "Required when entity_type='custom'. The field name to filter on.",
+                    },
+                },
+                "required": ["entity_type", "entity_value", "time_range"],
+            },
+        },
+        {
+            "name": "ingestion_health",
+            "description": (
+                "Check whether log ingestion is currently working. Runs one aggregate "
+                "probe query and classifies each source as healthy (emitted recently), "
+                "stopped (last record older than threshold), or unknown (no records in "
+                "probe window). Answers 'is ingestion even working right now?' and is "
+                "a foundational input to investigate_incident."
+            ),
+            "inputSchema": {
+                "type": "object",
+                "properties": {
+                    "compartment_id": {
+                        "type": "string",
+                        "description": "Optional compartment OCID. Uses default if not specified.",
+                    },
+                    "sources": {
+                        "type": "array",
+                        "items": {"type": "string"},
+                        "description": "Optional. Limit the probe to these source names. If omitted, all discovered sources are probed.",
+                    },
+                    "severity_filter": {
+                        "type": "string",
+                        "enum": ["all", "warn", "critical"],
+                        "description": "Drop findings below this severity tier. Default: 'warn' (shows warn + critical).",
+                    },
+                },
+            },
+        },
+        {
+            "name": "parser_failure_triage",
+            "description": (
+                "Surface the top log sources with parse failures, ranked by "
+                "failure count. Returns up to top_n sources, each with "
+                "failure_count, first/last seen timestamps, and up to 3 "
+                "sample raw lines that failed to parse. Each source in OCI "
+                "Log Analytics has one parser configured, so this tells you "
+                "which parser needs fixing."
+            ),
+            "inputSchema": {
+                "type": "object",
+                "properties": {
+                    "time_range": {
+                        "type": "string",
+                        "enum": [
+                            "last_15_min", "last_30_min",
+                            "last_1_hour", "last_3_hours", "last_6_hours",
+                            "last_12_hours", "last_24_hours",
+                            "last_2_days", "last_7_days", "last_14_days",
+                            "last_30_days",
+                        ],
+                        "description": (
+                            "Time window to scan for parser failures. "
+                            "Default: 'last_24_hours'."
+                        ),
+                    },
+                    "top_n": {
+                        "type": "integer",
+                        "minimum": 1,
+                        "maximum": 50000,
+                        "description": (
+                            "Maximum number of log sources to return, ranked "
+                            "by failure count descending. Each source has one "
+                            "parser, so this caps the number of broken "
+                            "parsers surfaced. Default: 20. Must be in "
+                            "[1, 50000] (Logan's LIMIT bound)."
+                        ),
+                    },
+                },
             },
         },
         # Visualization Tools
@@ -565,11 +716,13 @@ def get_tools() -> List[Dict[str, Any]]:
         # ── Alert tools ────────────────────────────────────────────────
         {
             "name": "create_alert",
+            "destructive": True,
             "description": (
                 "Create an OCI-native autonomous alert from a Log Analytics query. "
                 "The alert fires 24/7 via OCI Monitoring, independent of the MCP server. "
                 "Requires a numeric aggregation query (e.g. '| stats count'). "
-                "APPROVAL REQUIRED: This tool creates OCI resources. Confirm with the user before invoking."
+                "TWO-FACTOR CONFIRMATION REQUIRED: First call returns a confirmation token and summary. "
+                "To execute, re-invoke with confirmation_token and your confirmation secret."
             ),
             "inputSchema": {
                 "type": "object",
@@ -583,6 +736,8 @@ def get_tools() -> List[Dict[str, Any]]:
                     "threshold_operator": {"type": "string", "enum": ["gt", "gte", "eq", "lt", "lte"], "description": "Comparison operator. Default: 'gt'"},
                     "severity": {"type": "string", "enum": ["CRITICAL", "ERROR", "WARNING", "INFO"], "description": "Alert severity. Default: 'CRITICAL'"},
                     "compartment_id": {"type": "string", "description": "Compartment OCID override."},
+                    "confirmation_token": {"type": "string", "description": "Server-generated token from the confirmation step. Omit on first call."},
+                    "confirmation_secret": {"type": "string", "description": "Your confirmation secret. Required with token to execute. You MUST ask the user for this value each time — NEVER reuse a previously provided secret."},
                 },
             },
         },
@@ -642,9 +797,11 @@ def get_tools() -> List[Dict[str, Any]]:
         # ── Saved search CRUD ──────────────────────────────────────────
         {
             "name": "create_saved_search",
+            "destructive": True,
             "description": (
                 "Create a new Log Analytics saved search. "
-                "APPROVAL REQUIRED: This tool creates an OCI resource. Confirm with the user before invoking."
+                "TWO-FACTOR CONFIRMATION REQUIRED: First call returns a confirmation token and summary. "
+                "To execute, re-invoke with confirmation_token and your confirmation secret."
             ),
             "inputSchema": {
                 "type": "object",
@@ -655,6 +812,8 @@ def get_tools() -> List[Dict[str, Any]]:
                     "description": {"type": "string"},
                     "compartment_id": {"type": "string"},
                     "category": {"type": "string"},
+                    "confirmation_token": {"type": "string", "description": "Server-generated token from the confirmation step. Omit on first call."},
+                    "confirmation_secret": {"type": "string", "description": "Your confirmation secret. Required with token to execute. You MUST ask the user for this value each time — NEVER reuse a previously provided secret."},
                 },
             },
         },
@@ -701,9 +860,11 @@ def get_tools() -> List[Dict[str, Any]]:
         # ── Dashboard tools ────────────────────────────────────────────
         {
             "name": "create_dashboard",
+            "destructive": True,
             "description": (
                 "Create an OCI Management Dashboard with visualization tiles. "
-                "APPROVAL REQUIRED: This tool creates OCI resources. Confirm with the user before invoking."
+                "TWO-FACTOR CONFIRMATION REQUIRED: First call returns a confirmation token and summary. "
+                "To execute, re-invoke with confirmation_token and your confirmation secret."
             ),
             "inputSchema": {
                 "type": "object",
@@ -730,6 +891,8 @@ def get_tools() -> List[Dict[str, Any]]:
                     },
                     "description": {"type": "string"},
                     "compartment_id": {"type": "string"},
+                    "confirmation_token": {"type": "string", "description": "Server-generated token from the confirmation step. Omit on first call."},
+                    "confirmation_secret": {"type": "string", "description": "Your confirmation secret. Required with token to execute. You MUST ask the user for this value each time — NEVER reuse a previously provided secret."},
                 },
             },
         },

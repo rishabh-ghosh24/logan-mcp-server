@@ -25,8 +25,8 @@ def test_guarded_tools_have_destructive_flag():
         )
     # Non-guarded tools should not have the flag
     assert tools.get("run_query", {}).get("destructive") is not True
-    assert tools.get("create_alert", {}).get("destructive") is not True
     assert tools.get("list_alerts", {}).get("destructive") is not True
+    assert tools.get("list_saved_searches", {}).get("destructive") is not True
 
 
 def test_guarded_tools_description_mentions_confirmation():
@@ -37,6 +37,20 @@ def test_guarded_tools_description_mentions_confirmation():
         assert "TWO-FACTOR CONFIRMATION" in desc, (
             f"{name} description missing TWO-FACTOR CONFIRMATION"
         )
+
+
+def test_run_saved_search_requires_name_or_id():
+    """run_saved_search must constrain callers to provide at least one of
+    name/id so the LLM cannot call it empty and get a non-actionable error."""
+    tools = {t["name"]: t for t in get_tools()}
+    schema = tools["run_saved_search"]["inputSchema"]
+    # Accept either 'anyOf' with two required-branches, or a direct required
+    # that lists both (less preferred — treats them as both required).
+    any_of = schema.get("anyOf")
+    assert any_of, "run_saved_search inputSchema must use anyOf to require name OR id"
+    required_sets = [frozenset(b.get("required", [])) for b in any_of]
+    assert frozenset({"name"}) in required_sets
+    assert frozenset({"id"}) in required_sets
 
 
 def test_setup_confirmation_secret_tool_schema():

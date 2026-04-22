@@ -25,6 +25,13 @@ GUARDED_TOOLS = frozenset({
     "update_alert",
     "update_saved_search",
     "add_dashboard_tile",
+    # Creates also require server-side confirmation: descriptions previously
+    # said "APPROVAL REQUIRED" but the server did not enforce it, so a
+    # misaligned client could create OCI resources without the user's
+    # explicit secret.
+    "create_alert",
+    "create_saved_search",
+    "create_dashboard",
 })
 
 _SUMMARY_KEYS: Dict[str, list] = {
@@ -34,6 +41,16 @@ _SUMMARY_KEYS: Dict[str, list] = {
     "update_alert": ["alert_id", "display_name", "severity", "query"],
     "update_saved_search": ["saved_search_id", "display_name", "query"],
     "add_dashboard_tile": ["dashboard_id", "title", "query", "visualization_type"],
+    "create_alert": [
+        "display_name", "query", "destination_topic_id",
+        "schedule", "threshold_value", "threshold_operator", "severity",
+    ],
+    "create_saved_search": [
+        "display_name", "query", "description", "category",
+    ],
+    "create_dashboard": [
+        "display_name", "tiles",
+    ],
     "run_query": [
         "query", "time_range", "time_start", "time_end",
         "estimated_bytes", "estimated_cost_usd", "estimate_confidence",
