@@ -184,6 +184,58 @@ class TestSelectTopEntities:
         ]
 
 
+from oci_logan_mcp.investigate import _merge_cross_source_timeline
+
+
+class TestMergeCrossSourceTimeline:
+    def test_merges_and_sorts_by_time(self):
+        per_source = {
+            "A": [
+                {"time": "2026-04-22T10:00:00+00:00", "severity": "error", "message": "A2"},
+                {"time": "2026-04-22T09:00:00+00:00", "severity": "warn",  "message": "A1"},
+            ],
+            "B": [
+                {"time": "2026-04-22T09:30:00+00:00", "severity": None, "message": "B1"},
+            ],
+        }
+        out = _merge_cross_source_timeline(per_source, cap=50)
+        assert out == [
+            {"time": "2026-04-22T09:00:00+00:00", "source": "A", "severity": "warn",  "message": "A1"},
+            {"time": "2026-04-22T09:30:00+00:00", "source": "B", "severity": None,    "message": "B1"},
+            {"time": "2026-04-22T10:00:00+00:00", "source": "A", "severity": "error", "message": "A2"},
+        ]
+
+    def test_cap_enforced(self):
+        per_source = {
+            "X": [
+                {"time": f"2026-04-22T10:{i:02d}:00+00:00", "severity": None, "message": f"m{i}"}
+                for i in range(60)
+            ]
+        }
+        out = _merge_cross_source_timeline(per_source, cap=50)
+        assert len(out) == 50
+
+    def test_null_source_timeline_skipped(self):
+        per_source = {"A": None, "B": [{"time": "2026-04-22T10:00:00+00:00", "severity": None, "message": "B"}]}
+        out = _merge_cross_source_timeline(per_source, cap=50)
+        assert out == [{"time": "2026-04-22T10:00:00+00:00", "source": "B", "severity": None, "message": "B"}]
+
+    def test_all_null_returns_none(self):
+        # All sources had their timeline dropped. Distinguish from empty-success.
+        per_source = {"A": None, "B": None}
+        out = _merge_cross_source_timeline(per_source, cap=50)
+        assert out is None
+
+    def test_all_empty_returns_empty_list(self):
+        # All sources ran cleanly but produced no rows. Not the same as null.
+        per_source = {"A": [], "B": []}
+        out = _merge_cross_source_timeline(per_source, cap=50)
+        assert out == []
+
+    def test_empty_input_returns_none(self):
+        assert _merge_cross_source_timeline({}, cap=50) is None
+
+
 def _diff_delta(*entries):
     """Build a DiffTool-shaped delta list. Each entry is
     (dimension, current, comparison, pct_change)."""

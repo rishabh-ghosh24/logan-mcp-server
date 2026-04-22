@@ -176,3 +176,38 @@ def _select_top_entities(
             "count": int(count) if count is not None else 0,
         })
     return out
+
+
+def _merge_cross_source_timeline(
+    per_source: Dict[str, Optional[List[Dict[str, Any]]]],
+    cap: int,
+) -> Optional[List[Dict[str, Any]]]:
+    """Merge per-source timelines into one time-sorted stream.
+
+    Returns:
+      - None if every source's timeline is None (all dropped) OR input is empty
+      - [] if every source ran but produced zero rows
+      - Sorted list (up to `cap` entries) otherwise
+
+    Distinguishes "timeline was dropped" (None) from "timeline returned
+    zero rows" (empty list).
+    """
+    if not per_source:
+        return None
+
+    # All-None → dropped-timeline semantic.
+    non_null = {s: t for s, t in per_source.items() if t is not None}
+    if not non_null:
+        return None
+
+    merged: List[Dict[str, Any]] = []
+    for source, rows in non_null.items():
+        for row in rows:
+            merged.append({
+                "time": row["time"],
+                "source": source,
+                "severity": row.get("severity"),
+                "message": row.get("message", ""),
+            })
+    merged.sort(key=lambda r: r["time"])
+    return merged[:cap]
