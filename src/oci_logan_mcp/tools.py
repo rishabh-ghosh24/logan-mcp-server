@@ -358,6 +358,68 @@ def get_tools() -> List[Dict[str, Any]]:
                 },
             },
         },
+        {
+            "name": "investigate_incident",
+            "description": (
+                "Flagship triage tool. Given a seed Logan query and a time "
+                "range, returns a structured first-cut investigation: which "
+                "sources are stopped (J1), which parsers are failing (J2), "
+                "which sources are anomalous vs. the prior equal-length "
+                "window (A2), and for each of the top_k anomalous sources: "
+                "top error clusters (Logan `cluster`), top entities "
+                "(host/user/request_id by count), and a recent-events "
+                "timeline. Merged cross-source timeline + next-step "
+                "suggestions round out the report. Budget exhaustion and "
+                "per-source errors yield a partial InvestigationReport with "
+                "`partial: true` and specific `partial_reasons` — A1 never "
+                "raises BudgetExceededError out of its boundary."
+            ),
+            "inputSchema": {
+                "type": "object",
+                "properties": {
+                    "query": {
+                        "type": "string",
+                        "description": (
+                            "Seed Logan query. Only the pre-pipe search "
+                            "clause is used for drill-down scoping (later "
+                            "pipeline stages are dropped). A seed of '*' "
+                            "degrades to unscoped investigation and is "
+                            "reported via `seed.seed_filter_degraded`."
+                        ),
+                    },
+                    "time_range": {
+                        "type": "string",
+                        "enum": [
+                            "last_15_min", "last_30_min",
+                            "last_1_hour", "last_3_hours", "last_6_hours",
+                            "last_12_hours", "last_24_hours",
+                            "last_2_days", "last_7_days", "last_14_days",
+                            "last_30_days",
+                        ],
+                        "description": (
+                            "Investigation window. Default: 'last_1_hour'. "
+                            "A2 compares this window to the prior "
+                            "equal-length window."
+                        ),
+                    },
+                    "top_k": {
+                        "type": "integer",
+                        "minimum": 1,
+                        "maximum": 3,
+                        "description": (
+                            "Number of anomalous sources to drill into. "
+                            "Default: 3. P0 clamp is [1, 3] to match the "
+                            "~20s p95 latency guarantee."
+                        ),
+                    },
+                    "compartment_id": {
+                        "type": "string",
+                        "description": "Optional compartment OCID. Uses default if not specified.",
+                    },
+                },
+                "required": ["query"],
+            },
+        },
         # Visualization Tools
         {
             "name": "visualize",

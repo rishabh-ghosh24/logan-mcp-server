@@ -847,3 +847,25 @@ class TestPhase5And6DrillDown:
         assert "timeline_omitted" in report["partial_reasons"]
         src = report["anomalous_sources"][0]
         assert src["timeline"] is None
+
+
+class TestToolSchema:
+    def test_investigate_incident_schema_present(self):
+        from oci_logan_mcp.tools import get_tools
+        names = [t["name"] for t in get_tools()]
+        assert "investigate_incident" in names
+
+    def test_investigate_incident_schema_properties(self):
+        from oci_logan_mcp.tools import get_tools
+        tool = next(t for t in get_tools() if t["name"] == "investigate_incident")
+        props = tool["inputSchema"]["properties"]
+        assert "query" in props
+        assert props["query"]["type"] == "string"
+        assert "time_range" in props
+        assert props["time_range"]["type"] == "string"
+        assert "enum" in props["time_range"]
+        assert "top_k" in props
+        assert props["top_k"]["minimum"] == 1
+        assert props["top_k"]["maximum"] == 3
+        assert "compartment_id" in props
+        assert tool["inputSchema"].get("required") == ["query"]
