@@ -1611,7 +1611,7 @@ class TestParserFailureTriage:
 
         result = await handlers.handle_tool_call(
             "parser_failure_triage",
-            {"time_range": "last_24h", "top_n": 5},
+            {"time_range": "last_7_days", "top_n": 5},
         )
 
         assert result[0]["type"] == "text"
@@ -1619,9 +1619,22 @@ class TestParserFailureTriage:
         assert "failures" in payload
         assert payload["total_failure_count"] == 0
         handlers.parser_triage_tool.run.assert_awaited_once_with(
-            time_range="last_24h",
+            time_range="last_7_days",
             top_n=5,
         )
+
+    @pytest.mark.asyncio
+    async def test_default_time_range_is_valid_token(self, handlers):
+        """Default time_range must be a token the time_parser accepts."""
+        from oci_logan_mcp.time_parser import TIME_RANGES
+        handlers.parser_triage_tool.run = AsyncMock(return_value={
+            "failures": [], "total_failure_count": 0,
+        })
+
+        await handlers.handle_tool_call("parser_failure_triage", {})
+
+        kwargs = handlers.parser_triage_tool.run.await_args.kwargs
+        assert kwargs["time_range"] in TIME_RANGES
 
     @pytest.mark.asyncio
     async def test_budget_exceeded_returns_structured_payload(self, handlers):

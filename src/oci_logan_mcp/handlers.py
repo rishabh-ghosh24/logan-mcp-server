@@ -715,7 +715,7 @@ class MCPHandlers:
         """Run parser_failure_triage. BudgetExceededError returns structured payload."""
         try:
             result = await self.parser_triage_tool.run(
-                time_range=args.get("time_range", "last_24h"),
+                time_range=args.get("time_range", "last_24_hours"),
                 top_n=int(args.get("top_n", 20)),
             )
         except BudgetExceededError as e:

@@ -321,9 +321,9 @@ def get_tools() -> List[Dict[str, Any]]:
             "description": (
                 "Surface the top parser failures ranked by failure count. "
                 "Returns up to top_n parsers, each with failure_count, "
-                "the source they belong to, first/last seen timestamps, "
-                "and up to 3 sample raw lines that failed to parse. "
-                "Use this to identify which parsers need fixing."
+                "first/last seen timestamps, and up to 3 sample raw lines "
+                "that failed to parse. Use this to identify which parsers "
+                "need fixing."
             ),
             "inputSchema": {
                 "type": "object",
@@ -332,8 +332,8 @@ def get_tools() -> List[Dict[str, Any]]:
                         "type": "string",
                         "description": (
                             "Time window to scan for parser failures. "
-                            "Default: 'last_24h'. Accepts Logan time strings "
-                            "such as 'last_1_hour', 'last_7_days'."
+                            "Default: 'last_24_hours'. Accepts Logan time "
+                            "strings such as 'last_1_hour', 'last_7_days'."
                         ),
                     },
                     "top_n": {

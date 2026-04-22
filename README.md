@@ -163,12 +163,12 @@ Surface the top parser failures ranked by volume. Returns up to 20 parsers, each
 ```json
 {
   "tool": "parser_failure_triage",
-  "time_range": "last_24h",
+  "time_range": "last_24_hours",
   "top_n": 10
 }
 ```
 
-Returns `{failures: [...], total_failure_count: N}` where each entry carries `parser_name`, `source`, `failure_count`, `first_seen`, `last_seen`, and `sample_raw_lines` (up to 3).
+Returns `{failures: [...], total_failure_count: N}` where each entry carries `parser_name`, `failure_count`, `first_seen`, `last_seen`, and `sample_raw_lines` (up to 3).
 
 ## Multi-User Learning
 
