@@ -222,17 +222,24 @@ Compose a breakout query:
 
 The A2 ranking query does NOT need parenthesization because it's the seed filter alone followed by a pipe — no boolean composition with another clause.
 
-**Comparison window computation:** `DiffTool` accepts each window dict as either `{"time_range": "..."}` (TIME_RANGES token) or `{"time_start": "...ISO...", "time_end": "...ISO..."}`. "Prior equal-length" is not expressible as a single TIME_RANGES token, so A1 computes absolute timestamps:
+**Comparison window computation:** `DiffTool` accepts each window dict as either `{"time_range": "..."}` (TIME_RANGES token) or `{"time_start": "...ISO...", "time_end": "...ISO..."}`. "Prior equal-length" is not expressible as a single TIME_RANGES token.
+
+**Both** windows must be computed from a single captured `now` to preserve equal-length and zero-gap adjacency. Passing the current window as `{"time_range": time_range}` would let `parse_time_range` capture its own `now` inside the engine at query time (see `time_parser.py:44`), and that `now` will drift from A1's captured `now` by however long the intervening phases (J1 probe, J2 queries, etc.) took — introducing a gap between the comparison window's end and the current window's start. So A1 computes both windows as absolute timestamps off one anchor:
 
 ```python
 delta = TIME_RANGES[time_range]  # e.g. timedelta(hours=1) for "last_1_hour"
-now = _utcnow()                  # UTC-aware
-current = {"time_range": time_range}
+anchor = _utcnow()               # captured once, at the start of Phase 4
+current = {
+    "time_start": (anchor - delta).isoformat(),
+    "time_end":   anchor.isoformat(),
+}
 comparison = {
-    "time_start": (now - 2 * delta).isoformat(),
-    "time_end":   (now - delta).isoformat(),
+    "time_start": (anchor - 2 * delta).isoformat(),
+    "time_end":   (anchor - delta).isoformat(),
 }
 ```
+
+The anchor is captured at Phase 4 entry (not A1 entry) — intervening J1/J2 latency is already past, and the current window is whatever "last `delta`" means **at the moment we ask A2 to compare**, which is what the user actually wants.
 
 Call: `DiffTool.run(query=<composed>, current_window=current, comparison_window=comparison)`.
 
@@ -304,6 +311,7 @@ docs/phase-2/specs/triage-toolkit.md  # §A1 updated to match this doc
 - `_compose_source_scoped_query` — wraps `seed_filter` in parens for boolean-precedence safety; special-cases `*` (emits just `'Log Source' = '{source}'` — no parens, no `and` prefix); quote-escapes source names (doubling single quotes); handles seed that's already `'Log Source' = 'X'`
 - `_compose_source_scoped_query` **precedence regression test**: seed `'Severity' = 'ERROR' or 'Level' = 'FATAL'`, source `'X'` → output must contain `(` and `)` around the OR clause. Sanity: a row where `Severity = 'ERROR'` but `Log Source = 'Y'` must NOT match the composed expression (verified logically from the output string shape)
 - `_rank_anomalous_sources` — sorts by `|pct_change|`, excludes J1-stopped sources, handles zero-comparison-count edge case
+- `_compute_windows` — given a `time_range` token and a fixed anchor, returns `(current, comparison)` dicts with absolute ISO timestamps; asserts equal-length (`current.end - current.start == comparison.end - comparison.start == delta`) and zero-gap adjacency (`current.start == comparison.end`). Protects against accidental regression to relative-token current window.
 - `_select_top_entities` — groups stats response by entity-type, handles `InvalidParameter` as "no entities for this field"
 - `_merge_cross_source_timeline` — deduplicates, sorts by normalized time, caps at 50, handles null and empty per-source inputs
 - `_templated_summary` — renders for clean / degraded-seed / partial variants
