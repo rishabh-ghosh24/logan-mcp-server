@@ -876,6 +876,32 @@ class TestAlertClientMethods:
         )
 
     @pytest.mark.asyncio
+    async def test_get_alarm_includes_pending_duration(self, mock_client):
+        mock_client._monitoring_client = MagicMock()
+        mock_client._monitoring_client.get_alarm.return_value = MagicMock(
+            data=MagicMock(
+                id="ocid1.alarm.1",
+                display_name="test",
+                lifecycle_state="ACTIVE",
+                severity="CRITICAL",
+                is_enabled=True,
+                destinations=[],
+                query="metric[1m].count() > 0",
+                pending_duration="PT5M",
+                compartment_id="ocid1.compartment.oc1..test",
+                freeform_tags={},
+            )
+        )
+
+        result = await mock_client.get_alarm("ocid1.alarm.1")
+
+        mock_client._monitoring_client.get_alarm.assert_called_once_with(
+            alarm_id="ocid1.alarm.1"
+        )
+        assert result["pending_duration"] == "PT5M"
+        assert result["compartment_id"] == "ocid1.compartment.oc1..test"
+
+    @pytest.mark.asyncio
     async def test_create_management_saved_search(self, mock_client):
         mock_client._dashx_client = MagicMock()
         mock_client._dashx_client.create_management_saved_search.return_value = MagicMock(
