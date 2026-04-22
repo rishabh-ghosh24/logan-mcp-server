@@ -280,3 +280,67 @@ class TestSourcesFilter:
         from oci_logan_mcp.ingestion_health import _compose_probe_query
         q = _compose_probe_query(["A", "B"])
         assert q == "'Log Source' in ('A', 'B') | stats max('Time') as last_log_ts by 'Log Source'"
+
+
+class TestSeverityFilter:
+    @pytest.mark.asyncio
+    async def test_critical_filter_keeps_only_stopped(self, monkeypatch):
+        frozen_now = datetime(2026, 4, 22, 10, 0, 0, tzinfo=timezone.utc)
+        engine = _make_engine(_probe_result([
+            ("fresh",  "2026-04-22T09:59:30Z"),  # healthy/info
+            ("stale",  "2026-04-22T09:30:00Z"),  # stopped/critical
+            # "silent" is enumerated but absent from the probe → unknown/warn
+        ]))
+        schema = _make_schema(["fresh", "stale", "silent"])
+        tool = IngestionHealthTool(engine, schema, _make_settings())
+
+        import oci_logan_mcp.ingestion_health as ih
+        monkeypatch.setattr(ih, "_utcnow", lambda: frozen_now)
+
+        result = await tool.run(severity_filter="critical")
+
+        # Summary counts are global — unchanged by the filter.
+        assert result["summary"] == {
+            "sources_healthy": 1,
+            "sources_stopped": 1,
+            "sources_unknown": 1,
+        }
+        # Findings are filtered to critical only.
+        sources_in_findings = {f["source"] for f in result["findings"]}
+        assert sources_in_findings == {"stale"}
+
+    @pytest.mark.asyncio
+    async def test_warn_filter_keeps_warn_and_critical(self, monkeypatch):
+        frozen_now = datetime(2026, 4, 22, 10, 0, 0, tzinfo=timezone.utc)
+        engine = _make_engine(_probe_result([
+            ("fresh",  "2026-04-22T09:59:30Z"),
+            ("stale",  "2026-04-22T09:30:00Z"),
+        ]))
+        schema = _make_schema(["fresh", "stale", "silent"])
+        tool = IngestionHealthTool(engine, schema, _make_settings())
+
+        import oci_logan_mcp.ingestion_health as ih
+        monkeypatch.setattr(ih, "_utcnow", lambda: frozen_now)
+
+        result = await tool.run(severity_filter="warn")
+
+        sources_in_findings = {f["source"] for f in result["findings"]}
+        assert sources_in_findings == {"stale", "silent"}
+
+    def test_passes_severity_filter_all(self):
+        from oci_logan_mcp.ingestion_health import _passes_severity_filter
+        assert _passes_severity_filter("info", "all")
+        assert _passes_severity_filter("warn", "all")
+        assert _passes_severity_filter("critical", "all")
+
+    def test_passes_severity_filter_warn(self):
+        from oci_logan_mcp.ingestion_health import _passes_severity_filter
+        assert not _passes_severity_filter("info", "warn")
+        assert _passes_severity_filter("warn", "warn")
+        assert _passes_severity_filter("critical", "warn")
+
+    def test_passes_severity_filter_critical(self):
+        from oci_logan_mcp.ingestion_health import _passes_severity_filter
+        assert not _passes_severity_filter("info", "critical")
+        assert not _passes_severity_filter("warn", "critical")
+        assert _passes_severity_filter("critical", "critical")
