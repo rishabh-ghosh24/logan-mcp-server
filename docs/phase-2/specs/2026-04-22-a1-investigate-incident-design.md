@@ -20,10 +20,12 @@ This is the flagship of the triage toolkit: it composes J1 (`ingestion_health`),
 investigate_incident(
     query: str,                        # seed query, required
     time_range: str = "last_1_hour",   # enum from TIME_RANGES (time_parser.py)
-    top_k: int = 3,                    # sources to drill into; clamped [1, 10]
+    top_k: int = 3,                    # sources to drill into; **P0 clamped [1, 3]**
     compartment_id: Optional[str] = None,
 ) -> InvestigationReport
 ```
+
+**P0 `top_k` clamp.** The `top_k` parameter is clamped to `[1, 3]` for P0 — this matches the budget (~21 queries) and latency (≤20s p95) guarantees stated in §11. Exposing wider values would invalidate those bounds: top_k=10 would be ~51 queries and >30s, breaking the spec's acceptance criterion. Values >3 are rejected at the handler with a structured error; values <1 similarly. P1 may raise the clamp after validating a larger budget/latency envelope.
 
 MCP schema exposes exactly these four parameters.
 
@@ -218,6 +220,8 @@ Compose a breakout query:
 ```
 (If `seed_filter == "*"`, the query is `* | stats count as n by 'Log Source'` — the degraded-unscoped path.)
 
+The A2 ranking query does NOT need parenthesization because it's the seed filter alone followed by a pipe — no boolean composition with another clause.
+
 **Comparison window computation:** `DiffTool` accepts each window dict as either `{"time_range": "..."}` (TIME_RANGES token) or `{"time_start": "...ISO...", "time_end": "...ISO..."}`. "Prior equal-length" is not expressible as a single TIME_RANGES token, so A1 computes absolute timestamps:
 
 ```python
@@ -240,15 +244,15 @@ Phases 5 (cluster + entity discovery) and 6 (timeline) run as **one per-source c
 
 Per-source branch, executed under `asyncio.Semaphore(2)`:
 
-1. **Cluster** — `{seed_filter} and 'Log Source' = '{source}' | cluster | sort -Count | head 3`
+1. **Cluster** — `({seed_filter}) and 'Log Source' = '{source}' | cluster | sort -Count | head 3`
 2. **Entity discovery** for each entity field — **P0 uses 3 fields: `host`, `user`, `request_id`** (sequential inside the branch). `ip` is deferred to P1 to keep the per-source query count bounded:
    ```
-   {seed_filter} and 'Log Source' = '{source}' | stats count as n by '{entity_field}' | sort -n | head 5
+   ({seed_filter}) and 'Log Source' = '{source}' | stats count as n by '{entity_field}' | sort -n | head 5
    ```
    Entity field names come from `ENTITY_FIELD_MAP` in `pivot_tool.py` (already live-probed against the dogfood tenancy). If a query errors with `InvalidParameter` (some sources don't have certain fields), that entity type's list stays empty for that source, an entry goes on `per_source.errors`, and `partial_reasons` gains `"entity_discovery_partial"` (deduplicated).
 3. **Timeline** (best-effort):
    ```
-   {seed_filter} and 'Log Source' = '{source}' | fields Time, Severity, 'Original Log Content' | sort -Time | head 20
+   ({seed_filter}) and 'Log Source' = '{source}' | fields Time, Severity, 'Original Log Content' | sort -Time | head 20
    ```
    Timeline errors are non-fatal: that source's `timeline` is set to `None`, the error string is appended to `per_source.errors`, and `partial_reasons` gains `"timeline_omitted"` (deduplicated — recorded once even if multiple sources drop their timeline).
 
@@ -257,6 +261,8 @@ Semaphore semantics: at most 2 source branches run concurrently. `asyncio.gather
 When a branch returns an `Exception` object (from `return_exceptions=True`), it's recorded on the accumulator's `source_errors` list, that source's entry is built with empty drill-down data + the error string in `errors`, and `partial_reasons` gains `"source_errors"`.
 
 **Per-source query cost:** 1 cluster + 3 entity discovery (we skip `ip` unless it's cheap to add later) + 1 timeline = up to 5 queries per source. At `top_k=3` with Semaphore(2), this is the bulk of A1's budget: ~15 queries, ~6-10s with parallelism.
+
+**Boolean precedence: seed_filter MUST be wrapped in parens when composed with the source constraint.** A seed like `'Severity' = 'ERROR' or 'Level' = 'FATAL'` composed as `<seed_filter> and 'Log Source' = '{source}'` would parse as `'Severity' = 'ERROR' or ('Level' = 'FATAL' and 'Log Source' = '{source}')` (because `and` binds tighter than `or`) — rows matching `'Severity' = 'ERROR'` in *any* source would slip past the source constraint, breaking incident-scoped drill-down. Composition helper `_compose_source_scoped_query` therefore emits `({seed_filter}) and 'Log Source' = '{source}' | ...` for every per-source query. Special case: when `seed_filter == "*"`, emit just `'Log Source' = '{source}' | ...` (no `and` prefix, no `(*)` — Logan doesn't accept wildcard inside parens).
 
 **Timestamp normalization:** every phase that consumes `Time`, `first_seen`, `last_seen`, etc. routes through the existing `_parse_ts` / `_ts_to_iso` helpers (J1/J2 already handle OCI's epoch-millisecond TIMESTAMP wire shape). Merged `cross_source_timeline` is sorted by normalized time and capped at 50 entries.
 
@@ -272,7 +278,9 @@ If `partial: true`, the reasons are appended.
 ### 6.8 Budget handling
 
 - `BudgetExceededError` anywhere in phases 1-6 → caught at the orchestrator; `_finalize(accumulator, partial_reasons=["budget_exceeded"] + existing_reasons)` returns whatever has been gathered.
-- `Semaphore(2)` + `return_exceptions=True` in phases 5 and 6 mean at most 2 queries land after the first budget error before remaining branches fail fast (each branch's next `engine.execute` hits the same tracker and raises).
+- **`BudgetExceededError` never propagates out of `InvestigateIncidentTool.run()`.** The handler does not catch it; it catches any other exception via the standard `handle_tool_call` error path. This is the key API shape difference between A1 and A2/A4/J1/J2 (see §8.3): A1 always returns an `InvestigationReport` (possibly partial), never a `{status: "budget_exceeded"}` wrapper.
+- `Semaphore(2)` + `return_exceptions=True` in the per-source phase mean at most 2 queries land after the first budget error before remaining branches fail fast (each branch's next `engine.execute` hits the same tracker and raises, which is captured by `return_exceptions`).
+- Seed query failing at Phase 1 with `BudgetExceededError` → return a mostly-empty partial report with seed populated but downstream sections empty, `partial_reasons: ["budget_exceeded"]`.
 - No "budget tight" heuristic — the budget tracker doesn't expose that granularity and over-engineering it now adds surface without behavioral gain.
 
 ## 7. File layout
@@ -293,7 +301,8 @@ docs/phase-2/specs/triage-toolkit.md  # §A1 updated to match this doc
 ### 8.1 Unit tests (phase functions, mocked engine)
 
 - `_extract_seed_filter` — the 10 cases in §5
-- `_compose_source_scoped_query` — handles `*` degradation (no `and` prefix), handles quote-escaping of source names, handles seed that's already `'Log Source' = 'X'`
+- `_compose_source_scoped_query` — wraps `seed_filter` in parens for boolean-precedence safety; special-cases `*` (emits just `'Log Source' = '{source}'` — no parens, no `and` prefix); quote-escapes source names (doubling single quotes); handles seed that's already `'Log Source' = 'X'`
+- `_compose_source_scoped_query` **precedence regression test**: seed `'Severity' = 'ERROR' or 'Level' = 'FATAL'`, source `'X'` → output must contain `(` and `)` around the OR clause. Sanity: a row where `Severity = 'ERROR'` but `Log Source = 'Y'` must NOT match the composed expression (verified logically from the output string shape)
 - `_rank_anomalous_sources` — sorts by `|pct_change|`, excludes J1-stopped sources, handles zero-comparison-count edge case
 - `_select_top_entities` — groups stats response by entity-type, handles `InvalidParameter` as "no entities for this field"
 - `_merge_cross_source_timeline` — deduplicates, sorts by normalized time, caps at 50, handles null and empty per-source inputs
@@ -315,11 +324,14 @@ docs/phase-2/specs/triage-toolkit.md  # §A1 updated to match this doc
 
 ### 8.3 Handler tests (`tests/test_handlers.py::TestInvestigateIncident`)
 
+**API shape note:** A1 diverges from the generic `{status: "budget_exceeded"}` wrapper pattern used by A2/A4/J1/J2. `InvestigateIncidentTool.run()` catches `BudgetExceededError` internally and returns an `InvestigationReport` with `partial: true, partial_reasons: ["budget_exceeded", ...]` plus whatever was gathered. The handler forwards this shape as-is; it does NOT wrap in a `{status: "budget_exceeded"}` payload. This is a deliberate design choice — A1's partial report is richer and more useful than the generic wrapper, and the orchestrator owns budget recovery.
+
 - `test_routes_to_investigate_tool` — `handle_tool_call("investigate_incident", {...})` dispatches and returns the JSON-serialized report
-- `test_budget_exceeded_returns_structured_payload` — consistent with other triage tools
+- `test_budget_exceeded_returns_partial_report` — when the mocked tool returns `{..., partial: true, partial_reasons: ["budget_exceeded"], ...}`, the handler forwards the shape verbatim (no `{status: "budget_exceeded"}` wrapper). Partial-report shape is asserted directly.
 - `test_default_time_range_is_valid_token` — handler default ∈ `TIME_RANGES`
-- `test_missing_query_returns_structured_error`
-- `test_bad_top_k_returns_structured_error` — negative, zero, >10, non-integer
+- `test_missing_query_returns_structured_error` — pre-flight validation at the handler (before calling the tool)
+- `test_bad_top_k_returns_structured_error` — non-integer, <1, >3 (the P0 clamp) are rejected with `{status: "error"}`; verify the handler does NOT call `InvestigateIncidentTool.run`
+- `test_tool_raises_non_budget_exception_surfaces_as_error` — if the tool raises something other than `BudgetExceededError` (e.g., a seed-query `ValueError`), the handler emits `{status: "error", error: str(e)}` per the handle_tool_call outer exception convention
 
 ### 8.4 Read-only guard
 
