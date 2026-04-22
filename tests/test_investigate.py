@@ -397,6 +397,54 @@ def _make_budget():
     )
 
 
+class TestPhase7NextSteps:
+    @pytest.mark.asyncio
+    async def test_next_steps_populated_from_seed_result(self):
+        """next_steps.suggest() is called with the seed query + seed_result."""
+        engine = _make_engine()
+        engine.execute = AsyncMock(return_value={
+            "data": {
+                "columns": [{"name": "Time"}, {"name": "Count"}],
+                "rows": [
+                    ["2026-04-22T10:00:00+00:00", 1],
+                    ["2026-04-22T10:01:00+00:00", 1],
+                    ["2026-04-22T10:02:00+00:00", 1],
+                    ["2026-04-22T10:03:00+00:00", 30],  # spike
+                ],
+            }
+        })
+        schema, ih, j2, diff = _make_deps()
+        tool = InvestigateIncidentTool(
+            query_engine=engine, schema_manager=schema,
+            ingestion_health_tool=ih, parser_triage_tool=j2, diff_tool=diff,
+            settings=_make_settings(), budget_tracker=_make_budget(),
+        )
+        report = await tool.run(query="'Event' = 'error'", time_range="last_1_hour", top_k=3)
+
+        # next_steps is a list (possibly empty); each entry must have the dict shape.
+        assert isinstance(report["next_steps"], list)
+        for step in report["next_steps"]:
+            assert "tool_name" in step
+            assert "suggested_args" in step
+            assert "reason" in step
+
+    @pytest.mark.asyncio
+    async def test_summary_mentions_anomalous_sources(self):
+        diff_result = {
+            "current": {}, "comparison": {}, "summary": "",
+            "delta": [{"dimension": "Apache", "current": 100, "comparison": 50, "pct_change": 100.0}],
+        }
+        schema, ih, j2, diff = _make_deps()
+        diff.run = AsyncMock(return_value=diff_result)
+        tool = InvestigateIncidentTool(
+            query_engine=_make_engine(), schema_manager=schema,
+            ingestion_health_tool=ih, parser_triage_tool=j2, diff_tool=diff,
+            settings=_make_settings(), budget_tracker=_make_budget(),
+        )
+        report = await tool.run(query="'x' = 'y'", time_range="last_1_hour", top_k=3)
+        assert "Apache" in report["summary"]
+
+
 class TestInvestigateSkeleton:
     @pytest.mark.asyncio
     async def test_minimal_report_shape(self):

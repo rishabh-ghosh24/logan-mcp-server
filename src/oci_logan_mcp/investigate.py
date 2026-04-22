@@ -12,6 +12,7 @@ from typing import Any, Dict, List, Optional, Set, Tuple
 
 from .budget_tracker import BudgetExceededError
 from .time_parser import TIME_RANGES
+from . import next_steps as _next_steps
 
 
 def _extract_seed_filter(query: str) -> str:
@@ -616,7 +617,11 @@ class InvestigateIncidentTool:
                 # inside a per-phase try — maps to source_errors.
                 if branch_result["infra_error"]:
                     acc["partial_reasons"].add("source_errors")
-            # Phase 7 is added by subsequent tasks.
+            # Phase 7 — next_steps suggestions from the seed result
+            acc["next_steps"] = [
+                step.to_dict()
+                for step in _next_steps.suggest(query, acc.get("seed_result") or {})
+            ]
         except BudgetExceededError:
             acc["partial_reasons"].add("budget_exceeded")
         return _finalize(acc, self._budget)
@@ -654,7 +659,7 @@ def _finalize(acc: Dict[str, Any], budget_tracker) -> Dict[str, Any]:
         "parser_failures": acc["parser_failures"],
         "anomalous_sources": anomalous_list,
         "cross_source_timeline": cross_source,
-        "next_steps": [],  # filled in Task 14
+        "next_steps": acc.get("next_steps") or [],
         "budget": budget_snap,
         "partial": bool(reasons),
         "partial_reasons": reasons,
