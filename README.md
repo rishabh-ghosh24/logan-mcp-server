@@ -126,7 +126,7 @@ Click **Save**, then start a new Codex session to connect.
 | Capability | Tools | Examples |
 |---|---|---|
 | **Query logs** | `run_query`, `run_batch_queries`, `run_saved_search` | Search logs, run multiple queries in parallel, execute saved searches |
-| **Triage diffs** | `diff_time_windows`, `pivot_on_entity`, `ingestion_health` | Compare a query across two time windows; pull all events for an entity across sources; probe per-source ingestion freshness |
+| **Triage diffs** | `diff_time_windows`, `pivot_on_entity`, `ingestion_health`, `parser_failure_triage` | Compare a query across two time windows; pull all events for an entity across sources; probe per-source ingestion freshness; surface top parser failures with sample lines |
 | **Explore schema** | `list_log_sources`, `list_fields`, `list_entities`, `list_parsers`, `list_labels` | Discover what log data is available |
 | **Visualize** | `visualize` | Generate pie, bar, line, area, table, tile, treemap, heatmap, histogram charts |
 | **Dashboards** | `create_dashboard`, `add_dashboard_tile`, `list_dashboards`, `delete_dashboard` | Create OCI Management Dashboards with LA widgets, grid layout, and scope filters |
@@ -155,6 +155,20 @@ Probe log-source freshness in one call. Classifies every source as `healthy`, `s
 Returns `{summary, checked_at, findings: [...]}` where each finding carries `status`, `severity`, `last_log_ts`, `age_seconds`, and a human-readable `message`.
 
 Configurable via `ingestion_health.stoppage_threshold_seconds` (default 600s) and `ingestion_health.freshness_probe_window` (default `last_1_hour`) in `config.yaml`.
+
+### `parser_failure_triage` — which parsers are broken?
+
+Surface the top parser failures ranked by volume. Returns up to 20 parsers, each with failure count, first/last seen timestamps, and up to 3 sample raw lines that failed to parse. Use this to identify which parsers need fixing before investigating an incident.
+
+```json
+{
+  "tool": "parser_failure_triage",
+  "time_range": "last_24h",
+  "top_n": 10
+}
+```
+
+Returns `{failures: [...], total_failure_count: N}` where each entry carries `parser_name`, `source`, `failure_count`, `first_seen`, `last_seen`, and `sample_raw_lines` (up to 3).
 
 ## Multi-User Learning
 
