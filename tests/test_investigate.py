@@ -455,3 +455,24 @@ class TestInvestigateSkeleton:
         report = await tool.run(query="'x' = 'y'", time_range="last_1_hour", top_k=3)
         assert report["partial"] is True
         assert "budget_exceeded" in report["partial_reasons"]
+
+
+class TestPhase1SeedExecution:
+    @pytest.mark.asyncio
+    async def test_seed_query_executed_with_time_range(self):
+        engine = _make_engine()
+        engine.execute = AsyncMock(return_value={"data": {"columns": [{"name": "n"}], "rows": [[5]]}})
+        schema, ih, j2, diff = _make_deps()
+        tool = InvestigateIncidentTool(
+            query_engine=engine, schema_manager=schema,
+            ingestion_health_tool=ih, parser_triage_tool=j2, diff_tool=diff,
+            settings=_make_settings(), budget_tracker=_make_budget(),
+        )
+        await tool.run(query="'Event' = 'error'", time_range="last_1_hour", top_k=3, compartment_id="ocid1.test")
+
+        # The seed query is executed once as-is (phase 1).
+        calls = [c for c in engine.execute.await_args_list
+                 if c.kwargs.get("query") == "'Event' = 'error'"]
+        assert len(calls) == 1
+        assert calls[0].kwargs.get("time_range") == "last_1_hour"
+        assert calls[0].kwargs.get("compartment_id") == "ocid1.test"
