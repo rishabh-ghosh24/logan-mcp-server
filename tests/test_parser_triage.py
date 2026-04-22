@@ -2,7 +2,13 @@
 
 import pytest
 
-from oci_logan_mcp.parser_triage import _build_stats_query, _build_samples_query
+from oci_logan_mcp.parser_triage import (
+    _build_stats_query,
+    _build_samples_query,
+    _parse_stats_response,
+    _parse_samples_response,
+    _merge_results,
+)
 
 
 class TestQueryBuilders:
@@ -66,7 +72,6 @@ def _samples_resp(rows):
 
 class TestResponseParsers:
     def test_parse_stats_basic(self):
-        from oci_logan_mcp.parser_triage import _parse_stats_response
         resp = _stats_resp([
             ["Apache Parser", "Apache Access", 42,
              "2026-04-22T00:00:00Z", "2026-04-22T09:00:00Z"],
@@ -81,17 +86,14 @@ class TestResponseParsers:
         assert r["last_seen"] == "2026-04-22T09:00:00Z"
 
     def test_parse_stats_empty_response(self):
-        from oci_logan_mcp.parser_triage import _parse_stats_response
         result = _parse_stats_response({"data": {"columns": [], "rows": []}})
         assert result == []
 
     def test_parse_stats_missing_data_key(self):
-        from oci_logan_mcp.parser_triage import _parse_stats_response
         result = _parse_stats_response({})
         assert result == []
 
     def test_parse_samples_groups_by_parser(self):
-        from oci_logan_mcp.parser_triage import _parse_samples_response
         resp = _samples_resp([
             ["Apache Parser", "raw1"],
             ["Apache Parser", "raw2"],
@@ -104,12 +106,10 @@ class TestResponseParsers:
         assert samples["Syslog Parser"] == ["syslog_raw"]
 
     def test_parse_samples_empty_response(self):
-        from oci_logan_mcp.parser_triage import _parse_samples_response
         result = _parse_samples_response({"data": {"columns": [], "rows": []}})
         assert result == {}
 
     def test_merge_results_attaches_samples(self):
-        from oci_logan_mcp.parser_triage import _merge_results
         stats = [{
             "parser_name": "Apache Parser",
             "source": "Apache Access",
@@ -122,7 +122,6 @@ class TestResponseParsers:
         assert result[0]["sample_raw_lines"] == ["line1", "line2"]
 
     def test_merge_results_empty_samples_for_parser_with_no_raw_data(self):
-        from oci_logan_mcp.parser_triage import _merge_results
         stats = [{
             "parser_name": "Silent Parser",
             "source": "X",
@@ -132,3 +131,33 @@ class TestResponseParsers:
         }]
         result = _merge_results(stats, {})
         assert result[0]["sample_raw_lines"] == []
+
+    def test_parse_stats_none_failure_count_defaults_to_zero(self):
+        resp = _stats_resp([
+            ["Apache Parser", "Apache Access", None,
+             "2026-04-22T00:00:00Z", "2026-04-22T09:00:00Z"],
+        ])
+        result = _parse_stats_response(resp)
+        assert result[0]["failure_count"] == 0
+
+    def test_parse_samples_none_raw_line_becomes_empty_string(self):
+        resp = _samples_resp([["Parser A", None]])
+        samples = _parse_samples_response(resp)
+        assert samples["Parser A"] == [""]
+
+    def test_merge_results_preserves_all_stats_fields(self):
+        stats = [{
+            "parser_name": "Apache Parser",
+            "source": "Apache Access",
+            "failure_count": 10,
+            "first_seen": "2026-04-22T00:00:00Z",
+            "last_seen": "2026-04-22T09:00:00Z",
+        }]
+        result = _merge_results(stats, {"Apache Parser": ["line1"]})
+        r = result[0]
+        assert r["parser_name"] == "Apache Parser"
+        assert r["source"] == "Apache Access"
+        assert r["failure_count"] == 10
+        assert r["first_seen"] == "2026-04-22T00:00:00Z"
+        assert r["last_seen"] == "2026-04-22T09:00:00Z"
+        assert r["sample_raw_lines"] == ["line1"]

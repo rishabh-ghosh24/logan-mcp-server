@@ -50,7 +50,7 @@ def _parse_stats_response(response: Dict[str, Any]) -> List[Dict[str, Any]]:
     columns = [c.get("name") for c in data.get("columns", [])]
     rows = data.get("rows", [])
     required = {"Parser Name", "Log Source", "failure_count", "first_seen", "last_seen"}
-    if not required.issubset(set(columns)):
+    if not required.issubset(columns):
         return []
     pn_idx = columns.index("Parser Name")
     src_idx = columns.index("Log Source")
@@ -64,7 +64,7 @@ def _parse_stats_response(response: Dict[str, Any]) -> List[Dict[str, Any]]:
         out.append({
             "parser_name": str(row[pn_idx]),
             "source": str(row[src_idx]),
-            "failure_count": int(row[cnt_idx]),
+            "failure_count": int(row[cnt_idx]) if row[cnt_idx] is not None else 0,
             "first_seen": str(row[fs_idx]) if row[fs_idx] is not None else None,
             "last_seen": str(row[ls_idx]) if row[ls_idx] is not None else None,
         })
