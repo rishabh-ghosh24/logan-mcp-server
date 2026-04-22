@@ -53,3 +53,24 @@ def _extract_seed_filter(query: str) -> str:
 
     f = query[:i].strip()
     return "*" if not f or f == "*" else f
+
+
+def _compose_source_scoped_query(seed_filter: str, source: str, tail: str) -> str:
+    """Compose a per-source query with boolean-precedence safety.
+
+    Wraps `seed_filter` in parens so that seeds containing `or`/mixed
+    precedence don't let rows escape the source constraint.
+
+    Special case: `seed_filter == "*"` emits just the source predicate
+    (no parens, no `and`). Logan doesn't accept `(*)`.
+
+    `tail` is the pipeline tail appended after `| ` — e.g. `"cluster | sort -Count | head 3"`.
+    `source` is quote-escaped via single-quote doubling.
+    """
+    escaped_source = source.replace("'", "''")
+    src_pred = f"'Log Source' = '{escaped_source}'"
+    if seed_filter == "*":
+        base = src_pred
+    else:
+        base = f"({seed_filter}) and {src_pred}"
+    return f"{base} | {tail}"
