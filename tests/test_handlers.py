@@ -1653,3 +1653,14 @@ class TestParserFailureTriage:
         assert payload["status"] == "budget_exceeded"
         assert "query limit hit" in payload["error"]
         assert "budget" in payload
+
+    @pytest.mark.asyncio
+    async def test_bad_top_n_returns_structured_error(self, handlers):
+        """Non-integer top_n returns a structured error, not a stringified ValueError."""
+        result = await handlers.handle_tool_call(
+            "parser_failure_triage",
+            {"top_n": "abc"},
+        )
+        payload = json.loads(result[0]["text"])
+        assert payload["status"] == "error"
+        assert "top_n" in payload["error"]

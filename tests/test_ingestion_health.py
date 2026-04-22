@@ -30,6 +30,17 @@ class TestParseTs:
     def test_garbage(self):
         assert _parse_ts("not-a-date") is None
 
+    def test_parses_epoch_millis_int(self):
+        """OCI LA TIMESTAMP columns come back as epoch-millisecond ints — verified live."""
+        # 1776829209147 ms = 2026-04-22T03:40:09.147+00:00
+        dt = _parse_ts(1776829209147)
+        assert dt == datetime(2026, 4, 22, 3, 40, 9, 147000, tzinfo=timezone.utc)
+
+    def test_rejects_bool_as_non_timestamp(self):
+        """bool is a subclass of int in Python — guard against False becoming epoch 0."""
+        assert _parse_ts(True) is None
+        assert _parse_ts(False) is None
+
 
 class TestClassify:
     def test_unknown_when_last_log_ts_none(self):
@@ -108,6 +119,27 @@ def _probe_result(rows):
 
 
 class TestOrchestration:
+    @pytest.mark.asyncio
+    async def test_healthy_source_with_epoch_ms_timestamp(self, monkeypatch):
+        """End-to-end with the real OCI wire shape (epoch-ms int for last_log_ts)."""
+        # frozen_now = 2026-04-22T10:00:00Z = 1776852000000 ms
+        # 30s earlier = 1776851970000 ms
+        frozen_now = datetime(2026, 4, 22, 10, 0, 0, tzinfo=timezone.utc)
+        engine = _make_engine(_probe_result([
+            ("Linux Syslog", 1776851970000),
+        ]))
+        schema = _make_schema(["Linux Syslog"])
+        tool = IngestionHealthTool(engine, schema, _make_settings())
+
+        import oci_logan_mcp.ingestion_health as ih
+        monkeypatch.setattr(ih, "_utcnow", lambda: frozen_now)
+
+        result = await tool.run(severity_filter="all")
+
+        f = result["findings"][0]
+        assert f["status"] == "healthy"
+        assert f["age_seconds"] == 30
+
     @pytest.mark.asyncio
     async def test_healthy_source_recent_record(self, monkeypatch):
         # "now" is frozen inside the tool by monkeypatching _utcnow.

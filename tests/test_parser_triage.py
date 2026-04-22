@@ -78,19 +78,37 @@ def _samples_resp(rows):
 
 class TestResponseParsers:
     def test_parse_stats_basic(self):
+        # OCI returns TIMESTAMP columns as epoch-millisecond ints — verified live.
+        # 1776743266000 ms = 2026-04-21T03:47:46+00:00 UTC
+        # 1776829209000 ms = 2026-04-22T03:40:09+00:00 UTC
         resp = _stats_resp([
             ["Kubernetes Kubelet Logs", 42,
-             "2026-04-22T00:00:00Z", "2026-04-22T09:00:00Z"],
+             1776743266000, 1776829209000],
         ])
         result = _parse_stats_response(resp)
         assert len(result) == 1
         r = result[0]
         assert r["source"] == "Kubernetes Kubelet Logs"
         assert r["failure_count"] == 42
-        assert r["first_seen"] == "2026-04-22T00:00:00Z"
-        assert r["last_seen"] == "2026-04-22T09:00:00Z"
-        # There is no parser_name in the output — OCI LA has no such field.
+        # Parser converts epoch-ms to ISO-8601 UTC string.
+        assert r["first_seen"] == "2026-04-21T03:47:46+00:00"
+        assert r["last_seen"] == "2026-04-22T03:40:09+00:00"
         assert "parser_name" not in r
+
+    def test_parse_stats_accepts_iso_string_timestamps(self):
+        """Cache/replay paths may still surface ISO strings; parse them too."""
+        resp = _stats_resp([
+            ["Apache Access", 5, "2026-04-22T00:00:00Z", "2026-04-22T09:00:00Z"],
+        ])
+        result = _parse_stats_response(resp)
+        assert result[0]["first_seen"] == "2026-04-22T00:00:00+00:00"
+        assert result[0]["last_seen"] == "2026-04-22T09:00:00+00:00"
+
+    def test_parse_stats_short_row_skipped(self):
+        """A row shorter than the header must not raise IndexError."""
+        resp = _stats_resp([["only-source"]])
+        result = _parse_stats_response(resp)
+        assert result == []
 
     def test_parse_stats_empty_response(self):
         result = _parse_stats_response({"data": {"columns": [], "rows": []}})

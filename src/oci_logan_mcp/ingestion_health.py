@@ -11,14 +11,24 @@ def _utcnow() -> datetime:
     return datetime.now(timezone.utc)
 
 
-def _parse_ts(value: Optional[str]) -> Optional[datetime]:
-    """Parse an ISO-8601 timestamp string to a UTC-aware datetime.
+def _parse_ts(value: Any) -> Optional[datetime]:
+    """Parse an OCI Log Analytics timestamp to a UTC-aware datetime.
 
-    Accepts trailing `Z` (RFC 3339). Returns None on any parse failure so the
-    classifier can treat missing/malformed timestamps as `unknown` without
-    raising into the handler.
+    OCI returns `TIMESTAMP` columns as epoch-millisecond integers (verified
+    live). Also accepts ISO-8601 strings for cache/replay paths. Returns
+    None on any parse failure so the classifier can treat missing/malformed
+    timestamps as `unknown` without raising into the handler.
     """
-    if not value:
+    if value is None or value == "":
+        return None
+    # Epoch-millisecond int (the real OCI wire shape).
+    if isinstance(value, (int, float)) and not isinstance(value, bool):
+        try:
+            return datetime.fromtimestamp(value / 1000, tz=timezone.utc)
+        except (OverflowError, OSError, ValueError):
+            return None
+    # ISO-8601 string fallback.
+    if not isinstance(value, str):
         return None
     s = value.strip()
     if s.endswith("Z"):

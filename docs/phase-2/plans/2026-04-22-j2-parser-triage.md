@@ -1,5 +1,14 @@
 # J2 — Parser Failure Triage Implementation Plan
 
+> ⚠️ **SUPERSEDED — DO NOT IMPLEMENT FROM THIS PLAN.**
+> This plan was written against a fabricated OCI Log Analytics schema:
+> it assumes a `'Parser Name'` field and a `Log Source = 'Parser Failure'`
+> log source, neither of which exists. The real schema uses `'Parse Failed' = 1`
+> as the filter and groups by `'Log Source'` only (each source has one parser).
+> The actual shipped implementation diverges from this plan substantially.
+> **See [`../specs/triage-toolkit.md`](../specs/triage-toolkit.md) §J2 for the real schema and current contract.**
+> Kept here as a historical artifact of how the feature was misconceived.
+
 > **For agentic workers:** REQUIRED SUB-SKILL: Use superpowers:subagent-driven-development (recommended) or superpowers:executing-plans to implement this plan task-by-task. Steps use checkbox (`- [ ]`) syntax for tracking.
 
 **Goal:** Add a `parser_failure_triage` MCP tool that runs two Logan queries — an aggregate stats query and a per-parser samples query — and returns the top N parsers by failure count with up to 3 sample raw lines each.

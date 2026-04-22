@@ -714,9 +714,15 @@ class MCPHandlers:
     async def _parser_failure_triage(self, args: Dict) -> List[Dict]:
         """Run parser_failure_triage. BudgetExceededError returns structured payload."""
         try:
+            top_n = int(args.get("top_n", 20))
+        except (TypeError, ValueError):
+            return [{"type": "text", "text": json.dumps(
+                {"status": "error", "error": "top_n must be an integer"}, indent=2
+            )}]
+        try:
             result = await self.parser_triage_tool.run(
                 time_range=args.get("time_range", "last_24_hours"),
-                top_n=int(args.get("top_n", 20)),
+                top_n=top_n,
             )
         except BudgetExceededError as e:
             payload = {

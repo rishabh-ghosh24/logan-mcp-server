@@ -2,9 +2,20 @@
 
 from __future__ import annotations
 
-from typing import Any, Dict, List
+from typing import Any, Dict, List, Optional
 
 from .budget_tracker import BudgetExceededError
+from .ingestion_health import _parse_ts
+
+
+def _ts_to_iso(value: Any) -> Optional[str]:
+    """Convert an OCI TIMESTAMP cell (epoch-ms int, ISO str, or None) to ISO-8601.
+
+    Reuses `_parse_ts` for the parsing grammar. Returns None if parsing fails
+    so the handler can emit `"first_seen": null` instead of crashing.
+    """
+    dt = _parse_ts(value)
+    return dt.isoformat() if dt is not None else None
 
 
 def _build_stats_query(top_n: int) -> str:
@@ -61,15 +72,17 @@ def _parse_stats_response(response: Dict[str, Any]) -> List[Dict[str, Any]]:
     cnt_idx = columns.index("failure_count")
     fs_idx = columns.index("first_seen")
     ls_idx = columns.index("last_seen")
+    max_idx = max(src_idx, cnt_idx, fs_idx, ls_idx)
     out = []
     for row in rows:
-        if not row:
+        if not row or len(row) <= max_idx:
             continue
+        cnt = row[cnt_idx]
         out.append({
             "source": str(row[src_idx]),
-            "failure_count": int(row[cnt_idx]) if row[cnt_idx] is not None else 0,
-            "first_seen": str(row[fs_idx]) if row[fs_idx] is not None else None,
-            "last_seen": str(row[ls_idx]) if row[ls_idx] is not None else None,
+            "failure_count": int(cnt) if cnt is not None else 0,
+            "first_seen": _ts_to_iso(row[fs_idx]),
+            "last_seen": _ts_to_iso(row[ls_idx]),
         })
     return out
 
@@ -88,9 +101,10 @@ def _parse_samples_response(response: Dict[str, Any]) -> Dict[str, List[str]]:
         return {}
     src_idx = columns.index("Log Source")
     raw_idx = columns.index("Original Log Content")
+    max_idx = max(src_idx, raw_idx)
     out: Dict[str, List[str]] = {}
     for row in rows:
-        if not row:
+        if not row or len(row) <= max_idx:
             continue
         src = str(row[src_idx])
         raw = str(row[raw_idx]) if row[raw_idx] is not None else ""

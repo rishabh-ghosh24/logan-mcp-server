@@ -331,10 +331,16 @@ def get_tools() -> List[Dict[str, Any]]:
                 "properties": {
                     "time_range": {
                         "type": "string",
+                        "enum": [
+                            "last_15_min", "last_30_min",
+                            "last_1_hour", "last_3_hours", "last_6_hours",
+                            "last_12_hours", "last_24_hours",
+                            "last_2_days", "last_7_days", "last_14_days",
+                            "last_30_days",
+                        ],
                         "description": (
                             "Time window to scan for parser failures. "
-                            "Default: 'last_24_hours'. Accepts Logan time "
-                            "strings such as 'last_1_hour', 'last_7_days'."
+                            "Default: 'last_24_hours'."
                         ),
                     },
                     "top_n": {
