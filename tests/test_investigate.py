@@ -351,3 +351,107 @@ class TestTemplatedSummary:
         s = _templated_summary(acc)
         assert "2" in s and "stopped" in s.lower()
         assert "500" in s and ("parse" in s.lower() or "parser" in s.lower())
+
+
+from unittest.mock import AsyncMock, MagicMock
+
+from oci_logan_mcp.investigate import InvestigateIncidentTool
+
+
+def _make_engine():
+    engine = MagicMock()
+    engine.execute = AsyncMock(return_value={"data": {"columns": [], "rows": []}})
+    return engine
+
+
+def _make_deps(schema_sources=None, ih_result=None, j2_result=None):
+    """Stub out J1, J2, A2 tool instances the orchestrator composes."""
+    from unittest.mock import MagicMock, AsyncMock
+    schema = MagicMock()
+    schema.get_log_sources = AsyncMock(return_value=[{"name": n} for n in (schema_sources or [])])
+    ih_tool = MagicMock()
+    ih_tool.run = AsyncMock(return_value=ih_result or {
+        "summary": {"sources_healthy": 0, "sources_stopped": 0, "sources_unknown": 0},
+        "findings": [],
+        "checked_at": "2026-04-22T10:00:00+00:00",
+        "metadata": {},
+    })
+    j2_tool = MagicMock()
+    j2_tool.run = AsyncMock(return_value=j2_result or {"failures": [], "total_failure_count": 0})
+    diff_tool = MagicMock()
+    diff_tool.run = AsyncMock(return_value={"current": {}, "comparison": {}, "delta": [], "summary": "no change"})
+    return schema, ih_tool, j2_tool, diff_tool
+
+
+def _make_settings():
+    from oci_logan_mcp.config import Settings
+    return Settings()
+
+
+def _make_budget():
+    from oci_logan_mcp.budget_tracker import BudgetTracker, BudgetLimits
+    return BudgetTracker(
+        session_id="test",
+        limits=BudgetLimits(enabled=False, max_queries_per_session=100,
+                            max_bytes_per_session=0, max_cost_usd_per_session=0),
+    )
+
+
+class TestInvestigateSkeleton:
+    @pytest.mark.asyncio
+    async def test_minimal_report_shape(self):
+        schema, ih, j2, diff = _make_deps()
+        tool = InvestigateIncidentTool(
+            query_engine=_make_engine(), schema_manager=schema,
+            ingestion_health_tool=ih, parser_triage_tool=j2, diff_tool=diff,
+            settings=_make_settings(), budget_tracker=_make_budget(),
+        )
+        report = await tool.run(query="'Event' = 'error'", time_range="last_1_hour", top_k=3)
+
+        # Minimal required keys regardless of phase content.
+        for key in ("summary", "seed", "ingestion_health", "parser_failures",
+                    "anomalous_sources", "cross_source_timeline", "next_steps",
+                    "budget", "partial", "partial_reasons", "elapsed_seconds"):
+            assert key in report, f"missing {key}"
+
+    @pytest.mark.asyncio
+    async def test_seed_section_populated(self):
+        schema, ih, j2, diff = _make_deps()
+        tool = InvestigateIncidentTool(
+            query_engine=_make_engine(), schema_manager=schema,
+            ingestion_health_tool=ih, parser_triage_tool=j2, diff_tool=diff,
+            settings=_make_settings(), budget_tracker=_make_budget(),
+        )
+        report = await tool.run(query="'Event' = 'error' | stats count", time_range="last_1_hour", top_k=3)
+        assert report["seed"]["query"] == "'Event' = 'error' | stats count"
+        assert report["seed"]["seed_filter"] == "'Event' = 'error'"
+        assert report["seed"]["seed_filter_degraded"] is False
+        assert report["seed"]["time_range"] == "last_1_hour"
+
+    @pytest.mark.asyncio
+    async def test_wildcard_seed_sets_degraded(self):
+        schema, ih, j2, diff = _make_deps()
+        tool = InvestigateIncidentTool(
+            query_engine=_make_engine(), schema_manager=schema,
+            ingestion_health_tool=ih, parser_triage_tool=j2, diff_tool=diff,
+            settings=_make_settings(), budget_tracker=_make_budget(),
+        )
+        report = await tool.run(query="*", time_range="last_1_hour", top_k=3)
+        assert report["seed"]["seed_filter_degraded"] is True
+
+    @pytest.mark.asyncio
+    async def test_budget_exception_returns_partial_report_not_raised(self):
+        from oci_logan_mcp.budget_tracker import BudgetExceededError
+        engine = _make_engine()
+        engine.execute = AsyncMock(side_effect=BudgetExceededError("over"))
+        schema, ih, j2, diff = _make_deps()
+        tool = InvestigateIncidentTool(
+            query_engine=engine, schema_manager=schema,
+            ingestion_health_tool=ih, parser_triage_tool=j2, diff_tool=diff,
+            settings=_make_settings(), budget_tracker=_make_budget(),
+        )
+
+        # Must NOT raise; must return a partial InvestigationReport instead.
+        report = await tool.run(query="'x' = 'y'", time_range="last_1_hour", top_k=3)
+        assert report["partial"] is True
+        assert "budget_exceeded" in report["partial_reasons"]

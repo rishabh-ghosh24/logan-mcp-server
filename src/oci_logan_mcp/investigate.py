@@ -6,9 +6,11 @@ Design: docs/phase-2/specs/2026-04-22-a1-investigate-incident-design.md
 
 from __future__ import annotations
 
-from datetime import datetime
+import asyncio
+from datetime import datetime, timezone
 from typing import Any, Dict, List, Optional, Set, Tuple
 
+from .budget_tracker import BudgetExceededError
 from .time_parser import TIME_RANGES
 
 
@@ -213,6 +215,16 @@ def _merge_cross_source_timeline(
     return merged[:cap]
 
 
+def _utcnow() -> datetime:
+    """Return current UTC time. Seam for deterministic testing."""
+    return datetime.now(timezone.utc)
+
+
+TOP_K_MIN = 1
+TOP_K_MAX = 3
+TIMELINE_CAP = 50
+
+
 def _templated_summary(acc: Dict[str, Any]) -> str:
     """Render a 1-2 sentence human-readable summary from the accumulator."""
     seed = acc["seed"]
@@ -244,3 +256,115 @@ def _templated_summary(acc: Dict[str, Any]) -> str:
         parts.append(f"Result is partial: {', '.join(sorted(reasons))}.")
 
     return " ".join(parts)
+
+
+class InvestigateIncidentTool:
+    """Orchestrator for A1 investigate_incident.
+
+    Composes J1 (ingestion_health), J2 (parser_failure_triage),
+    A2 (diff_time_windows), and Logan's native `cluster` command into a
+    first-cut structured investigation. See
+    `docs/phase-2/specs/2026-04-22-a1-investigate-incident-design.md`.
+    """
+
+    def __init__(
+        self,
+        query_engine,
+        schema_manager,
+        ingestion_health_tool,
+        parser_triage_tool,
+        diff_tool,
+        settings,
+        budget_tracker,
+    ):
+        self._engine = query_engine
+        self._schema = schema_manager
+        self._ih_tool = ingestion_health_tool
+        self._j2_tool = parser_triage_tool
+        self._diff_tool = diff_tool
+        self._settings = settings
+        self._budget = budget_tracker
+
+    async def run(
+        self,
+        query: str,
+        time_range: str = "last_1_hour",
+        top_k: int = 3,
+        compartment_id: Optional[str] = None,
+    ) -> Dict[str, Any]:
+        if top_k < TOP_K_MIN or top_k > TOP_K_MAX:
+            raise ValueError(
+                f"top_k must be in [{TOP_K_MIN}, {TOP_K_MAX}] for P0; got {top_k}"
+            )
+
+        seed_filter = _extract_seed_filter(query)
+        acc: Dict[str, Any] = {
+            "seed": {
+                "query": query,
+                "seed_filter": seed_filter,
+                "seed_filter_degraded": seed_filter == "*",
+                "time_range": time_range,
+                "compartment_id": compartment_id,
+            },
+            "seed_result": None,
+            "ingestion_health": None,
+            "parser_failures": None,
+            "diff": None,
+            "anomalous_sources": [],
+            "per_source": {},
+            "partial_reasons": set(),
+            "source_errors": [],
+            "start_time": _utcnow(),
+            "budget_snapshot": None,
+        }
+        try:
+            # Phase 1: seed query (result stored for subsequent phases).
+            acc["seed_result"] = await self._engine.execute(
+                query=query,
+                time_range=time_range,
+                compartment_id=compartment_id,
+            )
+            # Phases 2-7 are added by subsequent tasks.
+        except BudgetExceededError:
+            acc["partial_reasons"].add("budget_exceeded")
+        return _finalize(acc, self._budget)
+
+
+def _finalize(acc: Dict[str, Any], budget_tracker) -> Dict[str, Any]:
+    """Assemble the final InvestigationReport from the accumulator."""
+    reasons = sorted(acc["partial_reasons"]) if acc.get("partial_reasons") else []
+    budget_snap = budget_tracker.snapshot().to_dict() if budget_tracker else {}
+    elapsed = (_utcnow() - acc["start_time"]).total_seconds()
+
+    # per_source dict → ordered list matching anomalous_sources ranking.
+    anomalous_list: List[Dict[str, Any]] = []
+    for ranked in acc["anomalous_sources"]:
+        src = ranked["source"]
+        entry = dict(ranked)
+        ps = acc["per_source"].get(src, {})
+        entry["top_error_clusters"] = ps.get("top_error_clusters", [])
+        entry["top_entities"] = ps.get("top_entities", [])
+        entry["timeline"] = ps.get("timeline")
+        entry["errors"] = ps.get("errors", [])
+        anomalous_list.append(entry)
+
+    # Cross-source timeline built from per-source dict.
+    timeline_by_source = {
+        src: acc["per_source"].get(src, {}).get("timeline")
+        for src in acc["per_source"].keys()
+    }
+    cross_source = _merge_cross_source_timeline(timeline_by_source, cap=TIMELINE_CAP)
+
+    return {
+        "summary": _templated_summary(acc),
+        "seed": acc["seed"],
+        "ingestion_health": acc["ingestion_health"],
+        "parser_failures": acc["parser_failures"],
+        "anomalous_sources": anomalous_list,
+        "cross_source_timeline": cross_source,
+        "next_steps": [],  # filled in Task 14
+        "budget": budget_snap,
+        "partial": bool(reasons),
+        "partial_reasons": reasons,
+        "elapsed_seconds": round(elapsed, 3),
+    }
