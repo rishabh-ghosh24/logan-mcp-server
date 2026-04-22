@@ -1027,6 +1027,74 @@ class TestOrchestrationEdgeCases:
                 assert "T" in row["time"]
 
 
+class TestDiffDimensionLabelHandling:
+    @pytest.mark.asyncio
+    async def test_a1_strips_log_source_prefix_from_diff_dimension(self):
+        """DiffTool's _label(key) returns 'Log Source=<value>' for the
+        single-dimension case, not the bare source name. A1 must strip
+        that prefix or per-source drill-down queries match zero rows."""
+        diff_result = {
+            "current": {}, "comparison": {}, "summary": "",
+            "delta": [
+                {"dimension": "Log Source=Kubernetes Kubelet Logs",
+                 "current": 100, "comparison": 50, "pct_change": 100.0},
+                {"dimension": "Log Source=Apache Access",
+                 "current": 30, "comparison": 60, "pct_change": -50.0},
+            ],
+        }
+        engine = _make_engine()
+        # Track the per-source filter clauses actually sent to the engine.
+        seen_queries = []
+        async def execute_router(**kwargs):
+            seen_queries.append(kwargs.get("query", ""))
+            return {"data": {"columns": [], "rows": []}}
+        engine.execute = AsyncMock(side_effect=execute_router)
+
+        schema, ih, j2, diff = _make_deps()
+        diff.run = AsyncMock(return_value=diff_result)
+        tool = InvestigateIncidentTool(
+            query_engine=engine, schema_manager=schema,
+            ingestion_health_tool=ih, parser_triage_tool=j2, diff_tool=diff,
+            settings=_make_settings(), budget_tracker=_make_budget(),
+        )
+        report = await tool.run(query="*", time_range="last_1_hour", top_k=3)
+
+        # Anomalous_sources must have the BARE source name, not the labeled form.
+        sources = [s["source"] for s in report["anomalous_sources"]]
+        assert "Kubernetes Kubelet Logs" in sources
+        assert "Apache Access" in sources
+        assert not any(s.startswith("Log Source=") for s in sources), \
+            f"A1 leaked DiffTool label format: {sources}"
+
+        # Per-source drill-down queries must use the bare source name in the filter.
+        per_source_queries = [q for q in seen_queries if "| cluster" in q]
+        assert per_source_queries, "No cluster queries were sent"
+        for q in per_source_queries:
+            assert "'Log Source' = 'Kubernetes Kubelet Logs'" in q or \
+                   "'Log Source' = 'Apache Access'" in q, f"bad per-source filter: {q}"
+            assert "'Log Source=" not in q, f"label leaked into filter: {q}"
+
+    @pytest.mark.asyncio
+    async def test_non_log_source_prefix_dimension_passes_through(self):
+        """Defensive: if DiffTool ever returns a dimension NOT prefixed with
+        'Log Source=', leave it alone. Don't over-strip."""
+        diff_result = {
+            "current": {}, "comparison": {}, "summary": "",
+            "delta": [{"dimension": "BareName", "current": 10, "comparison": 1, "pct_change": 900.0}],
+        }
+        engine = _make_engine()
+        engine.execute = AsyncMock(return_value={"data": {"columns": [], "rows": []}})
+        schema, ih, j2, diff = _make_deps()
+        diff.run = AsyncMock(return_value=diff_result)
+        tool = InvestigateIncidentTool(
+            query_engine=engine, schema_manager=schema,
+            ingestion_health_tool=ih, parser_triage_tool=j2, diff_tool=diff,
+            settings=_make_settings(), budget_tracker=_make_budget(),
+        )
+        report = await tool.run(query="*", time_range="last_1_hour", top_k=3)
+        assert report["anomalous_sources"][0]["source"] == "BareName"
+
+
 class TestToolSchema:
     def test_investigate_incident_schema_present(self):
         from oci_logan_mcp.tools import get_tools

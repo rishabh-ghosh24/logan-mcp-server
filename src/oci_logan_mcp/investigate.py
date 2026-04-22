@@ -566,8 +566,18 @@ class InvestigateIncidentTool:
                 if finding.get("status") == "stopped":
                     stopped.add(str(finding.get("source")))
 
+            # DiffTool's _label(key) formats single-dimension keys as
+            # f"Log Source=<value>", not the bare value. Strip the prefix so
+            # downstream code sees the raw Log Source name.
+            normalized_delta = []
+            for entry in diff_result.get("delta") or []:
+                dim = entry.get("dimension")
+                if isinstance(dim, str) and dim.startswith("Log Source="):
+                    entry = dict(entry)
+                    entry["dimension"] = dim[len("Log Source="):]
+                normalized_delta.append(entry)
             acc["anomalous_sources"] = _rank_anomalous_sources(
-                diff_result.get("delta") or [], stopped, top_k,
+                normalized_delta, stopped, top_k,
             )
             # Seed per_source entries for drill-down phases.
             for s in acc["anomalous_sources"]:
