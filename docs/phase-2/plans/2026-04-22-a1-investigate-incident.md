@@ -1777,6 +1777,8 @@ class TestPhase5And6DrillDown:
 
     @pytest.mark.asyncio
     async def test_invalid_entity_field_partial_not_fatal(self):
+        """Field-variance (ServiceError code=InvalidParameter with
+        'Invalid field' in message) → entity_discovery_partial only."""
         from oci.exceptions import ServiceError
         diff_result = {
             "current": {}, "comparison": {}, "summary": "",
@@ -1803,10 +1805,87 @@ class TestPhase5And6DrillDown:
 
         assert report["partial"] is True
         assert "entity_discovery_partial" in report["partial_reasons"]
-        # Other entity types still populated (empty here because engine returns empty).
+        # Field-variance specifically does NOT trigger source_errors.
+        assert "source_errors" not in report["partial_reasons"]
         src = report["anomalous_sources"][0]
-        assert src["errors"]  # non-empty
-        assert any("User Name" in e for e in src["errors"])
+        assert src["errors"]
+        assert any("User Name" in e and "InvalidParameter" in e for e in src["errors"])
+
+    @pytest.mark.asyncio
+    async def test_entity_discovery_non_field_variance_is_source_errors_not_partial(self):
+        """Non-InvalidParameter failures during entity discovery (5xx, auth,
+        transport) must surface as source_errors, NOT masquerade as
+        entity_discovery_partial. Otherwise real infra problems get silently
+        downgraded to 'this field is missing in this tenancy' shape."""
+        from oci.exceptions import ServiceError
+        diff_result = {
+            "current": {}, "comparison": {}, "summary": "",
+            "delta": [{"dimension": "Apache", "current": 100, "comparison": 0, "pct_change": None}],
+        }
+
+        async def execute_router(**kwargs):
+            q = kwargs.get("query", "")
+            # 503 during user-name discovery — real backend failure, not field variance
+            if "'User Name'" in q:
+                raise ServiceError(status=503, code="ServiceUnavailable",
+                                   headers={}, message="backend unavailable")
+            return {"data": {"columns": [], "rows": []}}
+
+        engine = MagicMock()
+        engine.execute = AsyncMock(side_effect=execute_router)
+        schema, ih, j2, diff = _make_deps()
+        diff.run = AsyncMock(return_value=diff_result)
+        tool = InvestigateIncidentTool(
+            query_engine=engine, schema_manager=schema,
+            ingestion_health_tool=ih, parser_triage_tool=j2, diff_tool=diff,
+            settings=_make_settings(), budget_tracker=_make_budget(),
+        )
+        report = await tool.run(query="'Event' = 'x'", time_range="last_1_hour", top_k=3)
+
+        assert report["partial"] is True
+        assert "source_errors" in report["partial_reasons"]
+        # Critical: 503s must NOT be labeled as field variance.
+        assert "entity_discovery_partial" not in report["partial_reasons"]
+        src = report["anomalous_sources"][0]
+        assert any("ServiceError" in e or "ServiceUnavailable" in e for e in src["errors"])
+
+    @pytest.mark.asyncio
+    async def test_budget_exception_mid_drill_down_flagged_as_budget_not_source_errors(self):
+        """BudgetExceededError raised inside a per-source branch must
+        surface as `budget_exceeded` partial_reason, not get downgraded
+        to `source_errors` by the generic gather-exception handler."""
+        from oci_logan_mcp.budget_tracker import BudgetExceededError
+        diff_result = {
+            "current": {}, "comparison": {}, "summary": "",
+            "delta": [
+                {"dimension": "A", "current": 100, "comparison": 50, "pct_change": 100.0},
+                {"dimension": "B", "current": 50, "comparison": 25, "pct_change": 100.0},
+            ],
+        }
+        call_count = {"n": 0}
+
+        async def execute_router(**kwargs):
+            # First few queries succeed; then BudgetExceededError from the engine.
+            call_count["n"] += 1
+            if call_count["n"] > 3:
+                raise BudgetExceededError("session cost limit reached mid-drill-down")
+            return {"data": {"columns": [], "rows": []}}
+
+        engine = MagicMock()
+        engine.execute = AsyncMock(side_effect=execute_router)
+        schema, ih, j2, diff = _make_deps()
+        diff.run = AsyncMock(return_value=diff_result)
+        tool = InvestigateIncidentTool(
+            query_engine=engine, schema_manager=schema,
+            ingestion_health_tool=ih, parser_triage_tool=j2, diff_tool=diff,
+            settings=_make_settings(), budget_tracker=_make_budget(),
+        )
+        report = await tool.run(query="*", time_range="last_1_hour", top_k=3)
+
+        assert report["partial"] is True
+        assert "budget_exceeded" in report["partial_reasons"]
+        # Critical: budget exhaustion must not be mislabeled as source_errors.
+        assert "source_errors" not in report["partial_reasons"]
 
     @pytest.mark.asyncio
     async def test_timeline_error_sets_partial_and_null(self):
@@ -1922,6 +2001,26 @@ def _parse_timeline_response(response: Dict[str, Any]) -> List[Dict[str, Any]]:
     return out
 
 
+def _is_field_variance_error(exc: Exception) -> bool:
+    """True iff this exception represents OCI LA rejecting a field that
+    doesn't exist on the target source/tenancy (e.g. `'User Name'` in a
+    tenancy that only has `'Host Name (Server)'`).
+
+    This is the ONLY exception class the design lets us silently downgrade
+    to `entity_discovery_partial`. Transport, auth, and 5xx failures must
+    surface as `source_errors`, not masquerade as field variance.
+    """
+    try:
+        from oci.exceptions import ServiceError
+    except ImportError:
+        return False
+    if not isinstance(exc, ServiceError):
+        return False
+    code = getattr(exc, "code", "") or ""
+    message = getattr(exc, "message", "") or ""
+    return code == "InvalidParameter" and "Invalid field" in message
+
+
 async def _drill_down_one_source(
     engine,
     source: str,
@@ -1931,12 +2030,20 @@ async def _drill_down_one_source(
 ) -> Dict[str, Any]:
     """Run cluster + entity discovery + timeline for a single source, sequentially.
 
-    Returns a dict with keys: top_error_clusters, top_entities, timeline,
-    errors, entity_discovery_partial, timeline_omitted.
+    Returns a dict with keys:
+      - top_error_clusters, top_entities, timeline, errors
+      - entity_discovery_partial: True iff at least one entity-field query
+        failed with the recognized field-variance shape (ServiceError
+        code=InvalidParameter, message contains "Invalid field")
+      - timeline_omitted: True iff the timeline query failed (best-effort
+        per design)
+      - infra_error: True iff any non-field-variance, non-Budget exception
+        was caught (cluster error, timeline infra failure, unexpected
+        entity-query failure). The orchestrator maps this to
+        `source_errors` in partial_reasons.
 
-    Never raises: invalid-field errors per entity type become entries on
-    `errors` + set `entity_discovery_partial`. Timeline errors set
-    `timeline_omitted` and leave `timeline` = None.
+    Re-raises `BudgetExceededError` so the orchestrator can distinguish
+    it from generic source failures when handling the gather result.
     """
     result = {
         "top_error_clusters": [],
@@ -1945,9 +2052,11 @@ async def _drill_down_one_source(
         "errors": [],
         "entity_discovery_partial": False,
         "timeline_omitted": False,
+        "infra_error": False,
     }
 
-    # Cluster
+    # Cluster — any non-Budget failure is infrastructure. Record it but
+    # don't abort the branch; entity/timeline may still succeed.
     cluster_query = _compose_source_scoped_query(
         seed_filter, source, f"cluster | sort -Count | head {CLUSTER_HEAD}",
     )
@@ -1960,8 +2069,10 @@ async def _drill_down_one_source(
         raise
     except Exception as e:
         result["errors"].append(f"cluster: {type(e).__name__}: {e}")
+        result["infra_error"] = True
 
-    # Entity discovery (3 fields, sequential)
+    # Entity discovery (3 fields, sequential). Distinguish field-variance
+    # (soft) from infrastructure failures (hard, but non-fatal to branch).
     for entity_type, field_name in A1_ENTITY_FIELDS:
         entity_query = _compose_source_scoped_query(
             seed_filter, source,
@@ -1977,10 +2088,19 @@ async def _drill_down_one_source(
         except BudgetExceededError:
             raise
         except Exception as e:
-            result["errors"].append(f"top_entities[{entity_type}]: {type(e).__name__}: {e}")
-            result["entity_discovery_partial"] = True
+            if _is_field_variance_error(e):
+                result["errors"].append(
+                    f"top_entities[{entity_type}]: field '{field_name}' "
+                    f"not present in this source (InvalidParameter)"
+                )
+                result["entity_discovery_partial"] = True
+            else:
+                result["errors"].append(
+                    f"top_entities[{entity_type}]: {type(e).__name__}: {e}"
+                )
+                result["infra_error"] = True
 
-    # Timeline
+    # Timeline — best-effort per design. Any non-Budget error is non-fatal.
     timeline_query = _compose_source_scoped_query(
         seed_filter, source,
         f"fields Time, Severity, 'Original Log Content' | sort -Time | head {TIMELINE_HEAD}",
@@ -2017,6 +2137,19 @@ Then in `InvestigateIncidentTool.run()`, after Phase 4 in the try block, add Pha
                 return_exceptions=True,
             )
             for source_name, branch_result in zip(sources_list, results):
+                # Budget exhaustion is its own partial_reason; don't downgrade
+                # to source_errors. Any BudgetExceededError that reaches here
+                # came from inside _drill_down_one_source and propagated
+                # through gather(return_exceptions=True).
+                if isinstance(branch_result, BudgetExceededError):
+                    acc["per_source"][source_name]["errors"].append(
+                        f"branch: BudgetExceededError: {branch_result}"
+                    )
+                    acc["partial_reasons"].add("budget_exceeded")
+                    continue
+                # Other uncaught branch-level exceptions (should be rare given
+                # _drill_down_one_source catches everything non-Budget, but
+                # defensive).
                 if isinstance(branch_result, Exception):
                     acc["per_source"][source_name]["errors"].append(
                         f"branch: {type(branch_result).__name__}: {branch_result}"
@@ -2024,6 +2157,7 @@ Then in `InvestigateIncidentTool.run()`, after Phase 4 in the try block, add Pha
                     acc["source_errors"].append(str(branch_result))
                     acc["partial_reasons"].add("source_errors")
                     continue
+                # Normal path: merge branch_result flags into partial_reasons.
                 ps = acc["per_source"][source_name]
                 ps["top_error_clusters"] = branch_result["top_error_clusters"]
                 ps["top_entities"] = branch_result["top_entities"]
@@ -2033,6 +2167,11 @@ Then in `InvestigateIncidentTool.run()`, after Phase 4 in the try block, add Pha
                     acc["partial_reasons"].add("entity_discovery_partial")
                 if branch_result["timeline_omitted"]:
                     acc["partial_reasons"].add("timeline_omitted")
+                # infra_error = non-Budget, non-field-variance failure seen
+                # inside a per-phase try — the design maps this class of
+                # failure to `source_errors` partial_reason.
+                if branch_result["infra_error"]:
+                    acc["partial_reasons"].add("source_errors")
 ```
 
 - [ ] **Step 4: Run tests to verify they pass**
@@ -2590,6 +2729,12 @@ class TestOrchestrationEdgeCases:
         b_entry = next(s for s in report["anomalous_sources"] if s["source"] == "B")
         assert any("cluster" in e for e in a_entry["errors"])
         assert b_entry["errors"] == [] or not any("cluster" in e for e in b_entry["errors"])
+        # infra_error path flags source_errors in partial_reasons.
+        assert report["partial"] is True
+        assert "source_errors" in report["partial_reasons"]
+        # And critically, NOT misreported as the other categories:
+        assert "entity_discovery_partial" not in report["partial_reasons"]
+        assert "budget_exceeded" not in report["partial_reasons"]
 
     @pytest.mark.asyncio
     async def test_multi_reason_partial(self):
