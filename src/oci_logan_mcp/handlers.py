@@ -30,6 +30,7 @@ from .diff_tool import DiffTool
 from .pivot_tool import PivotTool
 from .ingestion_health import IngestionHealthTool
 from .parser_triage import ParserTriageTool
+from .investigate import InvestigateIncidentTool
 from .budget_tracker import BudgetExceededError
 
 if TYPE_CHECKING:
@@ -101,6 +102,15 @@ class MCPHandlers:
             self.query_engine, self.schema_manager, settings,
         )
         self.parser_triage_tool = ParserTriageTool(self.query_engine)
+        self.investigate_tool = InvestigateIncidentTool(
+            query_engine=self.query_engine,
+            schema_manager=self.schema_manager,
+            ingestion_health_tool=self.ingestion_health_tool,
+            parser_triage_tool=self.parser_triage_tool,
+            diff_tool=self.diff_tool,
+            settings=settings,
+            budget_tracker=self._budget_tracker,
+        )
         self.validator = QueryValidator(self.schema_manager)
         self.visualization = VisualizationEngine()
         self.saved_search = SavedSearchService(oci_client, cache)
@@ -139,6 +149,7 @@ class MCPHandlers:
             "pivot_on_entity": self._pivot_on_entity,
             "ingestion_health": self._ingestion_health,
             "parser_failure_triage": self._parser_failure_triage,
+            "investigate_incident": self._investigate_incident,
             # Visualization
             "visualize": self._visualize,
             # Export
@@ -741,6 +752,40 @@ class MCPHandlers:
             }
             return [{"type": "text", "text": json.dumps(payload, indent=2, default=str)}]
         return [{"type": "text", "text": json.dumps(result, indent=2, default=str)}]
+
+    async def _investigate_incident(self, args: Dict) -> List[Dict]:
+        """Route to InvestigateIncidentTool. Partial reports forward verbatim;
+        the orchestrator catches BudgetExceededError internally, so the handler
+        does NOT wrap in the generic {status: "budget_exceeded"} shape."""
+        query = args.get("query")
+        if not query or not isinstance(query, str):
+            return [{"type": "text", "text": json.dumps(
+                {"status": "error", "error": "query is required and must be a string"},
+                indent=2,
+            )}]
+        try:
+            top_k = int(args.get("top_k", 3))
+        except (TypeError, ValueError):
+            return [{"type": "text", "text": json.dumps(
+                {"status": "error", "error": "top_k must be an integer"}, indent=2,
+            )}]
+        if top_k < 1 or top_k > 3:
+            return [{"type": "text", "text": json.dumps(
+                {"status": "error", "error": "top_k must be between 1 and 3 (P0)"},
+                indent=2,
+            )}]
+        try:
+            report = await self.investigate_tool.run(
+                query=query,
+                time_range=args.get("time_range", "last_1_hour"),
+                top_k=top_k,
+                compartment_id=args.get("compartment_id"),
+            )
+        except Exception as e:
+            return [{"type": "text", "text": json.dumps(
+                {"status": "error", "error": str(e)}, indent=2,
+            )}]
+        return [{"type": "text", "text": json.dumps(report, indent=2, default=str)}]
 
     async def _visualize(self, args: Dict) -> List[Dict]:
         """Generate visualization."""
