@@ -2,7 +2,7 @@
 
 from __future__ import annotations
 
-from typing import Any, Dict, List
+from typing import Any, Dict, List, Tuple
 
 
 def _build_stats_query(top_n: int) -> str:
@@ -23,22 +23,40 @@ def _build_stats_query(top_n: int) -> str:
     )
 
 
-def _build_samples_query(parser_names: List[str]) -> str:
-    """Fetch raw failure lines for the given parsers.
+def _build_samples_query(parser_source_pairs: List[Tuple[str, str]]) -> str:
+    """Fetch raw failure lines for the given (parser_name, source) pairs.
 
-    The `head` limit is a global best-effort cap (`len(parser_names) * 3`);
-    per-parser capping to 3 lines happens in `_parse_samples_response`.
-    Note: if one parser dominates the first N rows, low-volume parsers
-    appearing later may receive fewer than 3 samples (or none). This is
-    acceptable per spec ("up to 3 samples") but worth knowing.
+    The caller passes the exact `(Parser Name, Log Source)` tuples from the
+    stats result. A parser attached to multiple sources appears as multiple
+    tuples, and the caller is expected to merge samples keyed on the same
+    tuple so sample lines never bleed across sources.
+
+    The filter intentionally uses `IN` on each dimension independently rather
+    than a tuple-IN (which Logan does not support); this can over-fetch the
+    cross product, but the per-key cap in `_parse_samples_response` contains
+    the result set and the merge function ignores unmatched cross-product
+    rows.
+
+    The `head` limit is a global best-effort cap
+    (`len(parser_source_pairs) * 3`); per-pair capping to 3 lines happens in
+    `_parse_samples_response`. If one pair dominates the first N rows,
+    low-volume pairs may receive fewer than 3 samples (or none). This is
+    acceptable per spec ("up to 3 samples").
     """
-    escaped = ", ".join(
-        f"'{n.replace(chr(39), chr(39) * 2)}'" for n in parser_names
+    parser_names = sorted({p for p, _ in parser_source_pairs})
+    sources = sorted({s for _, s in parser_source_pairs})
+    escaped_parsers = ", ".join(
+        f"'{p.replace(chr(39), chr(39) * 2)}'" for p in parser_names
+    )
+    escaped_sources = ", ".join(
+        f"'{s.replace(chr(39), chr(39) * 2)}'" for s in sources
     )
     return (
-        f"'Parse Failed' = 1 AND 'Parser Name' in ({escaped}) | "
-        "fields 'Parser Name', 'Original Log Content' | "
-        f"head {len(parser_names) * 3}"
+        f"'Parse Failed' = 1 AND "
+        f"'Parser Name' in ({escaped_parsers}) AND "
+        f"'Log Source' in ({escaped_sources}) | "
+        "fields 'Parser Name', 'Log Source', 'Original Log Content' | "
+        f"head {len(parser_source_pairs) * 3}"
     )
 
 
@@ -73,26 +91,32 @@ def _parse_stats_response(response: Dict[str, Any]) -> List[Dict[str, Any]]:
     return out
 
 
-def _parse_samples_response(response: Dict[str, Any]) -> Dict[str, List[str]]:
-    """Parse samples query response into dict of parser -> [raw lines].
+def _parse_samples_response(
+    response: Dict[str, Any],
+) -> Dict[Tuple[str, str], List[str]]:
+    """Parse samples query response into dict of (parser, source) -> [raw lines].
 
-    Groups raw log content by parser name, capping at 3 samples per parser.
-    Returns empty dict if response is malformed or missing required columns.
+    Keys on `(Parser Name, Log Source)` so samples from the same parser
+    attached to different sources are kept separate. Caps at 3 samples per
+    key. Returns an empty dict if the response is malformed or missing
+    required columns.
     """
     data = response.get("data", {}) or {}
     columns = [c.get("name") for c in data.get("columns", [])]
     rows = data.get("rows", [])
-    if "Parser Name" not in columns or "Original Log Content" not in columns:
+    required = {"Parser Name", "Log Source", "Original Log Content"}
+    if not required.issubset(columns):
         return {}
     pn_idx = columns.index("Parser Name")
+    src_idx = columns.index("Log Source")
     raw_idx = columns.index("Original Log Content")
-    out: Dict[str, List[str]] = {}
+    out: Dict[Tuple[str, str], List[str]] = {}
     for row in rows:
         if not row:
             continue
-        name = str(row[pn_idx])
+        key = (str(row[pn_idx]), str(row[src_idx]))
         raw = str(row[raw_idx]) if row[raw_idx] is not None else ""
-        bucket = out.setdefault(name, [])
+        bucket = out.setdefault(key, [])
         if len(bucket) < 3:
             bucket.append(raw)
     return out
@@ -100,17 +124,19 @@ def _parse_samples_response(response: Dict[str, Any]) -> Dict[str, List[str]]:
 
 def _merge_results(
     stats: List[Dict[str, Any]],
-    samples: Dict[str, List[str]],
+    samples: Dict[Tuple[str, str], List[str]],
 ) -> List[Dict[str, Any]]:
     """Merge stats and samples into final result records.
 
-    Attaches sample_raw_lines from the samples dict to each stats entry.
+    Looks up samples by `(parser_name, source)` so a parser attached to
+    multiple sources gets each row's samples drawn from its own source only.
     """
     out = []
     for entry in stats:
+        key = (entry["parser_name"], entry["source"])
         out.append({
             **entry,
-            "sample_raw_lines": samples.get(entry["parser_name"], []),
+            "sample_raw_lines": samples.get(key, []),
         })
     return out
 
@@ -136,8 +162,8 @@ class ParserTriageTool:
         if not stats:
             return {"failures": [], "total_failure_count": 0}
 
-        parser_names = [s["parser_name"] for s in stats]
-        samples_query = _build_samples_query(parser_names)
+        pairs = [(s["parser_name"], s["source"]) for s in stats]
+        samples_query = _build_samples_query(pairs)
         samples_resp = await self._engine.execute(
             query=samples_query,
             time_range=time_range,
