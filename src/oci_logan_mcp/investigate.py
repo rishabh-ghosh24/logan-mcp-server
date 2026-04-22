@@ -108,3 +108,35 @@ def _compute_windows(
         "time_end":   (anchor - delta).isoformat(),
     }
     return current, comparison
+
+
+def _rank_anomalous_sources(
+    delta: List[Dict[str, Any]],
+    stopped_sources: Set[str],
+    top_k: int,
+) -> List[Dict[str, Any]]:
+    """Rank DiffTool delta entries by absolute pct_change, excluding stopped sources.
+
+    For rows where `pct_change` is None (comparison was zero), fall back
+    to absolute `current` count for ordering.
+    """
+    def rank_key(entry: Dict[str, Any]) -> float:
+        pct = entry.get("pct_change")
+        if pct is None:
+            return abs(float(entry.get("current") or 0))
+        return abs(float(pct))
+
+    filtered = [
+        e for e in delta
+        if str(e.get("dimension")) not in stopped_sources
+    ]
+    sorted_entries = sorted(filtered, key=rank_key, reverse=True)
+    out = []
+    for e in sorted_entries[:top_k]:
+        out.append({
+            "source": str(e["dimension"]),
+            "current_count": int(e.get("current") or 0),
+            "comparison_count": int(e.get("comparison") or 0),
+            "pct_change": e.get("pct_change"),
+        })
+    return out

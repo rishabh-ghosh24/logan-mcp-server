@@ -122,3 +122,68 @@ class TestComputeWindows:
     def test_unknown_time_range_raises(self):
         with pytest.raises(ValueError, match="Unknown time_range"):
             _compute_windows("last_42_years", datetime(2026, 4, 22, tzinfo=timezone.utc))
+
+
+from oci_logan_mcp.investigate import _rank_anomalous_sources
+
+
+def _diff_delta(*entries):
+    """Build a DiffTool-shaped delta list. Each entry is
+    (dimension, current, comparison, pct_change)."""
+    return [
+        {"dimension": d, "current": cur, "comparison": comp, "pct_change": pct}
+        for d, cur, comp, pct in entries
+    ]
+
+
+class TestRankAnomalousSources:
+    def test_sort_by_absolute_pct_change_desc(self):
+        delta = _diff_delta(
+            ("A", 100, 100, 0.0),
+            ("B", 200, 100, 100.0),
+            ("C", 0, 100, -100.0),
+            ("D", 150, 100, 50.0),
+        )
+        ranked = _rank_anomalous_sources(delta, stopped_sources=set(), top_k=3)
+        sources = [r["source"] for r in ranked]
+        assert sources == ["B", "C", "D"]  # |100|, |-100|, |50|
+
+    def test_top_k_trims_result(self):
+        delta = _diff_delta(
+            ("A", 10, 0, 1000.0),
+            ("B", 20, 0, 2000.0),
+            ("C", 30, 0, 3000.0),
+            ("D", 40, 0, 4000.0),
+        )
+        ranked = _rank_anomalous_sources(delta, stopped_sources=set(), top_k=2)
+        assert len(ranked) == 2
+
+    def test_stopped_sources_excluded(self):
+        delta = _diff_delta(
+            ("Broken", 999, 0, 9999.0),     # highest delta but stopped
+            ("Working", 100, 0, 100.0),
+        )
+        ranked = _rank_anomalous_sources(delta, stopped_sources={"Broken"}, top_k=5)
+        assert [r["source"] for r in ranked] == ["Working"]
+
+    def test_zero_comparison_handles_infinite_pct(self):
+        # pct_change may be None or an inf marker when comparison=0. Rank
+        # falls back to absolute current count in that case.
+        delta = [
+            {"dimension": "NewSource", "current": 500, "comparison": 0, "pct_change": None},
+            {"dimension": "OldSource", "current": 10, "comparison": 5, "pct_change": 100.0},
+        ]
+        ranked = _rank_anomalous_sources(delta, stopped_sources=set(), top_k=2)
+        assert ranked[0]["source"] == "NewSource"
+
+    def test_ranked_entries_preserve_shape(self):
+        delta = _diff_delta(("A", 50, 10, 400.0))
+        ranked = _rank_anomalous_sources(delta, stopped_sources=set(), top_k=1)
+        r = ranked[0]
+        assert r["source"] == "A"
+        assert r["current_count"] == 50
+        assert r["comparison_count"] == 10
+        assert r["pct_change"] == 400.0
+
+    def test_empty_delta_returns_empty(self):
+        assert _rank_anomalous_sources([], stopped_sources=set(), top_k=3) == []
