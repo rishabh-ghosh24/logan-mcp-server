@@ -140,3 +140,39 @@ def _rank_anomalous_sources(
             "pct_change": e.get("pct_change"),
         })
     return out
+
+
+def _select_top_entities(
+    response: Dict[str, Any],
+    entity_type: str,
+    field_name: str,
+) -> List[Dict[str, Any]]:
+    """Parse a `| stats count as n by '<field>'` response into entity entries.
+
+    Returns an empty list if the response is malformed, missing the
+    expected column, or if all rows have null entity values. Skips
+    individual rows where the entity value is None; defaults a None
+    count to 0.
+    """
+    data = response.get("data", {}) or {}
+    columns = [c.get("name") for c in data.get("columns", []) or []]
+    rows = data.get("rows", []) or []
+    if field_name not in columns or "n" not in columns:
+        return []
+    field_idx = columns.index(field_name)
+    count_idx = columns.index("n")
+    max_idx = max(field_idx, count_idx)
+    out: List[Dict[str, Any]] = []
+    for row in rows:
+        if not row or len(row) <= max_idx:
+            continue
+        value = row[field_idx]
+        if value is None:
+            continue
+        count = row[count_idx]
+        out.append({
+            "entity_type": entity_type,
+            "entity_value": str(value),
+            "count": int(count) if count is not None else 0,
+        })
+    return out

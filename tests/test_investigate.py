@@ -127,6 +127,63 @@ class TestComputeWindows:
 from oci_logan_mcp.investigate import _rank_anomalous_sources
 
 
+from oci_logan_mcp.investigate import _select_top_entities
+
+
+def _entity_resp(field_name: str, rows):
+    """Shape an engine response for `| stats count as n by '{field}'`."""
+    return {
+        "data": {
+            "columns": [{"name": field_name}, {"name": "n"}],
+            "rows": rows,
+        }
+    }
+
+
+class TestSelectTopEntities:
+    def test_parses_entity_rows(self):
+        resp = _entity_resp("Host Name (Server)", [
+            ["web-01", 50],
+            ["web-02", 30],
+            ["web-03", 10],
+        ])
+        entities = _select_top_entities(resp, "host", "Host Name (Server)")
+        assert entities == [
+            {"entity_type": "host", "entity_value": "web-01", "count": 50},
+            {"entity_type": "host", "entity_value": "web-02", "count": 30},
+            {"entity_type": "host", "entity_value": "web-03", "count": 10},
+        ]
+
+    def test_empty_response_returns_empty(self):
+        resp = {"data": {"columns": [], "rows": []}}
+        assert _select_top_entities(resp, "host", "Host Name (Server)") == []
+
+    def test_missing_data_key_returns_empty(self):
+        assert _select_top_entities({}, "user", "User Name") == []
+
+    def test_missing_field_column_returns_empty(self):
+        # Response doesn't contain the expected field column.
+        resp = _entity_resp("Wrong Name", [["x", 1]])
+        assert _select_top_entities(resp, "host", "Host Name (Server)") == []
+
+    def test_none_entity_value_skipped(self):
+        resp = _entity_resp("Host Name (Server)", [
+            [None, 99],
+            ["real-host", 1],
+        ])
+        entities = _select_top_entities(resp, "host", "Host Name (Server)")
+        assert entities == [
+            {"entity_type": "host", "entity_value": "real-host", "count": 1},
+        ]
+
+    def test_null_count_defaults_to_zero(self):
+        resp = _entity_resp("Host Name (Server)", [["x", None]])
+        entities = _select_top_entities(resp, "host", "Host Name (Server)")
+        assert entities == [
+            {"entity_type": "host", "entity_value": "x", "count": 0},
+        ]
+
+
 def _diff_delta(*entries):
     """Build a DiffTool-shaped delta list. Each entry is
     (dimension, current, comparison, pct_change)."""
