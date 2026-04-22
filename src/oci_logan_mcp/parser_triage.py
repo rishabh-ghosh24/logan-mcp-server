@@ -4,6 +4,8 @@ from __future__ import annotations
 
 from typing import Any, Dict, List
 
+from .budget_tracker import BudgetExceededError
+
 
 def _build_stats_query(top_n: int) -> str:
     """Build query to find top N log sources with parse failures.
@@ -135,12 +137,28 @@ class ParserTriageTool:
 
         sources = [s["source"] for s in stats]
         samples_query = _build_samples_query(sources)
-        samples_resp = await self._engine.execute(
-            query=samples_query,
-            time_range=time_range,
-        )
-        samples = _parse_samples_response(samples_resp)
+        samples: Dict[str, List[str]] = {}
+        samples_budget_exceeded = False
+        try:
+            samples_resp = await self._engine.execute(
+                query=samples_query,
+                time_range=time_range,
+            )
+            samples = _parse_samples_response(samples_resp)
+        except BudgetExceededError:
+            # Stats succeeded — don't discard the ranked failure list. Return
+            # it with empty sample_raw_lines and flag the partial shape so
+            # callers can distinguish "no samples existed" from "samples
+            # query was truncated by budget."
+            samples_budget_exceeded = True
 
         failures = _merge_results(stats, samples)
         total = sum(f["failure_count"] for f in failures)
-        return {"failures": failures, "total_failure_count": total}
+        result: Dict[str, Any] = {
+            "failures": failures,
+            "total_failure_count": total,
+        }
+        if samples_budget_exceeded:
+            result["partial"] = True
+            result["partial_reason"] = "samples_budget_exceeded"
+        return result

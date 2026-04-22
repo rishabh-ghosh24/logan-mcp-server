@@ -247,6 +247,58 @@ class TestOrchestration:
         assert len(result["failures"][0]["sample_raw_lines"]) == 3
 
     @pytest.mark.asyncio
+    async def test_run_samples_budget_exceeded_returns_partial_stats(self):
+        """Stats succeeded + samples ran out of budget → keep stats, empty samples, flag partial."""
+        from oci_logan_mcp.budget_tracker import BudgetExceededError
+        from unittest.mock import AsyncMock, MagicMock
+        stats_resp = _stats_resp([
+            ["Apache Access", 42,
+             "2026-04-22T00:00:00Z", "2026-04-22T09:00:00Z"],
+        ])
+        engine = MagicMock()
+        engine.execute = AsyncMock(
+            side_effect=[stats_resp, BudgetExceededError("bytes limit hit")]
+        )
+        tool = ParserTriageTool(engine)
+
+        result = await tool.run()
+
+        assert result["partial"] is True
+        assert result["partial_reason"] == "samples_budget_exceeded"
+        assert result["total_failure_count"] == 42
+        assert len(result["failures"]) == 1
+        assert result["failures"][0]["source"] == "Apache Access"
+        assert result["failures"][0]["sample_raw_lines"] == []
+
+    @pytest.mark.asyncio
+    async def test_run_propagates_budget_error_when_stats_fails(self):
+        """Stats query budget failure propagates — no partial stats to return."""
+        from oci_logan_mcp.budget_tracker import BudgetExceededError
+        from unittest.mock import AsyncMock, MagicMock
+        engine = MagicMock()
+        engine.execute = AsyncMock(side_effect=BudgetExceededError("bytes limit hit"))
+        tool = ParserTriageTool(engine)
+
+        with pytest.raises(BudgetExceededError):
+            await tool.run()
+
+    @pytest.mark.asyncio
+    async def test_run_success_omits_partial_flag(self):
+        """Normal success path does not include partial/partial_reason keys."""
+        stats_resp = _stats_resp([
+            ["Apache Access", 1,
+             "2026-04-22T00:00:00Z", "2026-04-22T09:00:00Z"],
+        ])
+        samples_resp = _samples_resp([["Apache Access", "line"]])
+        engine = _make_engine(stats_resp, samples_resp)
+        tool = ParserTriageTool(engine)
+
+        result = await tool.run()
+
+        assert "partial" not in result
+        assert "partial_reason" not in result
+
+    @pytest.mark.asyncio
     async def test_run_skewed_distribution_may_yield_zero_samples_for_later_sources(self):
         """Documents the known limitation: the global head cap does not guarantee
         samples for every source. If one source dominates the first head rows,

@@ -340,8 +340,10 @@ def get_tools() -> List[Dict[str, Any]]:
                     "top_n": {
                         "type": "integer",
                         "description": (
-                            "Maximum number of parsers to return, ranked by "
-                            "failure count descending. Default: 20."
+                            "Maximum number of log sources to return, ranked "
+                            "by failure count descending. Each source has one "
+                            "parser, so this caps the number of broken "
+                            "parsers surfaced. Default: 20."
                         ),
                     },
                 },

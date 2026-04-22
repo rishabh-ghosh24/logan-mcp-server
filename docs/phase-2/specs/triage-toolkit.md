@@ -172,27 +172,33 @@ No DROP/LAG classifications in P0 — those require a baseline reference.
 ### Purpose
 Surface recent parser failures with sample raw lines, ranked by volume. Tells admins which parsers need fixing.
 
+### OCI LA schema notes (verified live)
+Parse-failure records carry four fields: `'Parse Failed'` (LONG, set to 1 when a line fails to parse), `'Log Source'`, `'Original Log Content'`, and `'_Truncated'`. **There is no `'Parser Name'` field.** Each log source in OCI LA has exactly one parser configured, so reporting by `'Log Source'` is operationally equivalent to "which parser is broken."
+
 ### Tool interface
 ```
 parser_failure_triage(
-  time_range: TimeRange = "last_24h",
+  time_range: TimeRange = "last_24_hours",
   top_n: int = 20,
 ) -> {
   failures: list[{
-    parser_name: str,
-    source: str,
+    source: str,                   # the Log Source whose parser failed
     failure_count: int,
-    sample_raw_lines: list[str],  # up to 3 samples
+    sample_raw_lines: list[str],   # up to 3 samples (best-effort)
     first_seen: datetime,
     last_seen: datetime,
   }],
   total_failure_count: int,
+  partial?: bool,                  # present only if samples query was truncated
+  partial_reason?: str,            # e.g. "samples_budget_exceeded"
 }
 ```
 
 ### Approach
-- Query Logan for parser-failure events (known query pattern in OCI Log Analytics: `Log Source = 'Parser Failure' | ...`).
-- Aggregate, rank, sample — pure query + post-processing.
+- Stats query: `'Parse Failed' = 1 | stats count as failure_count, earliest('Time') as first_seen, latest('Time') as last_seen by 'Log Source' | sort -failure_count | head {top_n}`.
+- Samples query (only if stats non-empty): `'Parse Failed' = 1 AND 'Log Source' in (<top_sources>) | fields 'Log Source', 'Original Log Content' | head {len(sources) * 3}`.
+- Python merge caps samples at 3 per source.
+- Budget handling: budget exhaustion on the stats query propagates as a hard error via the handler. Budget exhaustion on the samples query returns the ranked stats with empty `sample_raw_lines` and sets `partial=true, partial_reason="samples_budget_exceeded"`.
 
 ### Files
 - Create: `src/oci_logan_mcp/parser_triage.py`.
@@ -201,8 +207,9 @@ parser_failure_triage(
 
 ### Test outline
 1. Test: mock Logan returning N failure events → aggregated correctly.
-2. Test: samples limited to 3 per parser.
+2. Test: samples limited to 3 per source.
 3. Test: empty result → returns empty list, `total_failure_count=0`.
+4. Test: samples-query budget exhaustion → `partial=true` with empty samples.
 
 ### Dependencies
 - None beyond existing query engine.
