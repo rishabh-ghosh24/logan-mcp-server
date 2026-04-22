@@ -211,3 +211,36 @@ def _merge_cross_source_timeline(
             })
     merged.sort(key=lambda r: r["time"])
     return merged[:cap]
+
+
+def _templated_summary(acc: Dict[str, Any]) -> str:
+    """Render a 1-2 sentence human-readable summary from the accumulator."""
+    seed = acc["seed"]
+    scope = "unscoped (seed filter degraded to *)" if seed.get("seed_filter_degraded") else seed["seed_filter"]
+    time_range = seed["time_range"]
+
+    ih_summary = ((acc.get("ingestion_health") or {}).get("snapshot") or {}).get("summary") or {}
+    stopped = int(ih_summary.get("sources_stopped", 0) or 0)
+    parse_count = int((acc.get("parser_failures") or {}).get("total_failure_count", 0) or 0)
+    anomalous = acc.get("anomalous_sources") or []
+
+    parts = [f"Investigated {scope} over {time_range}."]
+    if anomalous:
+        top = anomalous[0]
+        parts.append(
+            f"{len(anomalous)} anomalous source(s) (top: {top['source']} "
+            f"pct_change={top.get('pct_change')})."
+        )
+    else:
+        parts.append("No anomalous sources detected.")
+
+    if stopped:
+        parts.append(f"J1 flags {stopped} stopped source(s).")
+    if parse_count:
+        parts.append(f"J2 reports {parse_count} parse failure(s).")
+
+    reasons = acc.get("partial_reasons") or set()
+    if reasons:
+        parts.append(f"Result is partial: {', '.join(sorted(reasons))}.")
+
+    return " ".join(parts)

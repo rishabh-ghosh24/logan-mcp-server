@@ -3,7 +3,7 @@ from datetime import datetime, timedelta, timezone
 
 import pytest
 
-from oci_logan_mcp.investigate import _extract_seed_filter, _compose_source_scoped_query, _compute_windows
+from oci_logan_mcp.investigate import _extract_seed_filter, _compose_source_scoped_query, _compute_windows, _templated_summary
 
 
 class TestExtractSeedFilter:
@@ -296,3 +296,58 @@ class TestRankAnomalousSources:
 
     def test_empty_delta_returns_empty(self):
         assert _rank_anomalous_sources([], stopped_sources=set(), top_k=3) == []
+
+
+class TestTemplatedSummary:
+    def test_clean_report(self):
+        acc = {
+            "seed": {"seed_filter": "'Event' = 'error'", "seed_filter_degraded": False, "time_range": "last_1_hour"},
+            "ingestion_health": {"snapshot": {"summary": {"sources_stopped": 0}}},
+            "parser_failures": {"total_failure_count": 0},
+            "anomalous_sources": [
+                {"source": "Apache", "pct_change": 150.0},
+                {"source": "Syslog", "pct_change": 80.0},
+            ],
+            "partial_reasons": set(),
+        }
+        s = _templated_summary(acc)
+        assert "'Event' = 'error'" in s
+        assert "last_1_hour" in s
+        assert "Apache" in s
+        assert "partial" not in s.lower()
+
+    def test_degraded_seed_mentions_unscoped(self):
+        acc = {
+            "seed": {"seed_filter": "*", "seed_filter_degraded": True, "time_range": "last_1_hour"},
+            "ingestion_health": {"snapshot": {"summary": {"sources_stopped": 0}}},
+            "parser_failures": {"total_failure_count": 0},
+            "anomalous_sources": [],
+            "partial_reasons": set(),
+        }
+        s = _templated_summary(acc)
+        assert "unscoped" in s.lower()
+
+    def test_partial_appended(self):
+        acc = {
+            "seed": {"seed_filter": "'x' = 'y'", "seed_filter_degraded": False, "time_range": "last_1_hour"},
+            "ingestion_health": {"snapshot": {"summary": {"sources_stopped": 0}}},
+            "parser_failures": {"total_failure_count": 0},
+            "anomalous_sources": [],
+            "partial_reasons": {"budget_exceeded", "timeline_omitted"},
+        }
+        s = _templated_summary(acc)
+        assert "partial" in s.lower()
+        assert "budget_exceeded" in s
+        assert "timeline_omitted" in s
+
+    def test_stopped_and_parser_failures_mentioned(self):
+        acc = {
+            "seed": {"seed_filter": "*", "seed_filter_degraded": True, "time_range": "last_1_hour"},
+            "ingestion_health": {"snapshot": {"summary": {"sources_stopped": 2}}},
+            "parser_failures": {"total_failure_count": 500},
+            "anomalous_sources": [],
+            "partial_reasons": set(),
+        }
+        s = _templated_summary(acc)
+        assert "2" in s and "stopped" in s.lower()
+        assert "500" in s and ("parse" in s.lower() or "parser" in s.lower())
