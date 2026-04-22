@@ -244,6 +244,31 @@ class TestOrchestration:
 
         assert len(result["failures"][0]["sample_raw_lines"]) == 3
 
+    @pytest.mark.asyncio
+    async def test_run_skewed_distribution_may_yield_zero_samples_for_later_parsers(self):
+        """Documents the known limitation: the global head cap does not guarantee
+        samples for every parser. If one parser dominates the first head rows, others
+        receive no samples. This is acceptable per spec ('up to 3 samples')."""
+        stats_resp = _stats_resp([
+            ["Dominant Parser", "Source A", 200,
+             "2026-04-22T00:00:00Z", "2026-04-22T09:00:00Z"],
+            ["Quiet Parser", "Source B", 1,
+             "2026-04-22T00:00:00Z", "2026-04-22T09:00:00Z"],
+        ])
+        # Engine returns only Dominant Parser rows — Quiet Parser gets nothing.
+        samples_resp = _samples_resp([
+            ["Dominant Parser", f"dom line {i}"] for i in range(6)
+        ])
+        engine = _make_engine(stats_resp, samples_resp)
+        tool = ParserTriageTool(engine)
+
+        result = await tool.run()
+
+        by_parser = {f["parser_name"]: f for f in result["failures"]}
+        assert len(by_parser["Dominant Parser"]["sample_raw_lines"]) == 3
+        # Quiet Parser received no rows in the global cap — this is expected behaviour.
+        assert by_parser["Quiet Parser"]["sample_raw_lines"] == []
+
 
 class TestToolSchema:
     def test_parser_failure_triage_schema_present(self):

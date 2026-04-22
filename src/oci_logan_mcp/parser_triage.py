@@ -27,8 +27,11 @@ def _build_stats_query(top_n: int) -> str:
 def _build_samples_query(parser_names: List[str]) -> str:
     """Fetch raw failure lines for the given parsers.
 
-    The `head` limit is a global cap (`len(parser_names) * 3`); per-parser
-    capping to 3 lines happens in `_parse_samples_response`.
+    The `head` limit is a global best-effort cap (`len(parser_names) * 3`);
+    per-parser capping to 3 lines happens in `_parse_samples_response`.
+    Note: if one parser dominates the first N rows, low-volume parsers
+    appearing later may receive fewer than 3 samples (or none). This is
+    acceptable per spec ("up to 3 samples") but worth knowing.
     """
     escaped = ", ".join(
         f"'{n.replace(chr(39), chr(39) * 2)}'" for n in parser_names
