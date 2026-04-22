@@ -40,14 +40,16 @@ def _source_result(column_names, rows):
 
 class TestFieldResolution:
     def test_known_entity_types_resolve_to_field_names(self):
-        assert ENTITY_FIELD_MAP["host"] == "Host"
-        assert ENTITY_FIELD_MAP["user"] == "User"
+        # Live-probed: 'Host' and 'User' are NOT valid SEARCH `=` fields in
+        # OCI Log Analytics. 'Host Name (Server)' and 'User Name' are.
+        assert ENTITY_FIELD_MAP["host"] == "Host Name (Server)"
+        assert ENTITY_FIELD_MAP["user"] == "User Name"
         assert ENTITY_FIELD_MAP["request_id"] == "Request ID"
         assert ENTITY_FIELD_MAP["ip"] == "IP Address"
 
     def test_resolve_field_returns_mapped_name(self):
-        assert PivotTool._resolve_field("host", None) == "Host"
-        assert PivotTool._resolve_field("user", None) == "User"
+        assert PivotTool._resolve_field("host", None) == "Host Name (Server)"
+        assert PivotTool._resolve_field("user", None) == "User Name"
 
     def test_unknown_entity_type_raises(self):
         with pytest.raises(ValueError, match="Unknown entity_type"):
@@ -310,7 +312,7 @@ class TestRunIntegration:
             time_range={"time_range": "last_1_hour"},
         )
 
-        assert result["entity"] == {"type": "host", "value": "web-01", "field": "Host"}
+        assert result["entity"] == {"type": "host", "value": "web-01", "field": "Host Name (Server)"}
         assert len(result["by_source"]) == 2
         assert result["stats"]["total_events"] == 2
         assert result["stats"]["sources_matched"] == 2

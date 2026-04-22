@@ -6,9 +6,14 @@ from typing import Any, Dict, List, Optional, Tuple
 
 from .budget_tracker import BudgetExceededError
 
+# Live-probed against the dogfood tenancy: `'Host'` and `'User'` are not
+# valid OCI Log Analytics field names for the SEARCH `=` operator —
+# `'Host Name (Server)'` and `'User Name'` are. Field-name availability
+# can vary per tenancy; callers whose tenancy uses different names should
+# pass entity_type="custom" with an explicit field_name.
 ENTITY_FIELD_MAP: Dict[str, str] = {
-    "host": "Host",
-    "user": "User",
+    "host": "Host Name (Server)",
+    "user": "User Name",
     "request_id": "Request ID",
     "ip": "IP Address",
 }
