@@ -869,14 +869,22 @@ class MCPHandlers:
         request_id = args.get("request_id")
         if not request_id or not isinstance(request_id, str):
             return [{"type": "text", "text": json.dumps(
-                {"status": "error", "error": "request_id is required and must be a string"},
+                {
+                    "status": "error",
+                    "error_code": "missing_request_id",
+                    "error": "request_id is required and must be a string",
+                },
                 indent=2,
             )}]
 
         time_range = args.get("time_range")
         if not isinstance(time_range, dict) or not time_range:
             return [{"type": "text", "text": json.dumps(
-                {"status": "error", "error": "time_range is required and must be an object"},
+                {
+                    "status": "error",
+                    "error_code": "invalid_time_range",
+                    "error": "time_range is required and must be an object",
+                },
                 indent=2,
             )}]
 
@@ -886,7 +894,11 @@ class MCPHandlers:
             or any(not isinstance(value, str) or not value.strip() for value in id_fields)
         ):
             return [{"type": "text", "text": json.dumps(
-                {"status": "error", "error": "id_fields must be a list of non-empty strings"},
+                {
+                    "status": "error",
+                    "error_code": "invalid_id_fields",
+                    "error": "id_fields must be a list of non-empty strings",
+                },
                 indent=2,
             )}]
 

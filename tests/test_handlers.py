@@ -1906,6 +1906,7 @@ class TestTraceRequestId:
 
         payload = json.loads(result[0]["text"])
         assert payload["status"] == "error"
+        assert payload["error_code"] == "missing_request_id"
         assert "request_id" in payload["error"]
 
     @pytest.mark.asyncio
@@ -1917,6 +1918,7 @@ class TestTraceRequestId:
 
         payload = json.loads(result[0]["text"])
         assert payload["status"] == "error"
+        assert payload["error_code"] == "invalid_time_range"
         assert "time_range" in payload["error"]
 
     @pytest.mark.asyncio
@@ -1932,6 +1934,7 @@ class TestTraceRequestId:
 
         payload = json.loads(result[0]["text"])
         assert payload["status"] == "error"
+        assert payload["error_code"] == "invalid_id_fields"
         assert "id_fields" in payload["error"]
 
     @pytest.mark.asyncio

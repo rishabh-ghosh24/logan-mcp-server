@@ -62,10 +62,18 @@ class TestTraceRequestIdTool:
             "Request ID",
         ]
 
+    @pytest.mark.parametrize(
+        "message",
+        [
+            "Field 'Trace ID' is not valid",
+            "Unresolved field reference: traceId",
+            "Query error: field x-request-id does not exist",
+        ],
+    )
     @pytest.mark.asyncio
-    async def test_unknown_field_errors_are_soft_misses(self, tool):
+    async def test_unknown_field_errors_are_soft_misses(self, tool, message):
         tool._pivot.run = AsyncMock(side_effect=[
-            RuntimeError("Unknown field name: Trace ID"),
+            RuntimeError(message),
             _make_result(
                 "traceId",
                 [{"Time": "2026-04-23T10:00:00Z", "source": "App Logs", "_id": "r1"}],
@@ -80,6 +88,23 @@ class TestTraceRequestIdTool:
 
         assert result["events"][0]["_id"] == "r1"
         assert result["sources_matched"] == ["App Logs"]
+
+    @pytest.mark.asyncio
+    async def test_all_candidate_fields_soft_miss_returns_empty_shape(self, tool):
+        tool._pivot.run = AsyncMock(side_effect=[
+            RuntimeError("Field 'Request ID' is not valid"),
+            RuntimeError("Unresolved field reference: Trace ID"),
+            RuntimeError("Query error: field traceId does not exist"),
+            RuntimeError("Query error: field x-request-id does not exist"),
+        ])
+
+        result = await tool.run(request_id="req-42", time_range={"time_range": "last_1_hour"})
+
+        assert result == {
+            "request_id": "req-42",
+            "events": [],
+            "sources_matched": [],
+        }
 
     @pytest.mark.asyncio
     async def test_results_merge_and_sort_events_across_candidate_fields(self, tool):
@@ -167,3 +192,16 @@ class TestTraceRequestIdTool:
         )
 
         assert result["sources_matched"] == ["App Logs"]
+
+    @pytest.mark.asyncio
+    async def test_budget_exceeded_is_re_raised(self, tool):
+        from oci_logan_mcp.budget_tracker import BudgetExceededError
+
+        tool._pivot.run = AsyncMock(side_effect=BudgetExceededError("bytes limit hit"))
+
+        with pytest.raises(BudgetExceededError, match="bytes limit hit"):
+            await tool.run(
+                request_id="req-42",
+                time_range={"time_range": "last_1_hour"},
+                id_fields=["Request ID"],
+            )

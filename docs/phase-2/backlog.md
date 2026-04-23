@@ -91,6 +91,13 @@ Source: [README.md](../README.md) and [2026-04-23-a6-why-did-this-fire.md](plans
 - `A6-F2` — Explicit dashboard linkage so `dashboard_id` is not always `null`.
 - `A6-F3` — Historical handoff into A1 once A1 supports absolute-window investigations.
 
+#### A5 — `trace_request_id`
+Source: current review on `feat/trace-request-id`
+
+- `A5-F1` — Propagate incompleteness metadata (`partial`, `truncated_sources`, or equivalent) so callers can tell when the merged event stream is incomplete due to underlying pivot truncation or mid-probe budget limits.
+- `A5-F2` — Further harden soft-miss detection by distinguishing generic invalid field-syntax parse errors from true unknown-field misses, preferring `exc.message` cleanly when present, and adding direct coverage for exception types that expose `.message`.
+- `A5-F3` — Use timezone-aware timestamp parsing if Logan surfaces offset-based timestamps instead of the current lexicographic ISO-string sort.
+
 #### A7 — `related_dashboards_and_searches`
 Source: current review on `feat/related-dashboards-and-searches`
 

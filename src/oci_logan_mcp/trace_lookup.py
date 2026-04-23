@@ -15,12 +15,13 @@ class TraceRequestIdTool:
 
     DEFAULT_ID_FIELDS = ["Request ID", "Trace ID", "traceId", "x-request-id"]
     RECORD_ID_FIELDS = ("_id", "id", "Record ID")
-    _SOFT_FIELD_MISS_TOKENS = (
-        "unknown field",
-        "invalid field",
-        "invalid field name",
-        "not a valid field",
-        "unknown field name",
+    _SOFT_FIELD_QUALIFIERS = (
+        "invalid",
+        "unknown",
+        "unresolved",
+        "not valid",
+        "not found",
+        "does not exist",
     )
 
     def __init__(self, pivot_tool):
@@ -72,8 +73,10 @@ class TraceRequestIdTool:
 
     @classmethod
     def _is_soft_field_miss(cls, exc: Exception) -> bool:
-        message = str(exc).lower()
-        return any(token in message for token in cls._SOFT_FIELD_MISS_TOKENS)
+        message = str(getattr(exc, "message", str(exc))).lower()
+        return "field" in message and any(
+            token in message for token in cls._SOFT_FIELD_QUALIFIERS
+        )
 
     @classmethod
     def _dedup_key(cls, event: Dict[str, Any]) -> Tuple[Any, ...]:
