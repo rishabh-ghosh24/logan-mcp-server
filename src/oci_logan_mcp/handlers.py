@@ -867,16 +867,6 @@ class MCPHandlers:
         entity = args.get("entity")
         field = args.get("field")
 
-        if not source and not entity and not field:
-            return [{"type": "text", "text": json.dumps(
-                {
-                    "status": "error",
-                    "error_code": "missing_search_input",
-                    "error": "Provide at least one of source, entity, or field.",
-                },
-                indent=2,
-            )}]
-
         result = await self.related_dashboards_and_searches_tool.run(
             source=source,
             entity=entity,

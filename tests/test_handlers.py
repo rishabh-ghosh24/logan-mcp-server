@@ -1906,7 +1906,11 @@ class TestRelatedDashboardsAndSearches:
 
     @pytest.mark.asyncio
     async def test_missing_inputs_returns_structured_error(self, handlers):
-        handlers.related_dashboards_and_searches_tool.run = AsyncMock()
+        handlers.related_dashboards_and_searches_tool.run = AsyncMock(return_value={
+            "status": "error",
+            "error_code": "missing_search_input",
+            "error": "Provide at least one of source, entity, or field.",
+        })
 
         result = await handlers.handle_tool_call(
             "related_dashboards_and_searches",
@@ -1916,4 +1920,9 @@ class TestRelatedDashboardsAndSearches:
         payload = json.loads(result[0]["text"])
         assert payload["status"] == "error"
         assert payload["error_code"] == "missing_search_input"
-        handlers.related_dashboards_and_searches_tool.run.assert_not_awaited()
+        handlers.related_dashboards_and_searches_tool.run.assert_awaited_once_with(
+            source=None,
+            entity=None,
+            field=None,
+            user_id="testuser",
+        )

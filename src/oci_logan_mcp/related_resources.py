@@ -64,10 +64,22 @@ class RelatedDashboardsAndSearchesTool:
         secondary_fields: Dict[str, Optional[str]],
     ) -> Optional[Dict[str, Any]]:
         best: Optional[Dict[str, Any]] = None
+        normalized_primary_fields = {
+            field_label: self._normalize(raw_text)
+            for field_label, raw_text in primary_fields.items()
+        }
+        normalized_secondary_fields = {
+            field_label: self._normalize(raw_text)
+            for field_label, raw_text in secondary_fields.items()
+        }
+        fuzzy_candidates = {
+            normalized_text: field_label
+            for field_label, normalized_text in normalized_primary_fields.items()
+            if normalized_text
+        }
 
         for term in terms:
-            for field_label, raw_text in primary_fields.items():
-                normalized_text = self._normalize(raw_text)
+            for field_label, normalized_text in normalized_primary_fields.items():
                 if not normalized_text:
                     continue
                 if term["normalized"] in normalized_text:
@@ -78,8 +90,7 @@ class RelatedDashboardsAndSearchesTool:
                     if best is None or candidate["score"] > best["score"]:
                         best = candidate
 
-            for field_label, raw_text in secondary_fields.items():
-                normalized_text = self._normalize(raw_text)
+            for field_label, normalized_text in normalized_secondary_fields.items():
                 if not normalized_text:
                     continue
                 if term["normalized"] in normalized_text:
@@ -90,18 +101,22 @@ class RelatedDashboardsAndSearchesTool:
                     if best is None or candidate["score"] > best["score"]:
                         best = candidate
 
-            available_fields: List[str] = []
-            for raw_text in list(primary_fields.values()) + list(secondary_fields.values()):
-                normalized_field = self._normalize(raw_text)
-                if normalized_field:
-                    available_fields.append(normalized_field)
-            if not available_fields:
+            if not fuzzy_candidates:
                 continue
-            similar = find_similar_fields(term["normalized"], available_fields, limit=1, threshold=70)
+            similar = find_similar_fields(
+                term["normalized"],
+                list(fuzzy_candidates.keys()),
+                limit=1,
+                threshold=70,
+            )
             if similar:
+                matched_field = fuzzy_candidates[similar[0]]
                 candidate = {
                     "score": 1,
-                    "reason": f"{term['kind'].replace('_', ' ')} fuzzy matched metadata",
+                    "reason": (
+                        f"{term['kind'].replace('_', ' ')} "
+                        f"fuzzy matched {matched_field}"
+                    ),
                 }
                 if best is None or candidate["score"] > best["score"]:
                     best = candidate
@@ -242,6 +257,25 @@ class RelatedDashboardsAndSearchesTool:
         field: Optional[str] = None,
         user_id: str,
     ) -> Dict[str, Any]:
+        if entity is not None:
+            if not isinstance(entity, dict):
+                return self._error(
+                    "invalid_entity",
+                    "entity must be an object with string type and value fields.",
+                )
+            entity_type = entity.get("type")
+            entity_value = entity.get("value")
+            if not isinstance(entity_type, str) or not entity_type.strip():
+                return self._error(
+                    "invalid_entity",
+                    "entity.type must be a non-empty string.",
+                )
+            if not isinstance(entity_value, str) or not entity_value.strip():
+                return self._error(
+                    "invalid_entity",
+                    "entity.value must be a non-empty string.",
+                )
+
         terms = self._build_terms(source=source, entity=entity, field=field)
         if not terms:
             return self._error(

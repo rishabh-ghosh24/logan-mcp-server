@@ -47,6 +47,15 @@ class TestRelatedDashboardsAndSearchesTool:
         assert result["error_code"] == "missing_search_input"
 
     @pytest.mark.asyncio
+    async def test_invalid_entity_returns_structured_error(self):
+        tool, _dashboard_service, _saved_search, _catalog = _make_tool()
+
+        result = await tool.run(entity="host-1", user_id="alice")
+
+        assert result["status"] == "error"
+        assert result["error_code"] == "invalid_entity"
+
+    @pytest.mark.asyncio
     async def test_dashboards_rank_by_display_name_then_description(self):
         tool, dashboard_service, _saved_search, _catalog = _make_tool()
         dashboard_service.list_dashboards = AsyncMock(return_value=[
@@ -72,6 +81,38 @@ class TestRelatedDashboardsAndSearchesTool:
         assert [item["id"] for item in result["dashboards"]] == ["dash-1", "dash-2"]
         assert result["dashboards"][0]["score"] > result["dashboards"][1]["score"]
         assert result["dashboards"][0]["reason"] == "source matched display_name"
+
+    @pytest.mark.asyncio
+    async def test_multi_input_reason_uses_strongest_matching_term(self):
+        tool, dashboard_service, _saved_search, _catalog = _make_tool()
+        dashboard_service.list_dashboards = AsyncMock(return_value=[
+            {
+                "id": "dash-1",
+                "display_name": "Audit Dashboard",
+                "description": "User Name activity widgets",
+            },
+        ])
+
+        result = await tool.run(source="Audit", field="User Name", user_id="alice")
+
+        assert result["dashboards"][0]["id"] == "dash-1"
+        assert result["dashboards"][0]["reason"] == "source matched display_name"
+
+    @pytest.mark.asyncio
+    async def test_fuzzy_matching_uses_primary_fields(self):
+        tool, dashboard_service, _saved_search, _catalog = _make_tool()
+        dashboard_service.list_dashboards = AsyncMock(return_value=[
+            {
+                "id": "dash-1",
+                "display_name": "Request Identifier Dashboard",
+                "description": "Operations overview",
+            },
+        ])
+
+        result = await tool.run(field="Requset Identifier", user_id="alice")
+
+        assert result["dashboards"][0]["score"] == 1
+        assert result["dashboards"][0]["reason"] == "field fuzzy matched display_name"
 
     @pytest.mark.asyncio
     async def test_saved_search_query_text_can_rescore_shortlisted_candidate(self):
@@ -117,6 +158,18 @@ class TestRelatedDashboardsAndSearchesTool:
         await tool.run(field="Request ID", user_id="alice")
 
         assert saved_search.get_search_by_id.await_count == 10
+
+    @pytest.mark.asyncio
+    async def test_empty_corpora_return_empty_buckets(self):
+        tool, _dashboard_service, _saved_search, _catalog = _make_tool()
+
+        result = await tool.run(field="Request ID", user_id="alice")
+
+        assert result == {
+            "dashboards": [],
+            "saved_searches": [],
+            "learned_queries": [],
+        }
 
     @pytest.mark.asyncio
     async def test_learned_queries_include_personal_and_shared_only(self):

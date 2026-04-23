@@ -3,7 +3,7 @@
 **Status:** Locked for execution
 **Timeline:** One quarter (~12 weeks) from kickoff
 **Team:** Solo developer (Rishabh) with Claude
-**Companion docs:** [feature-catalog.md](feature-catalog.md) · [specs/](specs/)
+**Companion docs:** [feature-catalog.md](feature-catalog.md) · [backlog.md](backlog.md) · [specs/](specs/)
 
 ---
 
