@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import re
 from datetime import datetime, timedelta, timezone
 from typing import Any, Dict, List, Optional
 
@@ -13,6 +14,7 @@ _HISTORY_TIME_RANGES = {
     14: "last_14_days",
     30: "last_30_days",
 }
+_BARE_IDENTIFIER_RE = re.compile(r"^[A-Za-z0-9_]+$")
 
 
 class RareEventsTool:
@@ -29,28 +31,32 @@ class RareEventsTool:
         rarity_threshold_percentile: float = 5.0,
         history_days: int = 30,
     ) -> Dict[str, Any]:
+        source_filter = self._quote_literal(source)
+        formatted_field = self._format_field(field)
         current = await self._engine.execute(
             query=(
-                f"'Log Source' = '{source}' "
-                f"| rare limit = -1 showcount = true showpercent = true {self._format_field(field)}"
+                f"'Log Source' = {source_filter} "
+                f"| rare limit = -1 showcount = true showpercent = true {formatted_field}"
             ),
             **time_range,
         )
         history = await self._engine.execute(
             query=(
-                f"'Log Source' = '{source}' "
+                f"'Log Source' = {source_filter} "
                 f"| stats count as count_in_history, earliest(Time) as first_seen, latest(Time) as last_seen "
-                f"by {self._format_field(field)}"
+                f"by {formatted_field}"
             ),
             **self._history_window(history_days),
         )
 
         current_rows = self._rows_as_dicts(current)
         history_rows = self._rows_as_dicts(history)
+        current_value_name = self._value_column(current, field)
+        history_value_name = self._value_column(history, field)
         history_by_value = {
-            row.get(field): row
+            row.get(history_value_name): row
             for row in history_rows
-            if row.get(field) is not None
+            if row.get(history_value_name) is not None
         }
 
         rare_values = []
@@ -58,7 +64,7 @@ class RareEventsTool:
         percent_name = self._metric_column(current, "Rare Percent(")
 
         for row in current_rows:
-            value = row.get(field)
+            value = row.get(current_value_name)
             if value is None:
                 continue
             percent = row.get(percent_name)
@@ -96,9 +102,14 @@ class RareEventsTool:
 
     @staticmethod
     def _format_field(field: str) -> str:
-        if field.replace("_", "").isalnum():
+        if _BARE_IDENTIFIER_RE.fullmatch(field):
             return field
-        return f"'{field}'"
+        return RareEventsTool._quote_literal(field)
+
+    @staticmethod
+    def _quote_literal(value: str) -> str:
+        escaped = value.replace("'", "''")
+        return f"'{escaped}'"
 
     @staticmethod
     def _rows_as_dicts(response: Dict[str, Any]) -> List[Dict[str, Any]]:
@@ -117,6 +128,16 @@ class RareEventsTool:
             if isinstance(name, str) and name.startswith(prefix):
                 return name
         return None
+
+    @staticmethod
+    def _value_column(response: Dict[str, Any], requested_field: str) -> str:
+        data = response.get("data", {}) or {}
+        for column in data.get("columns", []) or []:
+            name = column.get("name")
+            internal_name = column.get("internal_name")
+            if requested_field == name or requested_field == internal_name:
+                return name or internal_name or requested_field
+        return requested_field
 
     @staticmethod
     def _history_window(history_days: int) -> Dict[str, str]:

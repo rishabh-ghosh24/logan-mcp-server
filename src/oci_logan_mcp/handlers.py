@@ -967,12 +967,12 @@ class MCPHandlers:
                 },
                 indent=2,
             )}]
-        if rarity_threshold_percentile <= 0:
+        if rarity_threshold_percentile <= 0 or rarity_threshold_percentile > 100:
             return [{"type": "text", "text": json.dumps(
                 {
                     "status": "error",
                     "error_code": "invalid_rarity_threshold_percentile",
-                    "error": "rarity_threshold_percentile must be a positive number",
+                    "error": "rarity_threshold_percentile must be > 0 and <= 100",
                 },
                 indent=2,
             )}]

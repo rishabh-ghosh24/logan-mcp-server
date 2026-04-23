@@ -147,3 +147,106 @@ async def test_falls_back_to_absolute_history_window_for_unsupported_history_day
     assert "time_range" not in history_call.kwargs
     assert history_call.kwargs["time_start"]
     assert history_call.kwargs["time_end"]
+
+
+@pytest.mark.asyncio
+async def test_escapes_embedded_single_quotes_in_source_and_field(tool, engine):
+    engine.execute.side_effect = [
+        _response(
+            ["Customer's Status", "Rare Count(Customer's Status)", "Rare Percent(Customer's Status)"],
+            [["ERROR", 1, 1.0]],
+        ),
+        _response(
+            ["Customer's Status", "count_in_history", "first_seen", "last_seen"],
+            [["ERROR", 2, "2026-04-01T00:00:00+00:00", "2026-04-23T00:15:00+00:00"]],
+        ),
+    ]
+
+    await tool.run(
+        source="Bob's App",
+        field="Customer's Status",
+        time_range={"time_range": "last_24_hours"},
+    )
+
+    current_call = engine.execute.await_args_list[0]
+    assert current_call.kwargs["query"] == (
+        "'Log Source' = 'Bob''s App' "
+        "| rare limit = -1 showcount = true showpercent = true 'Customer''s Status'"
+    )
+
+    history_call = engine.execute.await_args_list[1]
+    assert history_call.kwargs["query"] == (
+        "'Log Source' = 'Bob''s App' "
+        "| stats count as count_in_history, earliest(Time) as first_seen, latest(Time) as last_seen "
+        "by 'Customer''s Status'"
+    )
+
+
+@pytest.mark.asyncio
+async def test_internal_field_name_uses_response_column_aliases(tool, engine):
+    engine.execute.side_effect = [
+        {
+            "data": {
+                "columns": [
+                    {"name": "Severity", "internal_name": "sevlvl"},
+                    {"name": "Rare Count(Severity)"},
+                    {"name": "Rare Percent(Severity)"},
+                ],
+                "rows": [["ERROR", 3, 0.5]],
+            }
+        },
+        {
+            "data": {
+                "columns": [
+                    {"name": "Severity", "internal_name": "sevlvl"},
+                    {"name": "count_in_history"},
+                    {"name": "first_seen"},
+                    {"name": "last_seen"},
+                ],
+                "rows": [["ERROR", 9, "2026-03-25T10:00:00+00:00", "2026-04-23T00:15:00+00:00"]],
+            }
+        },
+    ]
+
+    result = await tool.run(
+        source="Linux Syslog Logs",
+        field="sevlvl",
+        time_range={"time_range": "last_24_hours"},
+    )
+
+    assert result["rare_values"] == [
+        {
+            "value": "ERROR",
+            "count_in_range": 3,
+            "percent_in_range": 0.5,
+            "count_in_history": 9,
+            "first_seen": "2026-03-25T10:00:00+00:00",
+            "last_seen": "2026-04-23T00:15:00+00:00",
+        }
+    ]
+
+
+@pytest.mark.asyncio
+async def test_quotes_non_ascii_field_names(tool, engine):
+    engine.execute.side_effect = [
+        _response(
+            ["ユーザー", "Rare Count(ユーザー)", "Rare Percent(ユーザー)"],
+            [["alice", 1, 1.0]],
+        ),
+        _response(
+            ["ユーザー", "count_in_history", "first_seen", "last_seen"],
+            [["alice", 2, "2026-04-01T00:00:00+00:00", "2026-04-23T00:15:00+00:00"]],
+        ),
+    ]
+
+    await tool.run(
+        source="Linux Syslog Logs",
+        field="ユーザー",
+        time_range={"time_range": "last_24_hours"},
+    )
+
+    current_call = engine.execute.await_args_list[0]
+    assert current_call.kwargs["query"] == (
+        "'Log Source' = 'Linux Syslog Logs' "
+        "| rare limit = -1 showcount = true showpercent = true 'ユーザー'"
+    )
