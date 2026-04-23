@@ -126,7 +126,7 @@ Click **Save**, then start a new Codex session to connect.
 | Capability | Tools | Examples |
 |---|---|---|
 | **Query logs** | `run_query`, `run_batch_queries`, `run_saved_search` | Search logs, run multiple queries in parallel, execute saved searches |
-| **Triage diffs** | `diff_time_windows`, `pivot_on_entity`, `ingestion_health`, `parser_failure_triage`, `investigate_incident`, `why_did_this_fire` | Compare a query across two time windows; pull all events for an entity across sources; probe per-source ingestion freshness; surface top parser failures; one-call first-cut investigation orchestrator; replay a Logan-managed alarm's historical fire window |
+| **Triage diffs** | `diff_time_windows`, `pivot_on_entity`, `ingestion_health`, `parser_failure_triage`, `investigate_incident`, `why_did_this_fire`, `related_dashboards_and_searches` | Compare a query across two time windows; pull all events for an entity across sources; probe per-source ingestion freshness; surface top parser failures; one-call first-cut investigation orchestrator; replay a Logan-managed alarm's historical fire window; find existing dashboards and saved searches related to a source, entity, or field |
 | **Explore schema** | `list_log_sources`, `list_fields`, `list_entities`, `list_parsers`, `list_labels` | Discover what log data is available |
 | **Visualize** | `visualize` | Generate pie, bar, line, area, table, tile, treemap, heatmap, histogram charts |
 | **Dashboards** | `create_dashboard`, `add_dashboard_tile`, `list_dashboards`, `delete_dashboard` | Create OCI Management Dashboards with LA widgets, grid layout, and scope filters |
@@ -220,6 +220,25 @@ P0 constraints:
 - `window_before_seconds` defaults to the alarm's `pending_duration`; if that metadata is absent or unparsable, it falls back to 300 seconds.
 - Raw top-row expansion is suppressed when the stored Logan query degrades to an unscoped `*`. In that case the response sets `seed.seed_filter_degraded: true`, returns `top_contributing_rows: []`, and explains the omission via `top_contributing_rows_omitted_reason: "unscoped_seed_filter"`.
 - `dashboard_id` is always `null` in P0; explicit dashboard linkage is deferred.
+
+### `related_dashboards_and_searches` — reuse existing dashboards and queries
+
+Given a source, entity, or field, suggest the most relevant existing dashboards, saved searches, and learned queries so an operator can pivot into already-curated views instead of starting from scratch.
+
+```json
+{
+  "tool": "related_dashboards_and_searches",
+  "field": "Request ID"
+}
+```
+
+Returns `{dashboards, saved_searches, learned_queries}` where each bucket contains up to 5 entries with `{id, name, score, reason}`.
+
+P0 behavior:
+- Requires at least one of `source`, `entity`, or `field`.
+- Learned-query results come from personal + shared catalogs only; builtin and starter templates are excluded.
+- Saved searches are shortlisted from listing metadata, then the top 10 candidates are rescored using fetched query text.
+- Matching uses existing normalization and fuzzy helpers from `fuzzy_match.py`, so field and source naming variations can still surface relevant resources.
 
 ## Multi-User Learning
 

@@ -460,6 +460,35 @@ def get_tools() -> List[Dict[str, Any]]:
                 "required": ["alarm_ocid", "fire_time"],
             },
         },
+        {
+            "name": "related_dashboards_and_searches",
+            "description": (
+                "Suggest existing dashboards, saved searches, and learned "
+                "queries related to a source, entity, or field."
+            ),
+            "inputSchema": {
+                "type": "object",
+                "properties": {
+                    "source": {
+                        "type": "string",
+                        "description": "Optional log source name to search for.",
+                    },
+                    "entity": {
+                        "type": "object",
+                        "description": "Optional entity to search for.",
+                        "properties": {
+                            "type": {"type": "string"},
+                            "value": {"type": "string"},
+                        },
+                        "required": ["type", "value"],
+                    },
+                    "field": {
+                        "type": "string",
+                        "description": "Optional field name to search for.",
+                    },
+                },
+            },
+        },
         # Visualization Tools
         {
             "name": "visualize",
