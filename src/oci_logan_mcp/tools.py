@@ -461,6 +461,32 @@ def get_tools() -> List[Dict[str, Any]]:
             },
         },
         {
+            "name": "trace_request_id",
+            "description": (
+                "Search common request-id and trace-id fields across all "
+                "matching log sources and return a single ordered event stream."
+            ),
+            "inputSchema": {
+                "type": "object",
+                "properties": {
+                    "request_id": {
+                        "type": "string",
+                        "description": "Request or trace id value to search for.",
+                    },
+                    "time_range": {
+                        "type": "object",
+                        "description": "Time window: {time_range: '...'} OR {time_start, time_end} (ISO 8601)",
+                    },
+                    "id_fields": {
+                        "type": "array",
+                        "items": {"type": "string"},
+                        "description": "Optional. Override the default field probe order.",
+                    },
+                },
+                "required": ["request_id", "time_range"],
+            },
+        },
+        {
             "name": "related_dashboards_and_searches",
             "description": (
                 "Suggest existing dashboards, saved searches, and learned "

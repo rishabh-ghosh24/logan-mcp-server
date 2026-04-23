@@ -162,6 +162,7 @@ class TestToolRouting:
             "export_results", "set_compartment", "set_namespace",
             "get_current_context", "list_compartments", "test_connection",
             "find_compartment", "get_query_examples", "get_log_summary",
+            "trace_request_id",
             "related_dashboards_and_searches",
             "setup_confirmation_secret",
             "save_learned_query",
@@ -1866,6 +1867,87 @@ class TestWhyDidThisFire:
         result = await handlers.handle_tool_call(
             "why_did_this_fire",
             {"alarm_ocid": "ocid1.alarm.oc1..test", "fire_time": "2026-04-23T10:00:00Z"},
+        )
+
+        payload = json.loads(result[0]["text"])
+        assert payload["status"] == "budget_exceeded"
+        assert "bytes limit hit" in payload["error"]
+        assert "budget" in payload
+
+
+class TestTraceRequestId:
+    @pytest.mark.asyncio
+    async def test_trace_request_id_routes_through_handler(self, handlers):
+        handlers.trace_request_id_tool.run = AsyncMock(return_value={
+            "request_id": "req-42",
+            "events": [{"timestamp": "2026-04-23T10:00:00Z", "source": "App Logs"}],
+            "sources_matched": ["App Logs"],
+        })
+
+        result = await handlers.handle_tool_call(
+            "trace_request_id",
+            {"request_id": "req-42", "time_range": {"time_range": "last_1_hour"}},
+        )
+
+        payload = json.loads(result[0]["text"])
+        assert payload["request_id"] == "req-42"
+        handlers.trace_request_id_tool.run.assert_awaited_once_with(
+            request_id="req-42",
+            time_range={"time_range": "last_1_hour"},
+            id_fields=None,
+        )
+
+    @pytest.mark.asyncio
+    async def test_missing_request_id_returns_structured_error(self, handlers):
+        result = await handlers.handle_tool_call(
+            "trace_request_id",
+            {"time_range": {"time_range": "last_1_hour"}},
+        )
+
+        payload = json.loads(result[0]["text"])
+        assert payload["status"] == "error"
+        assert payload["error_code"] == "missing_request_id"
+        assert "request_id" in payload["error"]
+
+    @pytest.mark.asyncio
+    async def test_invalid_time_range_returns_structured_error(self, handlers):
+        result = await handlers.handle_tool_call(
+            "trace_request_id",
+            {"request_id": "req-42", "time_range": "last_1_hour"},
+        )
+
+        payload = json.loads(result[0]["text"])
+        assert payload["status"] == "error"
+        assert payload["error_code"] == "invalid_time_range"
+        assert "time_range" in payload["error"]
+
+    @pytest.mark.asyncio
+    async def test_invalid_id_fields_returns_structured_error(self, handlers):
+        result = await handlers.handle_tool_call(
+            "trace_request_id",
+            {
+                "request_id": "req-42",
+                "time_range": {"time_range": "last_1_hour"},
+                "id_fields": ["Request ID", ""],
+            },
+        )
+
+        payload = json.loads(result[0]["text"])
+        assert payload["status"] == "error"
+        assert payload["error_code"] == "invalid_id_fields"
+        assert "id_fields" in payload["error"]
+
+    @pytest.mark.asyncio
+    async def test_budget_exceeded_returns_structured_payload(self, handlers):
+        from oci_logan_mcp.budget_tracker import BudgetExceededError
+
+        handlers.trace_request_id_tool.run = AsyncMock(
+            side_effect=BudgetExceededError("bytes limit hit")
+        )
+
+        result = await handlers.handle_tool_call(
+            "trace_request_id",
+            {"request_id": "req-42", "time_range": {"time_range": "last_1_hour"}},
         )
 
         payload = json.loads(result[0]["text"])
