@@ -95,3 +95,16 @@ def test_trace_request_id_schema():
     assert "time_range" in props
     assert "id_fields" in props
     assert spec["inputSchema"]["required"] == ["request_id", "time_range"]
+
+
+def test_find_rare_events_schema():
+    tools = {t["name"]: t for t in get_tools()}
+    spec = tools["find_rare_events"]
+    props = spec["inputSchema"]["properties"]
+
+    assert "source" in props
+    assert "field" in props
+    assert "time_range" in props
+    assert "rarity_threshold_percentile" in props
+    assert "history_days" in props
+    assert spec["inputSchema"]["required"] == ["source", "field", "time_range"]

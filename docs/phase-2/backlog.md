@@ -64,6 +64,11 @@ Source: [2026-04-20-a2-diff-time-windows.md](plans/2026-04-20-a2-diff-time-windo
 - `A2-F3` — Ratio / rate-normalized deltas when callers compare mismatched window lengths.
 - `A2-F4` — Cross-dimension interaction analysis beyond the current flat dimension-tuple delta output.
 
+#### A3 — `find_rare_events`
+Source: live A3 probe on `feat/find-rare-events`
+
+- `A3-F1` — Investigate OCI SDK/API single-group `rare` payloads that surface a null-only row (`[None, None, None]`) for source-scoped queries with `total_group_count=1`. The current parser aligns the response safely and A3 returns `rare_values: []`, but single-value / high-threshold cases cannot surface the actual value until the upstream payload exposes it.
+
 #### J1 — `ingestion_health`
 Source: [2026-04-22-j1-ingestion-health.md](plans/2026-04-22-j1-ingestion-health.md)
 

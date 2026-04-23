@@ -1,0 +1,30 @@
+{
+  "are_partial_results": false,
+  "columns": [
+    {
+      "display_name": "Log Source",
+      "internal_name": "msrcid",
+      "type": "COLUMN",
+      "value_type": "STRING"
+    },
+    {
+      "display_name": "Count",
+      "internal_name": "func1_count",
+      "type": "COLUMN",
+      "value_type": "LONG"
+    }
+  ],
+  "items": [
+    {
+      "Count": 63536,
+      "Log Source": "APEX Oracle Unified DB Audit Log Source"
+    },
+    {
+      "Count": 2155815,
+      "Log Source": "Exadata Metrics"
+    }
+  ],
+  "total_count": null,
+  "total_group_count": 38,
+  "total_matched_count": 24739443
+}

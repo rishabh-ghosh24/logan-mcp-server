@@ -1,0 +1,51 @@
+{
+  "are_partial_results": false,
+  "columns": [
+    {
+      "display_name": "Severity",
+      "internal_name": "sevlvl",
+      "type": "COLUMN",
+      "value_type": "STRING"
+    },
+    {
+      "display_name": "count_in_range",
+      "internal_name": "func1_count",
+      "type": "COLUMN",
+      "value_type": "LONG"
+    },
+    {
+      "display_name": "first_seen",
+      "internal_name": "func2_earliest_time",
+      "type": "COLUMN",
+      "value_type": "TIMESTAMP"
+    },
+    {
+      "display_name": "last_seen",
+      "internal_name": "func3_latest_time",
+      "type": "COLUMN",
+      "value_type": "TIMESTAMP"
+    },
+    {
+      "display_name": "Rare Count(Severity)",
+      "internal_name": "rareVirtualField2",
+      "type": "COLUMN",
+      "value_type": "LONG"
+    },
+    {
+      "display_name": "Rare Percent(Severity)",
+      "internal_name": "rareVirtualField2_percent",
+      "type": "COLUMN",
+      "value_type": "FLOAT"
+    }
+  ],
+  "items": [
+    {
+      "count_in_range": 478150,
+      "first_seen": 1776824082000,
+      "last_seen": 1776910473000
+    }
+  ],
+  "total_count": null,
+  "total_group_count": null,
+  "total_matched_count": 478150
+}

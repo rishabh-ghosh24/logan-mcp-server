@@ -461,6 +461,40 @@ def get_tools() -> List[Dict[str, Any]]:
             },
         },
         {
+            "name": "find_rare_events",
+            "description": (
+                "Find low-frequency values for a field within a source using "
+                "Logan's native `rare` command, then annotate them with "
+                "history counts and first/last seen timestamps."
+            ),
+            "inputSchema": {
+                "type": "object",
+                "properties": {
+                    "source": {
+                        "type": "string",
+                        "description": "Log source name to scope the rare-value search to.",
+                    },
+                    "field": {
+                        "type": "string",
+                        "description": "Field to score by low frequency (for example Severity or Entity).",
+                    },
+                    "time_range": {
+                        "type": "object",
+                        "description": "Time window: {time_range: '...'} OR {time_start, time_end} (ISO 8601)",
+                    },
+                    "rarity_threshold_percentile": {
+                        "type": "number",
+                        "description": "Only include values whose rare percent is <= this threshold. Default: 5.0.",
+                    },
+                    "history_days": {
+                        "type": "integer",
+                        "description": "How many days of history to annotate with. Default: 30.",
+                    }
+                },
+                "required": ["source", "field", "time_range"],
+            },
+        },
+        {
             "name": "trace_request_id",
             "description": (
                 "Search common request-id and trace-id fields across all "
