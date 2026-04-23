@@ -84,3 +84,14 @@ def test_related_dashboards_and_searches_schema():
     assert "field" in props
     assert "entity" in props
     assert props["entity"]["required"] == ["type", "value"]
+
+
+def test_trace_request_id_schema():
+    tools = {t["name"]: t for t in get_tools()}
+    spec = tools["trace_request_id"]
+    props = spec["inputSchema"]["properties"]
+
+    assert "request_id" in props
+    assert "time_range" in props
+    assert "id_fields" in props
+    assert spec["inputSchema"]["required"] == ["request_id", "time_range"]

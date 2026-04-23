@@ -126,7 +126,7 @@ Click **Save**, then start a new Codex session to connect.
 | Capability | Tools | Examples |
 |---|---|---|
 | **Query logs** | `run_query`, `run_batch_queries`, `run_saved_search` | Search logs, run multiple queries in parallel, execute saved searches |
-| **Triage diffs** | `diff_time_windows`, `pivot_on_entity`, `ingestion_health`, `parser_failure_triage`, `investigate_incident`, `why_did_this_fire`, `related_dashboards_and_searches` | Compare a query across two time windows; pull all events for an entity across sources; probe per-source ingestion freshness; surface top parser failures; one-call first-cut investigation orchestrator; replay a Logan-managed alarm's historical fire window; find existing dashboards and saved searches related to a source, entity, or field |
+| **Triage diffs** | `diff_time_windows`, `pivot_on_entity`, `ingestion_health`, `parser_failure_triage`, `investigate_incident`, `why_did_this_fire`, `trace_request_id`, `related_dashboards_and_searches` | Compare a query across two time windows; pull all events for an entity across sources; probe per-source ingestion freshness; surface top parser failures; one-call first-cut investigation orchestrator; replay a Logan-managed alarm's historical fire window; search common request-id / trace-id fields across sources; find existing dashboards and saved searches related to a source, entity, or field |
 | **Explore schema** | `list_log_sources`, `list_fields`, `list_entities`, `list_parsers`, `list_labels` | Discover what log data is available |
 | **Visualize** | `visualize` | Generate pie, bar, line, area, table, tile, treemap, heatmap, histogram charts |
 | **Dashboards** | `create_dashboard`, `add_dashboard_tile`, `list_dashboards`, `delete_dashboard` | Create OCI Management Dashboards with LA widgets, grid layout, and scope filters |
@@ -220,6 +220,23 @@ P0 constraints:
 - `window_before_seconds` defaults to the alarm's `pending_duration`; if that metadata is absent or unparsable, it falls back to 300 seconds.
 - Raw top-row expansion is suppressed when the stored Logan query degrades to an unscoped `*`. In that case the response sets `seed.seed_filter_degraded: true`, returns `top_contributing_rows: []`, and explains the omission via `top_contributing_rows_omitted_reason: "unscoped_seed_filter"`.
 - `dashboard_id` is always `null` in P0; explicit dashboard linkage is deferred.
+
+### `trace_request_id` — stitch request-id events across sources
+
+Given a request-id or trace-id value and a time window, the tool probes common id fields (`Request ID`, `Trace ID`, `traceId`, `x-request-id`) and returns one merged, de-duplicated event stream.
+
+```json
+{
+  "tool": "trace_request_id",
+  "request_id": "abc-123-def",
+  "time_range": {"time_range": "last_1_hour"}
+}
+```
+
+Returns `{request_id, events, sources_matched}` where:
+- `events` is a single ordered cross-source timeline
+- duplicates across multiple id-field probes are removed
+- `sources_matched` lists the unique sources that contributed events
 
 ### `related_dashboards_and_searches` — reuse existing dashboards and queries
 

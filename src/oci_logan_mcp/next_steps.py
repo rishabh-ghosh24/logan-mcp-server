@@ -205,14 +205,13 @@ def _h_request_id(query: str, rows: list, columns: list) -> List[NextStep]:
         return []
 
     return [NextStep(
-        tool_name="pivot_on_entity",
+        tool_name="trace_request_id",
         suggested_args={
-            "entity_type": "request_id",
-            "entity_value": str(sample),
-            "field_name": id_col_name,
+            "request_id": str(sample),
             "time_range": {"time_range": "last_1_hour"},
+            "id_fields": [id_col_name],
         },
-        reason=f"Result has a '{id_col_name}' field — pivot on this id across all sources.",
+        reason=f"Result has a '{id_col_name}' field — trace this id across all sources.",
     )]
 
 

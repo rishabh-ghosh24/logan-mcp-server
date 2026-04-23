@@ -32,6 +32,7 @@ from .ingestion_health import IngestionHealthTool
 from .parser_triage import ParserTriageTool
 from .investigate import InvestigateIncidentTool
 from .alarm_postmortem import WhyDidThisFireTool
+from .trace_lookup import TraceRequestIdTool
 from .related_resources import RelatedDashboardsAndSearchesTool
 from .budget_tracker import BudgetExceededError
 
@@ -117,6 +118,7 @@ class MCPHandlers:
             oci_client=oci_client,
             query_engine=self.query_engine,
         )
+        self.trace_request_id_tool = TraceRequestIdTool(self.pivot_tool)
         self.validator = QueryValidator(self.schema_manager)
         self.visualization = VisualizationEngine()
         self.saved_search = SavedSearchService(oci_client, cache)
@@ -162,6 +164,7 @@ class MCPHandlers:
             "parser_failure_triage": self._parser_failure_triage,
             "investigate_incident": self._investigate_incident,
             "why_did_this_fire": self._why_did_this_fire,
+            "trace_request_id": self._trace_request_id,
             "related_dashboards_and_searches": self._related_dashboards_and_searches,
             # Visualization
             "visualize": self._visualize,
@@ -859,6 +862,48 @@ class MCPHandlers:
             return [{"type": "text", "text": json.dumps(
                 {"status": "error", "error": str(e)}, indent=2
             )}]
+        return [{"type": "text", "text": json.dumps(result, indent=2, default=str)}]
+
+    async def _trace_request_id(self, args: Dict) -> List[Dict]:
+        """Run trace_request_id with structured validation and budget errors."""
+        request_id = args.get("request_id")
+        if not request_id or not isinstance(request_id, str):
+            return [{"type": "text", "text": json.dumps(
+                {"status": "error", "error": "request_id is required and must be a string"},
+                indent=2,
+            )}]
+
+        time_range = args.get("time_range")
+        if not isinstance(time_range, dict) or not time_range:
+            return [{"type": "text", "text": json.dumps(
+                {"status": "error", "error": "time_range is required and must be an object"},
+                indent=2,
+            )}]
+
+        id_fields = args.get("id_fields")
+        if id_fields is not None and (
+            not isinstance(id_fields, list)
+            or any(not isinstance(value, str) or not value.strip() for value in id_fields)
+        ):
+            return [{"type": "text", "text": json.dumps(
+                {"status": "error", "error": "id_fields must be a list of non-empty strings"},
+                indent=2,
+            )}]
+
+        try:
+            result = await self.trace_request_id_tool.run(
+                request_id=request_id,
+                time_range=time_range,
+                id_fields=id_fields,
+            )
+        except BudgetExceededError as e:
+            payload = {
+                "status": "budget_exceeded",
+                "error": str(e),
+                "partial": None,
+                "budget": self._budget_tracker.snapshot().to_dict(),
+            }
+            return [{"type": "text", "text": json.dumps(payload, indent=2, default=str)}]
         return [{"type": "text", "text": json.dumps(result, indent=2, default=str)}]
 
     async def _related_dashboards_and_searches(self, args: Dict) -> List[Dict]:
