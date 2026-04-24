@@ -1223,4 +1223,69 @@ def get_tools() -> List[Dict[str, Any]]:
                 },
             },
         },
+        {
+            "name": "record_investigation",
+            "description": (
+                "Record the current process's audit events in a time window as "
+                "a named investigation playbook. P0 records only; it does not replay."
+            ),
+            "inputSchema": {
+                "type": "object",
+                "properties": {
+                    "name": {
+                        "type": "string",
+                        "description": "Human-readable playbook name.",
+                    },
+                    "description": {
+                        "type": "string",
+                        "description": "Optional description.",
+                    },
+                    "since": {
+                        "type": "string",
+                        "description": (
+                            "Inclusive ISO-8601 start time. Defaults to server "
+                            "process start."
+                        ),
+                    },
+                    "until": {
+                        "type": "string",
+                        "description": "Inclusive ISO-8601 end time. Defaults to now.",
+                    },
+                },
+                "required": ["name"],
+            },
+        },
+        {
+            "name": "list_playbooks",
+            "description": "List recorded investigation playbooks for the current user.",
+            "inputSchema": {"type": "object", "properties": {}},
+        },
+        {
+            "name": "get_playbook",
+            "description": "Return one recorded investigation playbook with its full step list.",
+            "inputSchema": {
+                "type": "object",
+                "properties": {
+                    "playbook_id": {
+                        "type": "string",
+                        "description": "Playbook id returned by list_playbooks.",
+                    }
+                },
+                "required": ["playbook_id"],
+            },
+        },
+        {
+            "name": "delete_playbook",
+            "description": "Delete one recorded investigation playbook for the current user.",
+            "inputSchema": {
+                "type": "object",
+                "properties": {
+                    "playbook_id": {
+                        "type": "string",
+                        "description": "Playbook id to delete.",
+                    }
+                },
+                "required": ["playbook_id"],
+            },
+        },
     ]

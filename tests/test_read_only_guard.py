@@ -21,6 +21,8 @@ def test_mutating_tools_contains_known_writers():
         "setup_confirmation_secret",
         "save_learned_query",
         "remember_preference",
+        "record_investigation",
+        "delete_playbook",
         "create_alert",
         "update_alert",
         "delete_alert",
@@ -46,6 +48,8 @@ def test_mutating_tools_excludes_readers():
         "visualize",
         "get_current_context",
         "export_results",
+        "list_playbooks",
+        "get_playbook",
     }
     assert readers.isdisjoint(MUTATING_TOOLS)
 
@@ -131,6 +135,7 @@ def test_all_registered_tools_are_classified():
         "get_preferences", "list_alerts", "list_dashboards",
         "explain_query", "get_session_budget",
         "export_transcript",
+        "list_playbooks", "get_playbook",
     }
 
     unclassified = registered - MUTATING_TOOLS - KNOWN_READERS

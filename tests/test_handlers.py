@@ -2143,3 +2143,71 @@ class TestRelatedDashboardsAndSearches:
             field=None,
             user_id="testuser",
         )
+
+
+class TestInvestigationPlaybooks:
+    @pytest.mark.asyncio
+    async def test_record_investigation_routes_to_recorder(self, handlers):
+        handlers.playbook_recorder.record = MagicMock(
+            return_value={"id": "pb_1", "name": "incident", "steps": []}
+        )
+
+        result = await handlers.handle_tool_call(
+            "record_investigation",
+            {"name": "incident", "description": "desc"},
+        )
+
+        payload = json.loads(result[0]["text"])
+        assert payload["id"] == "pb_1"
+        handlers.playbook_recorder.record.assert_called_once_with(
+            name="incident",
+            description="desc",
+            since=None,
+            until=None,
+        )
+
+    @pytest.mark.asyncio
+    async def test_record_investigation_requires_name(self, handlers):
+        result = await handlers.handle_tool_call("record_investigation", {})
+
+        payload = json.loads(result[0]["text"])
+        assert payload["status"] == "error"
+        assert payload["error_code"] == "missing_name"
+
+    @pytest.mark.asyncio
+    async def test_list_playbooks_routes_to_store(self, handlers):
+        handlers.playbook_store.list = MagicMock(return_value=[{"id": "pb_1"}])
+
+        result = await handlers.handle_tool_call("list_playbooks", {})
+
+        payload = json.loads(result[0]["text"])
+        assert payload == {"playbooks": [{"id": "pb_1"}]}
+
+    @pytest.mark.asyncio
+    async def test_get_playbook_returns_not_found(self, handlers):
+        from oci_logan_mcp.playbook_store import PlaybookNotFoundError
+
+        handlers.playbook_store.get = MagicMock(
+            side_effect=PlaybookNotFoundError("pb_missing")
+        )
+
+        result = await handlers.handle_tool_call(
+            "get_playbook",
+            {"playbook_id": "pb_missing"},
+        )
+
+        payload = json.loads(result[0]["text"])
+        assert payload["status"] == "error"
+        assert payload["error_code"] == "playbook_not_found"
+
+    @pytest.mark.asyncio
+    async def test_delete_playbook_returns_deleted_flag(self, handlers):
+        handlers.playbook_store.delete = MagicMock(return_value=True)
+
+        result = await handlers.handle_tool_call(
+            "delete_playbook",
+            {"playbook_id": "pb_1"},
+        )
+
+        payload = json.loads(result[0]["text"])
+        assert payload == {"deleted": True, "playbook_id": "pb_1"}

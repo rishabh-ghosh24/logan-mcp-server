@@ -36,6 +36,8 @@ from .rare_events import RareEventsTool
 from .trace_lookup import TraceRequestIdTool
 from .related_resources import RelatedDashboardsAndSearchesTool
 from .budget_tracker import BudgetExceededError
+from .playbook_recorder import PlaybookRecorder
+from .playbook_store import PlaybookNotFoundError, PlaybookStore
 
 if TYPE_CHECKING:
     from .catalog import CatalogEntry
@@ -137,6 +139,18 @@ class MCPHandlers:
             saved_search_service=self.saved_search,
             catalog=self.catalog,
         )
+        playbook_db_path = (
+            user_store.base_dir / "users" / user_store.user_id / "playbooks.sqlite3"
+        )
+        self.playbook_store = PlaybookStore(playbook_db_path)
+        if audit_logger is not None:
+            self.playbook_recorder = PlaybookRecorder(
+                audit_logger=audit_logger,
+                store=self.playbook_store,
+                owner=user_store.user_id,
+            )
+        else:
+            self.playbook_recorder = None
         self.confirmation_manager = ConfirmationManager(
             secret_store=secret_store,
             token_expiry_seconds=settings.guardrails.token_expiry_seconds,
@@ -212,6 +226,11 @@ class MCPHandlers:
             "get_session_budget": self._get_session_budget,
             # Transcript export
             "export_transcript": self._export_transcript,
+            # Investigation playbooks
+            "record_investigation": self._record_investigation,
+            "list_playbooks": self._list_playbooks,
+            "get_playbook": self._get_playbook,
+            "delete_playbook": self._delete_playbook,
         }
 
         handler = handlers.get(name)
@@ -1664,3 +1683,74 @@ class MCPHandlers:
             logger.exception("export_transcript failed")
             return [{"type": "text", "text": json.dumps({"error": str(e)})}]
         return [{"type": "text", "text": json.dumps(result, indent=2)}]
+
+    async def _record_investigation(self, args: Dict) -> List[Dict]:
+        name = args.get("name")
+        if not isinstance(name, str) or not name.strip():
+            return [{"type": "text", "text": json.dumps({
+                "status": "error",
+                "error_code": "missing_name",
+                "error": "name is required",
+            }, indent=2)}]
+        if self.playbook_recorder is None:
+            return [{"type": "text", "text": json.dumps({
+                "status": "error",
+                "error_code": "audit_logger_unavailable",
+                "error": "Audit logger unavailable; investigation recording disabled.",
+            }, indent=2)}]
+
+        try:
+            result = self.playbook_recorder.record(
+                name=name.strip(),
+                description=args.get("description"),
+                since=args.get("since"),
+                until=args.get("until"),
+            )
+        except ValueError as e:
+            return [{"type": "text", "text": json.dumps({
+                "status": "error",
+                "error_code": "invalid_time_window",
+                "error": str(e),
+            }, indent=2)}]
+        return [{"type": "text", "text": json.dumps(result, indent=2)}]
+
+    async def _list_playbooks(self, args: Dict) -> List[Dict]:
+        return [{"type": "text", "text": json.dumps({
+            "playbooks": self.playbook_store.list(),
+        }, indent=2)}]
+
+    async def _get_playbook(self, args: Dict) -> List[Dict]:
+        playbook_id = args.get("playbook_id")
+        if not isinstance(playbook_id, str) or not playbook_id.strip():
+            return [{"type": "text", "text": json.dumps({
+                "status": "error",
+                "error_code": "missing_playbook_id",
+                "error": "playbook_id is required",
+            }, indent=2)}]
+
+        normalized_id = playbook_id.strip()
+        try:
+            result = self.playbook_store.get(normalized_id)
+        except PlaybookNotFoundError:
+            return [{"type": "text", "text": json.dumps({
+                "status": "error",
+                "error_code": "playbook_not_found",
+                "error": f"Playbook '{normalized_id}' was not found.",
+            }, indent=2)}]
+        return [{"type": "text", "text": json.dumps(result, indent=2)}]
+
+    async def _delete_playbook(self, args: Dict) -> List[Dict]:
+        playbook_id = args.get("playbook_id")
+        if not isinstance(playbook_id, str) or not playbook_id.strip():
+            return [{"type": "text", "text": json.dumps({
+                "status": "error",
+                "error_code": "missing_playbook_id",
+                "error": "playbook_id is required",
+            }, indent=2)}]
+
+        normalized_id = playbook_id.strip()
+        deleted = self.playbook_store.delete(normalized_id)
+        return [{"type": "text", "text": json.dumps({
+            "deleted": deleted,
+            "playbook_id": normalized_id,
+        }, indent=2)}]
