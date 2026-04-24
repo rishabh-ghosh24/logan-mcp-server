@@ -8,7 +8,7 @@ import os
 import threading
 from datetime import datetime, timezone
 from pathlib import Path
-from typing import Any, Dict, List
+from typing import Any, Dict, Iterator, List
 
 from .file_lock import locked_file
 
@@ -153,6 +153,31 @@ class AuditLogger:
                     except FileNotFoundError:
                         continue
         return {"path": str(out_path), "event_count": count}
+
+    def iter_entries(self, session_id: str | None = None) -> Iterator[Dict[str, Any]]:
+        """Return audit entries from current and rotated logs, oldest first."""
+        entries: List[Dict[str, Any]] = []
+        with self._thread_lock:
+            for src in self._transcript_source_files():
+                try:
+                    with open(src, "r", encoding="utf-8") as f:
+                        for line in f:
+                            line = line.strip()
+                            if not line:
+                                continue
+                            try:
+                                entry = json.loads(line)
+                            except Exception:
+                                continue
+                            if (
+                                session_id is not None
+                                and entry.get("session_id") != session_id
+                            ):
+                                continue
+                            entries.append(entry)
+                except FileNotFoundError:
+                    continue
+        return iter(entries)
 
     def _transcript_source_files(self) -> List[Path]:
         """Return current log plus rotated backups, oldest first."""
