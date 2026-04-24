@@ -2211,3 +2211,56 @@ class TestInvestigationPlaybooks:
 
         payload = json.loads(result[0]["text"])
         assert payload == {"deleted": True, "playbook_id": "pb_1"}
+
+
+class TestIncidentReports:
+    @pytest.mark.asyncio
+    async def test_generate_incident_report_routes_to_generator(self, handlers):
+        handlers.report_generator.generate = MagicMock(
+            return_value={
+                "report_id": "rpt_1",
+                "markdown": "# Incident Report\n",
+                "html": None,
+                "metadata": {"source_type": "investigation"},
+                "artifacts": [],
+            }
+        )
+
+        result = await handlers.handle_tool_call(
+            "generate_incident_report",
+            {
+                "investigation": {"summary": "x"},
+                "format": "markdown",
+                "include_sections": ["executive_summary"],
+                "summary_length": "short",
+            },
+        )
+
+        payload = json.loads(result[0]["text"])
+        assert payload["report_id"] == "rpt_1"
+        handlers.report_generator.generate.assert_called_once_with(
+            investigation={"summary": "x"},
+            output_format="markdown",
+            include_sections=["executive_summary"],
+            summary_length="short",
+        )
+
+    @pytest.mark.asyncio
+    async def test_generate_incident_report_requires_investigation_dict(self, handlers):
+        result = await handlers.handle_tool_call("generate_incident_report", {})
+
+        payload = json.loads(result[0]["text"])
+        assert payload["status"] == "error"
+        assert payload["error_code"] == "missing_investigation"
+
+    @pytest.mark.asyncio
+    async def test_generate_incident_report_returns_validation_error(self, handlers):
+        result = await handlers.handle_tool_call(
+            "generate_incident_report",
+            {"investigation": {}, "format": "pdf"},
+        )
+
+        payload = json.loads(result[0]["text"])
+        assert payload["status"] == "error"
+        assert payload["error_code"] == "invalid_report_options"
+        assert "format must be one of" in payload["error"]

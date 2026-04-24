@@ -136,6 +136,7 @@ def test_all_registered_tools_are_classified():
         "explain_query", "get_session_budget",
         "export_transcript",
         "list_playbooks", "get_playbook",
+        "generate_incident_report",
     }
 
     unclassified = registered - MUTATING_TOOLS - KNOWN_READERS

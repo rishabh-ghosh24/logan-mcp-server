@@ -124,3 +124,15 @@ def test_playbook_tool_schemas():
 
     get_schema = tools["get_playbook"]["inputSchema"]
     assert get_schema["required"] == ["playbook_id"]
+
+
+def test_generate_incident_report_schema():
+    tools = {t["name"]: t for t in get_tools()}
+    spec = tools["generate_incident_report"]
+    schema = spec["inputSchema"]
+    props = schema["properties"]
+
+    assert schema["required"] == ["investigation"]
+    assert props["format"]["enum"] == ["markdown", "html"]
+    assert props["summary_length"]["enum"] == ["short", "standard", "detailed"]
+    assert "include_sections" in props
