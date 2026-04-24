@@ -38,6 +38,7 @@ from .related_resources import RelatedDashboardsAndSearchesTool
 from .budget_tracker import BudgetExceededError
 from .playbook_recorder import PlaybookRecorder
 from .playbook_store import PlaybookNotFoundError, PlaybookStore
+from .report_delivery import ReportDeliveryError, ReportDeliveryService
 from .report_generator import ReportGenerationError, ReportGenerator
 
 if TYPE_CHECKING:
@@ -132,7 +133,13 @@ class MCPHandlers:
         self.auto_saver = QueryAutoSaver(context_manager, user_store=user_store)
         self.alarm_service = AlarmService(oci_client, cache)
         self.dashboard_service = DashboardService(oci_client, cache)
-        self.notification_service = NotificationService(settings)
+        self.notification_service = NotificationService(settings, oci_client=oci_client)
+        self.report_delivery_service = ReportDeliveryService(
+            settings=settings,
+            notification_service=self.notification_service,
+            audit_logger=audit_logger,
+            user_id=user_store.user_id,
+        )
         # Wire unified query catalog
         from .catalog import UnifiedCatalog
         self.catalog = UnifiedCatalog(base_dir=user_store.base_dir)
@@ -182,6 +189,7 @@ class MCPHandlers:
             "parser_failure_triage": self._parser_failure_triage,
             "investigate_incident": self._investigate_incident,
             "generate_incident_report": self._generate_incident_report,
+            "deliver_report": self._deliver_report,
             "why_did_this_fire": self._why_did_this_fire,
             "find_rare_events": self._find_rare_events,
             "trace_request_id": self._trace_request_id,
@@ -244,14 +252,7 @@ class MCPHandlers:
 
         # --- Invoked event (fires before every gate) ---
         if self.audit_logger:
-            clean_args_for_invoked = {
-                k: v for k, v in arguments.items()
-                if k not in (
-                    "confirmation_token",
-                    "confirmation_secret",
-                    "confirmation_secret_confirm",
-                )
-            }
+            clean_args_for_invoked = self._clean_args_for_audit(name, arguments)
             try:
                 self.audit_logger.log(
                     user=user_id, tool=name, args=clean_args_for_invoked,
@@ -266,7 +267,9 @@ class MCPHandlers:
         except ReadOnlyError as e:
             if self.audit_logger:
                 self.audit_logger.log(
-                    user=user_id, tool=name, args=arguments,
+                    user=user_id,
+                    tool=name,
+                    args=self._clean_args_for_audit(name, arguments),
                     outcome="read_only_blocked",
                 )
             return [{"type": "text", "text": json.dumps({
@@ -278,14 +281,7 @@ class MCPHandlers:
         # --- Confirmation gate for guarded operations ---
         guarded_call = self.confirmation_manager.is_guarded_call(name, arguments)
         if guarded_call:
-            clean_args = {
-                k: v for k, v in arguments.items()
-                if k not in (
-                    "confirmation_token",
-                    "confirmation_secret",
-                    "confirmation_secret_confirm",
-                )
-            }
+            clean_args = self._clean_args_for_audit(name, arguments)
 
             if not self.confirmation_manager.is_available():
                 status = self.confirmation_manager.availability_status()
@@ -371,6 +367,21 @@ class MCPHandlers:
                     outcome="execution_failed", error=str(e),
                 )
             return [{"type": "text", "text": f"Error executing {name}: {str(e)}"}]
+
+    def _clean_args_for_audit(self, tool_name: str, arguments: Dict[str, Any]) -> Dict[str, Any]:
+        clean_args = {
+            k: v for k, v in arguments.items()
+            if k not in (
+                "confirmation_token",
+                "confirmation_secret",
+                "confirmation_secret_confirm",
+            )
+        }
+        if tool_name == "deliver_report":
+            clean_args = dict(clean_args)
+            if "recipients" in clean_args:
+                clean_args["recipients"] = "<redacted>"
+        return clean_args
 
     def _build_confirmation_unavailable_response(self, status: str) -> Dict[str, str]:
         """Return user-facing guidance when confirmation is unavailable."""
@@ -850,6 +861,32 @@ class MCPHandlers:
                 "error_code": "invalid_report_options",
                 "error": str(e),
             }, indent=2)}]
+        return [{"type": "text", "text": json.dumps(result, indent=2, default=str)}]
+
+    async def _deliver_report(self, args: Dict) -> List[Dict]:
+        report = args.get("report")
+        if not isinstance(report, dict) or not isinstance(report.get("markdown"), str):
+            return [{"type": "text", "text": json.dumps({
+                "status": "error",
+                "error_code": "missing_report_markdown",
+                "error": "report.markdown is required in P0; report_id lookup is deferred",
+            }, indent=2)}]
+
+        try:
+            result = await self.report_delivery_service.deliver(
+                report=report,
+                channels=args.get("channels", ["telegram"]),
+                recipients=args.get("recipients") or {},
+                output_format=args.get("format", "pdf"),
+                title=args.get("title"),
+            )
+        except ReportDeliveryError as e:
+            return [{"type": "text", "text": json.dumps({
+                "status": "error",
+                "error_code": "invalid_delivery_options",
+                "error": str(e),
+            }, indent=2)}]
+
         return [{"type": "text", "text": json.dumps(result, indent=2, default=str)}]
 
     async def _why_did_this_fire(self, args: Dict) -> List[Dict]:

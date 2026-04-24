@@ -475,6 +475,50 @@ def get_tools() -> List[Dict[str, Any]]:
             },
         },
         {
+            "name": "deliver_report",
+            "description": (
+                "Deliver a generated incident report via Telegram, Slack, or OCI "
+                "Notifications email-topic delivery. P0 accepts inline markdown "
+                "report content only; report_id lookup is deferred until report "
+                "persistence exists."
+            ),
+            "inputSchema": {
+                "type": "object",
+                "required": ["report"],
+                "properties": {
+                    "report": {
+                        "type": "object",
+                        "required": ["markdown"],
+                        "properties": {
+                            "markdown": {"type": "string"},
+                            "title": {"type": "string"},
+                        },
+                    },
+                    "channels": {
+                        "type": "array",
+                        "items": {
+                            "type": "string",
+                            "enum": ["telegram", "email", "slack"],
+                        },
+                        "default": ["telegram"],
+                    },
+                    "recipients": {
+                        "type": "object",
+                        "properties": {
+                            "telegram_chat_id": {"type": "string"},
+                            "email_topic_ocid": {"type": "string"},
+                        },
+                    },
+                    "format": {
+                        "type": "string",
+                        "enum": ["pdf", "markdown", "both"],
+                        "default": "pdf",
+                    },
+                    "title": {"type": "string"},
+                },
+            },
+        },
+        {
             "name": "why_did_this_fire",
             "description": (
                 "For Logan-managed monitoring alarms, explain why the alarm "

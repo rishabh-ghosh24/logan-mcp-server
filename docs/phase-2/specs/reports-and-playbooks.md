@@ -165,13 +165,13 @@ generate_incident_report(
 ## Report Delivery (M-new) — PDF + Telegram + ONS email
 
 ### Purpose
-Ship the generated report to where the user already is. Telegram PDF attachment + OCI Notifications email.
+Ship the generated report to where the user already is. Telegram PDF attachment, optional Slack summary, and OCI Notifications email-topic summary.
 
 ### Tool interface
 ```
 deliver_report(
-  report: {report_id: str} | {markdown: str, title: str},
-  channels: list["telegram" | "email"] = ["telegram"],
+  report: {markdown: str, title: str | None},
+  channels: list["telegram" | "email" | "slack"] = ["telegram"],
   recipients: {
     telegram_chat_id: str | None,     # default: from config
     email_topic_ocid: str | None,     # default: from config
@@ -179,23 +179,31 @@ deliver_report(
   format: "pdf" | "markdown" | "both" = "pdf",
   title: str | None = None,
 ) -> {
-  delivered: list[{channel: str, status: "sent" | "failed", message_id: str | None}],
-  pdf_path: str | None,  # local path if pdf generated
+  status: "sent" | "partial" | "failed" | "error",
+  delivered: list[{channel, status, message_id, artifact, recipient, error?}],
+  pdf_path: str | None,
 }
 ```
+
+> P0 intentionally does not accept `report_id`. N3 P0 returns `report_id` as a
+> correlation id only; report persistence / lookup is tracked as `N3-F4`.
+> `deliver_report(report_id=...)` should land with that persistence feature.
 
 ### Acceptance contract (PDF)
 - Produces a valid PDF for any Markdown report N3 emits.
 - Respects a 50 MB cap (Telegram hard limit; reject with a clear error before attempting upload if exceeded).
-- Single simple CSS file; no branding flexibility in P0.
+- Simple built-in report styling; no branding flexibility in P0.
 
 ### Delivery (P0)
 - **Telegram:** extend existing `notification_service.py` (or whatever hosts `send_to_telegram`) with an `attach_file` pathway. Bot API supports `sendDocument` with attachments. **Full PDF goes here.**
-- **Email via ONS:** ONS notifications don't natively attach files. P0 email body contains an **inline Markdown/plaintext summary** of the report (exec summary + top findings), nothing more. No attachment. No link. If the user wants the full PDF by email, that's a P1 follow-up that adds Object Storage + a pre-authenticated URL.
+- **Slack:** optional inline summary through the existing webhook path. Telegram remains the default IM path. Full Slack PDF upload requires Slack Web API OAuth and is deferred.
+- **Email via ONS:** OCI Notifications publishes to an ONS topic that may have email subscribers. ONS notifications don't natively attach files. P0 email body contains an **inline Markdown/plaintext summary** of the report (exec summary + top findings), nothing more. No attachment. No link. If the user wants the full PDF by email, that's a P1 follow-up that adds Object Storage + a pre-authenticated URL.
 
 ### Deferred to P1
 - Object Storage bucket + PAR URL for email PDF delivery.
 - Branding / custom CSS / custom templates.
+- Full PDF delivery to Slack via Slack Web API file upload.
+- Oracle Slack workspace/app rollout after validating with a private/free Slack registration.
 
 ### Files
 - Create: `src/oci_logan_mcp/report_pdf.py` — Markdown → PDF.

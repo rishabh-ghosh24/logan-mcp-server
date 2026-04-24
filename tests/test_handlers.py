@@ -10,6 +10,7 @@ from oci_logan_mcp.user_store import UserStore
 from oci_logan_mcp.preferences import PreferenceStore
 from oci_logan_mcp.secret_store import SecretStore
 from oci_logan_mcp.audit import AuditLogger
+from oci_logan_mcp.report_delivery import ReportDeliveryError
 
 
 # ---------------------------------------------------------------------------
@@ -2264,3 +2265,119 @@ class TestIncidentReports:
         assert payload["status"] == "error"
         assert payload["error_code"] == "invalid_report_options"
         assert "format must be one of" in payload["error"]
+
+
+class TestDeliverReportHandler:
+    @pytest.mark.asyncio
+    async def test_deliver_report_routes_to_service(self, handlers):
+        handlers.report_delivery_service.deliver = AsyncMock(
+            return_value={"status": "sent", "delivered": [], "pdf_path": "/tmp/r.pdf"}
+        )
+
+        result = await handlers.handle_tool_call(
+            "deliver_report",
+            {
+                "report": {"markdown": "# Report", "title": "Report"},
+                "channels": ["telegram"],
+                "format": "pdf",
+            },
+        )
+
+        payload = json.loads(result[0]["text"])
+        assert payload["status"] == "sent"
+        handlers.report_delivery_service.deliver.assert_awaited_once_with(
+            report={"markdown": "# Report", "title": "Report"},
+            channels=["telegram"],
+            recipients={},
+            output_format="pdf",
+            title=None,
+        )
+
+    @pytest.mark.asyncio
+    async def test_deliver_report_rejects_missing_markdown(self, handlers):
+        result = await handlers.handle_tool_call(
+            "deliver_report",
+            {"report": {"report_id": "r-123"}},
+        )
+
+        payload = json.loads(result[0]["text"])
+        assert payload["status"] == "error"
+        assert payload["error_code"] == "missing_report_markdown"
+
+    @pytest.mark.asyncio
+    async def test_deliver_report_returns_delivery_option_errors(self, handlers):
+        handlers.report_delivery_service.deliver = AsyncMock(
+            side_effect=ReportDeliveryError("unsupported channels: ['sms']")
+        )
+
+        result = await handlers.handle_tool_call(
+            "deliver_report",
+            {
+                "report": {"markdown": "# Report"},
+                "channels": ["sms"],
+            },
+        )
+
+        payload = json.loads(result[0]["text"])
+        assert payload["status"] == "error"
+        assert payload["error_code"] == "invalid_delivery_options"
+        assert "sms" in payload["error"]
+
+    @pytest.mark.asyncio
+    async def test_deliver_report_invoked_audit_redacts_recipients(self, handlers):
+        handlers.audit_logger.log = MagicMock()
+        handlers.report_delivery_service.deliver = AsyncMock(
+            return_value={"status": "sent", "delivered": [], "pdf_path": None}
+        )
+
+        await handlers.handle_tool_call(
+            "deliver_report",
+            {
+                "report": {"markdown": "# Report"},
+                "channels": ["telegram"],
+                "recipients": {
+                    "telegram_chat_id": "-100999",
+                    "email_topic_ocid": "ocid1.onstopic.oc1..secret",
+                },
+            },
+        )
+
+        invoked = [
+            call.kwargs for call in handlers.audit_logger.log.call_args_list
+            if call.kwargs["outcome"] == "invoked"
+        ][-1]
+        assert invoked["tool"] == "deliver_report"
+        assert invoked["args"]["recipients"] == "<redacted>"
+        assert "-100999" not in str(invoked["args"])
+        assert "secret" not in str(invoked["args"])
+
+    @pytest.mark.asyncio
+    async def test_non_delivery_invoked_audit_args_are_unchanged(self, handlers):
+        handlers.audit_logger.log = MagicMock()
+        handlers.investigate_tool.run = AsyncMock(return_value={
+            "summary": "ok",
+            "partial": False,
+            "partial_reasons": [],
+        })
+
+        await handlers.handle_tool_call(
+            "investigate_incident",
+            {
+                "query": "'Severity' = 'ERROR'",
+                "time_range": "last_1_hour",
+                "top_k": 2,
+                "compartment_id": "ocid1.compartment.oc1..abc",
+            },
+        )
+
+        invoked = [
+            call.kwargs for call in handlers.audit_logger.log.call_args_list
+            if call.kwargs["outcome"] == "invoked"
+        ][-1]
+        assert invoked["tool"] == "investigate_incident"
+        assert invoked["args"] == {
+            "query": "'Severity' = 'ERROR'",
+            "time_range": "last_1_hour",
+            "top_k": 2,
+            "compartment_id": "ocid1.compartment.oc1..abc",
+        }

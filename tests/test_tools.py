@@ -136,3 +136,16 @@ def test_generate_incident_report_schema():
     assert props["format"]["enum"] == ["markdown", "html"]
     assert props["summary_length"]["enum"] == ["short", "standard", "detailed"]
     assert "include_sections" in props
+
+
+def test_deliver_report_schema_is_markdown_first():
+    tools = {tool["name"]: tool for tool in get_tools()}
+    schema = tools["deliver_report"]["inputSchema"]
+    props = schema["properties"]
+
+    assert "report" in props
+    report_schema = props["report"]
+    assert report_schema["required"] == ["markdown"]
+    assert "report_id" not in report_schema["properties"]
+    assert props["channels"]["items"]["enum"] == ["telegram", "email", "slack"]
+    assert props["format"]["enum"] == ["pdf", "markdown", "both"]

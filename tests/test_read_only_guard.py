@@ -34,6 +34,7 @@ def test_mutating_tools_contains_known_writers():
         "delete_dashboard",
         "send_to_slack",
         "send_to_telegram",
+        "deliver_report",
     }
     assert expected_subset <= MUTATING_TOOLS
 

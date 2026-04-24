@@ -70,6 +70,15 @@ Source: [reports-and-playbooks.md](specs/reports-and-playbooks.md)
 - `N3-F3` — `source.session_id` report generation once N6 has true per-investigation session boundaries.
 - `N3-F4` — Report persistence / `report_id` lookup so later delivery workflows can fetch a generated report by id instead of requiring the client to resend the report body.
 
+#### Report Delivery
+Source: [reports-and-playbooks.md](specs/reports-and-playbooks.md) and [2026-04-24-report-delivery.md](plans/2026-04-24-report-delivery.md)
+
+- `RD-F1` — `deliver_report` support for `{report_id}` once N3-F4 report persistence / lookup exists.
+- `RD-F2` — Object Storage bucket + PAR URL for full PDF access from email notifications.
+- `RD-F3` — Branding, custom CSS, and custom PDF templates.
+- `RD-F4` — Full PDF delivery to Slack via Slack Web API file upload. P0 Slack delivery uses the existing webhook and sends an inline summary only.
+- `RD-F5` — Oracle Slack workspace/app rollout after validating the Slack path with a private/free Slack registration.
+
 ### Triage Toolkit
 
 #### A2 — `diff_time_windows`

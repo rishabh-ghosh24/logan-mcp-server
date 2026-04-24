@@ -35,6 +35,7 @@ MUTATING_TOOLS: frozenset[str] = frozenset(
         # Outbound notifications
         "send_to_slack",
         "send_to_telegram",
+        "deliver_report",
     }
 )
 

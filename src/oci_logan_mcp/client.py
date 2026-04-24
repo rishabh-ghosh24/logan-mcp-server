@@ -1,5 +1,6 @@
 """OCI Log Analytics client wrapper."""
 
+import asyncio
 import logging
 from typing import Optional, List, Dict, Any
 from datetime import datetime
@@ -95,6 +96,15 @@ class OCILogAnalyticsClient:
                 config=self._config, signer=self._signer
             )
         return self._ons_client
+
+    @property
+    def ons_data_client(self):
+        """Lazy accessor for OCI Notification data-plane client."""
+        if not hasattr(self, "_ons_data_client") or self._ons_data_client is None:
+            self._ons_data_client = oci.ons.NotificationDataPlaneClient(
+                config=self._config, signer=self._signer
+            )
+        return self._ons_data_client
 
     @property
     def namespace(self) -> str:
@@ -697,6 +707,34 @@ class OCILogAnalyticsClient:
             if e.status == 429:
                 await self._rate_limiter.handle_rate_limit()
                 return await self.get_topic(topic_id)
+            raise
+
+    async def publish_notification(
+        self,
+        topic_id: str,
+        title: str,
+        body: str,
+    ) -> Dict[str, Any]:
+        """Publish a message to an OCI Notifications topic."""
+        await self._rate_limiter.acquire()
+        try:
+            details = oci.ons.models.MessageDetails(title=title, body=body)
+            response = await asyncio.to_thread(
+                self.ons_data_client.publish_message,
+                topic_id=topic_id,
+                message_details=details,
+            )
+            self._rate_limiter.reset()
+            data = response.data
+            return {
+                "message_id": getattr(data, "message_id", None),
+                "status": "sent",
+                "topic_id": topic_id,
+            }
+        except oci.exceptions.ServiceError as e:
+            if e.status == 429:
+                await self._rate_limiter.handle_rate_limit()
+                return await self.publish_notification(topic_id, title, body)
             raise
 
     # ── Management Saved Search methods ───────────────────────────────────

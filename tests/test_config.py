@@ -15,6 +15,8 @@ from oci_logan_mcp.config import (
     NotificationsConfig,
     SlackConfig,
     TelegramConfig,
+    ONSConfig,
+    ReportDeliveryConfig,
     load_config,
     save_config,
     _parse_config,
@@ -98,6 +100,9 @@ class TestNotificationsConfig:
         assert s.notifications.slack.webhook_url == ""
         assert s.notifications.telegram.bot_token == ""
         assert s.notifications.telegram.default_chat_id == ""
+        assert s.notifications.ons.default_topic_ocid == ""
+        assert s.report_delivery.max_email_body_chars == 8000
+        assert s.report_delivery.artifact_dir == Path.home() / ".oci-logan-mcp" / "reports"
 
     def test_parse_config_slack(self):
         data = {"notifications": {"slack": {"webhook_url": "https://hooks.slack.com/test"}}}
@@ -109,6 +114,22 @@ class TestNotificationsConfig:
         s = _parse_config(data)
         assert s.notifications.telegram.bot_token == "123:ABC"
         assert s.notifications.telegram.default_chat_id == "-999"
+
+    def test_parse_config_ons(self):
+        data = {"notifications": {"ons": {"default_topic_ocid": "ocid1.onstopic.oc1..abc"}}}
+        s = _parse_config(data)
+        assert s.notifications.ons.default_topic_ocid == "ocid1.onstopic.oc1..abc"
+
+    def test_parse_config_report_delivery(self):
+        data = {
+            "report_delivery": {
+                "artifact_dir": "/tmp/logan-reports",
+                "max_email_body_chars": 1200,
+            }
+        }
+        s = _parse_config(data)
+        assert s.report_delivery.artifact_dir == Path("/tmp/logan-reports")
+        assert s.report_delivery.max_email_body_chars == 1200
 
     def test_env_override_slack(self, monkeypatch):
         monkeypatch.setenv("SLACK_WEBHOOK_URL", "https://hooks.slack.com/env")
@@ -125,12 +146,28 @@ class TestNotificationsConfig:
         s = _apply_env_overrides(Settings())
         assert s.notifications.telegram.default_chat_id == "-100999"
 
+    def test_env_override_ons_topic(self, monkeypatch):
+        monkeypatch.setenv("OCI_LOGAN_ONS_TOPIC_OCID", "ocid1.onstopic.oc1..env")
+        s = _apply_env_overrides(Settings())
+        assert s.notifications.ons.default_topic_ocid == "ocid1.onstopic.oc1..env"
+
+    def test_env_override_report_delivery(self, monkeypatch):
+        monkeypatch.setenv("OCI_LOGAN_REPORT_ARTIFACT_DIR", "/tmp/reports-env")
+        monkeypatch.setenv("OCI_LOGAN_REPORT_MAX_EMAIL_CHARS", "4096")
+        s = _apply_env_overrides(Settings())
+        assert s.report_delivery.artifact_dir == Path("/tmp/reports-env")
+        assert s.report_delivery.max_email_body_chars == 4096
+
     def test_to_dict_includes_notifications(self):
         s = Settings()
         s.notifications.slack.webhook_url = "https://test"
+        s.notifications.ons.default_topic_ocid = "ocid1.onstopic.oc1..abc"
+        s.report_delivery.max_email_body_chars = 1234
         d = s.to_dict()
         assert d["notifications"]["slack"]["webhook_url"] == "https://test"
         assert "telegram" in d["notifications"]
+        assert d["notifications"]["ons"]["default_topic_ocid"] == "ocid1.onstopic.oc1..abc"
+        assert d["report_delivery"]["max_email_body_chars"] == 1234
 
 
 class TestConfirmationConfig:
