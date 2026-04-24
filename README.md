@@ -127,6 +127,7 @@ Click **Save**, then start a new Codex session to connect.
 |---|---|---|
 | **Query logs** | `run_query`, `run_batch_queries`, `run_saved_search` | Search logs, run multiple queries in parallel, execute saved searches |
 | **Triage diffs** | `diff_time_windows`, `pivot_on_entity`, `ingestion_health`, `parser_failure_triage`, `investigate_incident`, `why_did_this_fire`, `find_rare_events`, `trace_request_id`, `related_dashboards_and_searches` | Compare a query across two time windows; pull all events for an entity across sources; probe per-source ingestion freshness; surface top parser failures; one-call first-cut investigation orchestrator; replay a Logan-managed alarm's historical fire window; surface low-frequency field values for a source; search common request-id / trace-id fields across sources; find existing dashboards and saved searches related to a source, entity, or field |
+| **Investigation playbooks** | `record_investigation`, `list_playbooks`, `get_playbook`, `delete_playbook` | Save the current session's audited tool calls as a named playbook, then list, fetch, or delete recorded playbooks |
 | **Explore schema** | `list_log_sources`, `list_fields`, `list_entities`, `list_parsers`, `list_labels` | Discover what log data is available |
 | **Visualize** | `visualize` | Generate pie, bar, line, area, table, tile, treemap, heatmap, histogram charts |
 | **Dashboards** | `create_dashboard`, `add_dashboard_tile`, `list_dashboards`, `delete_dashboard` | Create OCI Management Dashboards with LA widgets, grid layout, and scope filters |
@@ -284,6 +285,29 @@ P0 behavior:
 - Learned-query results come from personal + shared catalogs only; builtin and starter templates are excluded.
 - Saved searches are shortlisted from listing metadata, then the top 10 candidates are rescored using fetched query text.
 - Matching uses existing normalization and fuzzy helpers from `fuzzy_match.py`, so field and source naming variations can still surface relevant resources.
+
+### `record_investigation` — save a playbook from the audit trail
+
+Capture the current server process's audited tool calls into a named playbook:
+
+```json
+{
+  "tool": "record_investigation",
+  "name": "CPU spike triage",
+  "description": "Queries and pivots used for the April 24 CPU incident",
+  "since": "2026-04-24T09:00:00Z",
+  "until": "2026-04-24T10:00:00Z"
+}
+```
+
+Returns `{id, name, description, owner, created_at, source_process_session_id, window, steps, warning}`. Each step includes the audited `tool`, sanitized `args`, timestamp, and outcome. If no audit events match the requested window, the playbook is still saved with an empty `steps` list and a warning.
+
+Use `list_playbooks` for compact metadata, `get_playbook(playbook_id=...)` for the full step list, and `delete_playbook(playbook_id=...)` to remove one.
+
+P0 behavior:
+- Playbooks are stored per user under the Logan base directory.
+- The `record_investigation` call itself is omitted from captured steps because it is the capture boundary, not part of the investigation.
+- P0 is record/catalog only. Replay, parameterization, and report generation are deferred.
 
 ## Multi-User Learning
 
@@ -472,10 +496,11 @@ of executing:
 - `send_to_slack`, `send_to_telegram`
 - `set_compartment`, `set_namespace`, `update_tenancy_context`
 - `save_learned_query`, `remember_preference`, `setup_confirmation_secret`
+- `record_investigation`, `delete_playbook`
 
-All query, validation, listing, visualization and `export_results` tools remain
-available. Use this mode when giving an untrusted agent, a newcomer, or an
-automated process access to the server.
+All query, validation, listing, visualization, `export_results`, `list_playbooks`,
+and `get_playbook` tools remain available. Use this mode when giving an
+untrusted agent, a newcomer, or an automated process access to the server.
 
 All delete and update operations on OCI resources (alerts, dashboards, saved searches) are protected by **two-factor server-side confirmation**. This prevents any MCP client — Claude, Codex, or others — from accidentally modifying or destroying resources.
 
