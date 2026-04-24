@@ -38,6 +38,7 @@ from .related_resources import RelatedDashboardsAndSearchesTool
 from .budget_tracker import BudgetExceededError
 from .playbook_recorder import PlaybookRecorder
 from .playbook_store import PlaybookNotFoundError, PlaybookStore
+from .report_generator import ReportGenerationError, ReportGenerator
 
 if TYPE_CHECKING:
     from .catalog import CatalogEntry
@@ -122,6 +123,7 @@ class MCPHandlers:
             query_engine=self.query_engine,
         )
         self.find_rare_events_tool = RareEventsTool(self.query_engine)
+        self.report_generator = ReportGenerator()
         self.trace_request_id_tool = TraceRequestIdTool(self.pivot_tool)
         self.validator = QueryValidator(self.schema_manager)
         self.visualization = VisualizationEngine()
@@ -179,6 +181,7 @@ class MCPHandlers:
             "ingestion_health": self._ingestion_health,
             "parser_failure_triage": self._parser_failure_triage,
             "investigate_incident": self._investigate_incident,
+            "generate_incident_report": self._generate_incident_report,
             "why_did_this_fire": self._why_did_this_fire,
             "find_rare_events": self._find_rare_events,
             "trace_request_id": self._trace_request_id,
@@ -824,6 +827,30 @@ class MCPHandlers:
                 {"status": "error", "error": str(e)}, indent=2,
             )}]
         return [{"type": "text", "text": json.dumps(report, indent=2, default=str)}]
+
+    async def _generate_incident_report(self, args: Dict) -> List[Dict]:
+        investigation = args.get("investigation")
+        if not isinstance(investigation, dict):
+            return [{"type": "text", "text": json.dumps({
+                "status": "error",
+                "error_code": "missing_investigation",
+                "error": "investigation is required and must be an object",
+            }, indent=2)}]
+
+        try:
+            result = self.report_generator.generate(
+                investigation=investigation,
+                output_format=args.get("format", "markdown"),
+                include_sections=args.get("include_sections"),
+                summary_length=args.get("summary_length", "standard"),
+            )
+        except ReportGenerationError as e:
+            return [{"type": "text", "text": json.dumps({
+                "status": "error",
+                "error_code": "invalid_report_options",
+                "error": str(e),
+            }, indent=2)}]
+        return [{"type": "text", "text": json.dumps(result, indent=2, default=str)}]
 
     async def _why_did_this_fire(self, args: Dict) -> List[Dict]:
         """Run why_did_this_fire with structured validation and budget errors."""

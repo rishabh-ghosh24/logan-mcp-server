@@ -119,14 +119,16 @@ generate_incident_report(
   report_id: str,
   markdown: str,
   html: str | None,
-  metadata: {generated_at, source_type, word_count},
-  artifacts: list[{name, type, inline_data_or_path}],  # charts, tables as attachments
+  metadata: {generated_at, source_type, summary_length, included_sections, word_count},
+  artifacts: list[{name, type, inline_data_or_path}],
 }
 ```
 
 > **P0 source is investigation-only.** `playbook_run` is deferred because N1 P0 does not replay. `session_id`-based synthesis is deferred because the server has no real per-investigation session boundary in P0 (see N6). Both return when their backing features land in P1.
 
 ### Deferred to P1
+- Internal LLM prose synthesis for executive summaries and findings narratives.
+- Report persistence / `report_id` lookup. In P0, `report_id` is a returned correlation id only; clients must store the report body if they need it later.
 - `source.playbook_run` — requires N1 replay.
 - `source.session_id` — requires a true per-investigation session boundary, not the process-scoped grouping N6 provides in P0.
 
@@ -138,24 +140,22 @@ generate_incident_report(
 5. **Recommended next steps** — derived from N2's next_steps hints.
 6. **Appendix** — full tool-call chain reference (links to N6 transcript).
 
-### LLM usage
-- Report synthesis uses an LLM call for prose sections (exec summary, findings narrative).
-- Data sections (timeline, evidence) are templated — no LLM.
-- LLM prompt lives in `src/oci_logan_mcp/templates/report_prompt.md`.
+### Prose generation
+- P0 uses deterministic templates only. This keeps incident reports reproducible, auditable, and easy to test.
+- The MCP client is already an LLM and can synthesize prose from the structured report when needed.
+- Internal LLM prose synthesis is deferred to P1 because it requires provider config, auth, cost controls, prompt management, and failure-mode coverage.
 
 ### Files
 - Create: `src/oci_logan_mcp/report_generator.py` — synthesis orchestrator.
-- Create: `src/oci_logan_mcp/templates/report_prompt.md` — LLM prompt.
-- Create: `src/oci_logan_mcp/templates/report_skeleton.md` — Markdown skeleton.
 - Modify: `src/oci_logan_mcp/tools.py`.
 - Create: `tests/test_report_generator.py`.
 
 ### Test outline
 1. Test: investigation input → report has all default sections.
 2. Test: empty investigation → report says "no findings" in exec summary without errors.
-3. Test: `summary_length=short` keeps exec summary under N words.
-4. Test: artifacts include chart data when investigation has visualizations.
-5. Test: LLM failure → template fallback produces a usable report (no crash).
+3. Test: `summary_length=short` caps the executive summary sentences.
+4. Test: `format=html` returns escaped HTML without unsafe raw tags.
+5. Test: invalid format, summary length, or section names return structured errors through the MCP handler.
 
 ### Dependencies
 - A1 output shape (`InvestigationReport`) from `feat/triage-toolkit`. **No N1 dependency in P0** — N1 replay is P1, so N3 reads straight from A1's return value.

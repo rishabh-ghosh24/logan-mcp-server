@@ -54,6 +54,22 @@ Source: [2026-04-20-n6-transcript-export.md](plans/2026-04-20-n6-transcript-expo
 - `N6-F3` — Per-investigation session semantics instead of process-scoped debugging groups.
 - `N6-F4` — Promotion-run audit coverage for `promote.py --promote-and-exit`.
 
+#### N1 — Investigation recorder
+Source: [reports-and-playbooks.md](specs/reports-and-playbooks.md), [feature-catalog.md](feature-catalog.md), and [2026-04-24-n1-investigation-recorder.md](plans/2026-04-24-n1-investigation-recorder.md)
+
+- `N1-F1` — Replay recorded playbooks via `replay_investigation(playbook_id, params, dry_run)`.
+- `N1-F2` — Auto-parameterization for time ranges, entities, sources, and other replay-safe fields.
+- `N1-F3` — `capture_as` chaining so later replay steps can consume earlier step outputs.
+- `N1-F4` — Optional `session_id` parameter on `record_investigation` once N6 supports client-supplied session ids.
+
+#### N3 — Incident report generation
+Source: [reports-and-playbooks.md](specs/reports-and-playbooks.md)
+
+- `N3-F1` — Internal LLM prose synthesis for executive summaries and findings narratives, with provider config, prompt management, cost controls, and fallback behavior.
+- `N3-F2` — `source.playbook_run` report generation once N1 replay exists.
+- `N3-F3` — `source.session_id` report generation once N6 has true per-investigation session boundaries.
+- `N3-F4` — Report persistence / `report_id` lookup so later delivery workflows can fetch a generated report by id instead of requiring the client to resend the report body.
+
 ### Triage Toolkit
 
 #### A2 — `diff_time_windows`

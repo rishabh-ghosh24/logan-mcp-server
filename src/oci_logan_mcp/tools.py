@@ -421,6 +421,60 @@ def get_tools() -> List[Dict[str, Any]]:
             },
         },
         {
+            "name": "generate_incident_report",
+            "description": (
+                "Generate a deterministic Markdown incident report, and optional "
+                "HTML rendering, from an A1 investigate_incident response. P0 is "
+                "template-first and does not call an internal LLM."
+            ),
+            "inputSchema": {
+                "type": "object",
+                "properties": {
+                    "investigation": {
+                        "type": "object",
+                        "description": (
+                            "A1 InvestigationReport object returned by "
+                            "investigate_incident."
+                        ),
+                    },
+                    "format": {
+                        "type": "string",
+                        "enum": ["markdown", "html"],
+                        "description": (
+                            "Output renderer. Markdown is always returned; html "
+                            "adds an HTML rendering."
+                        ),
+                        "default": "markdown",
+                    },
+                    "include_sections": {
+                        "type": "array",
+                        "items": {
+                            "type": "string",
+                            "enum": [
+                                "executive_summary",
+                                "timeline",
+                                "top_findings",
+                                "evidence",
+                                "recommended_next_steps",
+                                "appendix",
+                            ],
+                        },
+                        "description": (
+                            "Optional ordered section allowlist. Defaults to all "
+                            "sections."
+                        ),
+                    },
+                    "summary_length": {
+                        "type": "string",
+                        "enum": ["short", "standard", "detailed"],
+                        "description": "Executive summary sentence cap. Default: standard.",
+                        "default": "standard",
+                    },
+                },
+                "required": ["investigation"],
+            },
+        },
+        {
             "name": "why_did_this_fire",
             "description": (
                 "For Logan-managed monitoring alarms, explain why the alarm "
