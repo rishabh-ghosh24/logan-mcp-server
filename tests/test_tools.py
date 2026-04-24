@@ -108,3 +108,19 @@ def test_find_rare_events_schema():
     assert "rarity_threshold_percentile" in props
     assert "history_days" in props
     assert spec["inputSchema"]["required"] == ["source", "field", "time_range"]
+
+
+def test_playbook_tool_schemas():
+    tools = {t["name"]: t for t in get_tools()}
+    assert "record_investigation" in tools
+    assert "list_playbooks" in tools
+    assert "get_playbook" in tools
+    assert "delete_playbook" in tools
+
+    record_schema = tools["record_investigation"]["inputSchema"]
+    assert record_schema["required"] == ["name"]
+    assert "since" in record_schema["properties"]
+    assert "until" in record_schema["properties"]
+
+    get_schema = tools["get_playbook"]["inputSchema"]
+    assert get_schema["required"] == ["playbook_id"]
