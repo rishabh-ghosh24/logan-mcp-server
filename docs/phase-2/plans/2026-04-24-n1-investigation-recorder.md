@@ -37,6 +37,8 @@ Explicitly out of scope:
   - Reads audit entries from `AuditLogger`.
   - Filters the current process session by `[since, until]`.
   - Converts audit entries into N1 steps and persists via `PlaybookStore`.
+  - Normalizes all comparison timestamps to whole-second audit precision because `AuditLogger.log()` stores timestamps with `strftime("%Y-%m-%dT%H:%M:%SZ")`.
+  - Excludes the `record_investigation` tool call itself from captured steps; that invocation is bookkeeping for the capture boundary, not an investigation action to replay or catalog.
 - Modify: `src/oci_logan_mcp/audit.py`
   - Add a small public `iter_entries(session_id=None)` reader to avoid duplicating log/rotation parsing in N1.
 - Modify: `src/oci_logan_mcp/handlers.py`
@@ -394,6 +396,25 @@ def test_defaults_capture_process_lifetime(tmp_path):
     assert datetime.fromisoformat(playbook["steps"][0]["ts"]) <= datetime.fromisoformat(
         playbook["window"]["until"]
     )
+
+
+def test_record_excludes_record_investigation_bookkeeping_call(tmp_path):
+    audit, _, recorder = _recorder(tmp_path)
+    audit.log(user="testuser", tool="run_query", args={"query": "*"}, outcome="invoked")
+    audit.log(
+        user="testuser",
+        tool="record_investigation",
+        args={"name": "incident"},
+        outcome="invoked",
+    )
+
+    playbook = recorder.record(
+        name="incident",
+        since="2026-01-01T00:00:00+00:00",
+        until="2099-01-01T00:00:00+00:00",
+    )
+
+    assert [step["tool"] for step in playbook["steps"]] == ["run_query"]
 ```
 
 - [ ] **Step 2: Run recorder tests and verify failure**
@@ -456,7 +477,12 @@ from .audit import AuditLogger
 from .playbook_store import PlaybookStore
 
 
-_PROCESS_STARTED_AT = datetime.now(timezone.utc)
+def _audit_precision(value: datetime) -> datetime:
+    """Match AuditLogger's whole-second timestamp precision."""
+    return value.astimezone(timezone.utc).replace(microsecond=0)
+
+
+_PROCESS_STARTED_AT = _audit_precision(datetime.now(timezone.utc))
 
 
 def _parse_iso_datetime(value: str) -> datetime:
@@ -464,11 +490,11 @@ def _parse_iso_datetime(value: str) -> datetime:
     parsed = datetime.fromisoformat(normalized)
     if parsed.tzinfo is None:
         parsed = parsed.replace(tzinfo=timezone.utc)
-    return parsed.astimezone(timezone.utc)
+    return _audit_precision(parsed)
 
 
 def _iso(value: datetime) -> str:
-    return value.astimezone(timezone.utc).isoformat()
+    return _audit_precision(value).isoformat()
 
 
 class PlaybookRecorder:
@@ -493,6 +519,8 @@ class PlaybookRecorder:
 
         steps = []
         for entry in self._audit_logger.iter_entries(session_id=self._audit_logger.session_id):
+            if entry.get("tool") == "record_investigation":
+                continue
             ts_raw = entry.get("timestamp")
             if not isinstance(ts_raw, str):
                 continue
@@ -510,6 +538,7 @@ class PlaybookRecorder:
                     "outcome": entry.get("outcome", ""),
                 }
             )
+        steps.sort(key=lambda step: step["ts"])
 
         warning = ""
         if not steps:
@@ -854,27 +883,12 @@ In `tests/test_read_only_guard.py`, add `list_playbooks` and `get_playbook` to `
         "get_playbook",
 ```
 
-Add a parameterized read-only case in `tests/test_handlers.py` if the existing read-only tests do not automatically cover denylisted tools:
-
-```python
-@pytest.mark.asyncio
-@pytest.mark.parametrize("tool_name,args", [
-    ("record_investigation", {"name": "incident"}),
-    ("delete_playbook", {"playbook_id": "pb_1"}),
-])
-async def test_playbook_mutations_blocked_in_read_only(settings, handlers, tool_name, args):
-    settings.read_only = True
-
-    result = await handlers.handle_tool_call(tool_name, args)
-
-    payload = json.loads(result[0]["text"])
-    assert payload["status"] == "read_only_blocked"
-```
+In `tests/test_read_only_guard.py`, also add `record_investigation` and `delete_playbook` to the `expected_subset` in `test_mutating_tools_contains_known_writers`. Do not add a separate handler-level read-only test for these two tools: the existing classification drift test plus the existing representative handler integration test already cover the read-only guard path without duplicating every mutator.
 
 Run:
 
 ```bash
-pytest tests/test_read_only_guard.py tests/test_handlers.py::test_playbook_mutations_blocked_in_read_only -q
+pytest tests/test_read_only_guard.py -q
 ```
 
 Expected: PASS.
@@ -911,7 +925,7 @@ Record the current process's audit trail as a named investigation playbook:
 }
 ```
 
-P0 playbooks are record/catalog artifacts only. They capture the tool calls already present in the N6 audit log and can be listed, fetched, or deleted with `list_playbooks`, `get_playbook`, and `delete_playbook`. Replay, parameterization, and report generation are separate follow-up features.
+P0 playbooks are record/catalog artifacts only. They capture the tool calls already present in the N6 audit log and can be listed, fetched, or deleted with `list_playbooks`, `get_playbook`, and `delete_playbook`. The `record_investigation` call itself is omitted from captured steps because it is the capture boundary, not part of the investigation. Replay, parameterization, and report generation are separate follow-up features.
 ````
 
 Also add the four tools to the "What You Can Do" table under a new or existing workflow/export row.
