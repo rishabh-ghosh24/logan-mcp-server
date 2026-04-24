@@ -128,7 +128,7 @@ Click **Save**, then start a new Codex session to connect.
 | **Query logs** | `run_query`, `run_batch_queries`, `run_saved_search` | Search logs, run multiple queries in parallel, execute saved searches |
 | **Triage diffs** | `diff_time_windows`, `pivot_on_entity`, `ingestion_health`, `parser_failure_triage`, `investigate_incident`, `why_did_this_fire`, `find_rare_events`, `trace_request_id`, `related_dashboards_and_searches` | Compare a query across two time windows; pull all events for an entity across sources; probe per-source ingestion freshness; surface top parser failures; one-call first-cut investigation orchestrator; replay a Logan-managed alarm's historical fire window; surface low-frequency field values for a source; search common request-id / trace-id fields across sources; find existing dashboards and saved searches related to a source, entity, or field |
 | **Investigation playbooks** | `record_investigation`, `list_playbooks`, `get_playbook`, `delete_playbook` | Save the current session's audited tool calls as a named playbook, then list, fetch, or delete recorded playbooks |
-| **Reports** | `generate_incident_report` | Convert an investigation result into deterministic Markdown, with optional HTML rendering |
+| **Reports** | `generate_incident_report`, `deliver_report` | Convert an investigation result into deterministic Markdown/HTML, then generate a PDF and deliver it through Telegram, ONS email-topic summary, or optional Slack summary |
 | **Explore schema** | `list_log_sources`, `list_fields`, `list_entities`, `list_parsers`, `list_labels` | Discover what log data is available |
 | **Visualize** | `visualize` | Generate pie, bar, line, area, table, tile, treemap, heatmap, histogram charts |
 | **Dashboards** | `create_dashboard`, `add_dashboard_tile`, `list_dashboards`, `delete_dashboard` | Create OCI Management Dashboards with LA widgets, grid layout, and scope filters |
@@ -310,7 +310,80 @@ P0 behavior:
 - Source is an A1 `InvestigationReport` object only.
 - `report_id` is returned for correlation only; reports are not persisted in P0.
 - Supported sections are `executive_summary`, `timeline`, `top_findings`, `evidence`, `recommended_next_steps`, and `appendix`.
-- Playbook-run reports, session-id reports, PDF generation, and report delivery are separate follow-ups.
+- Playbook-run reports and session-id reports are deferred. To deliver a report, pass the returned `markdown` to `deliver_report`; do not pass `report_id` in P0.
+
+### `deliver_report` — PDF + Telegram / ONS / Slack delivery
+
+Deliver generated report Markdown to the channels users already monitor. Telegram is the default IM path and receives the full PDF when `format` is `pdf` or `both`.
+
+```json
+{
+  "tool": "deliver_report",
+  "report": {
+    "title": "Apache error investigation",
+    "markdown": "# Incident Report\n\n## Executive Summary\nApache errors spiked..."
+  },
+  "channels": ["telegram", "email"],
+  "format": "both",
+  "recipients": {
+    "telegram_chat_id": "-100999",
+    "email_topic_ocid": "ocid1.onstopic.oc1..example"
+  }
+}
+```
+
+Returns `{status, delivered, pdf_path}`. `status` is `sent`, `partial`, or `failed` depending on per-channel results. `delivered[]` contains one row per requested channel with `{channel, status, message_id, artifact, recipient, error?}`.
+
+P0 behavior:
+- Input is inline report Markdown only: `report.markdown` is required. `report_id` lookup is deferred until reports are persisted.
+- `format="pdf"` generates a local PDF and sends it to Telegram as a document. Email and Slack receive the inline summary.
+- `format="markdown"` skips PDF generation and sends inline summaries/messages only.
+- `format="both"` sends the PDF to Telegram and inline summaries to email/Slack.
+- Telegram uploads are rejected before send if the PDF exceeds the 50 MB Bot API document limit.
+- ONS email delivery publishes an inline Markdown/plaintext summary to an OCI Notifications topic. ONS does not attach the PDF and no Object Storage/PAR link is generated in P0.
+- Slack is optional and summary-only via the existing webhook integration. This is suitable for testing with a private/free Slack registration before later Oracle Slack workspace rollout.
+
+Configure defaults in `~/.oci-logan-mcp/config.yaml`:
+
+```yaml
+notifications:
+  telegram:
+    bot_token: "<telegram-bot-token>"
+    default_chat_id: "-100999"
+  ons:
+    default_topic_ocid: "ocid1.onstopic.oc1..example"
+  slack:
+    webhook_url: "https://hooks.slack.com/services/..."
+
+report_delivery:
+  artifact_dir: "/home/opc/.oci-logan-mcp/reports"
+  max_email_body_chars: 8000
+```
+
+Environment overrides:
+
+```bash
+export TELEGRAM_BOT_TOKEN="<telegram-bot-token>"
+export TELEGRAM_CHAT_ID="-100999"
+export OCI_LOGAN_ONS_TOPIC_OCID="ocid1.onstopic.oc1..example"
+export SLACK_WEBHOOK_URL="https://hooks.slack.com/services/..."
+export OCI_LOGAN_REPORT_ARTIFACT_DIR="/home/opc/.oci-logan-mcp/reports"
+export OCI_LOGAN_REPORT_MAX_EMAIL_CHARS=8000
+```
+
+End-to-end incident flow:
+
+```json
+{"tool": "investigate_incident", "query": "'Log Source' = 'Apache Access' | stats count by Status", "time_range": "last_1_hour"}
+```
+
+```json
+{"tool": "generate_incident_report", "investigation": "<A1 response>", "format": "markdown"}
+```
+
+```json
+{"tool": "deliver_report", "report": {"markdown": "<report markdown>", "title": "Apache incident"}, "channels": ["telegram", "email"], "format": "both"}
+```
 
 ### `record_investigation` — save a playbook from the audit trail
 
@@ -519,7 +592,7 @@ of executing:
 - `create_alert`, `update_alert`, `delete_alert`
 - `create_saved_search`, `update_saved_search`, `delete_saved_search`
 - `create_dashboard`, `add_dashboard_tile`, `delete_dashboard`
-- `send_to_slack`, `send_to_telegram`
+- `send_to_slack`, `send_to_telegram`, `deliver_report`
 - `set_compartment`, `set_namespace`, `update_tenancy_context`
 - `save_learned_query`, `remember_preference`, `setup_confirmation_secret`
 - `record_investigation`, `delete_playbook`
