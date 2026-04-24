@@ -62,6 +62,13 @@ Source: [reports-and-playbooks.md](specs/reports-and-playbooks.md), [feature-cat
 - `N1-F3` — `capture_as` chaining so later replay steps can consume earlier step outputs.
 - `N1-F4` — Optional `session_id` parameter on `record_investigation` once N6 supports client-supplied session ids.
 
+#### N3 — Incident report generation
+Source: [reports-and-playbooks.md](specs/reports-and-playbooks.md)
+
+- `N3-F1` — Internal LLM prose synthesis for executive summaries and findings narratives, with provider config, prompt management, cost controls, and fallback behavior.
+- `N3-F2` — `source.playbook_run` report generation once N1 replay exists.
+- `N3-F3` — `source.session_id` report generation once N6 has true per-investigation session boundaries.
+
 ### Triage Toolkit
 
 #### A2 — `diff_time_windows`

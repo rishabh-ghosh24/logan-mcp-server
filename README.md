@@ -128,6 +128,7 @@ Click **Save**, then start a new Codex session to connect.
 | **Query logs** | `run_query`, `run_batch_queries`, `run_saved_search` | Search logs, run multiple queries in parallel, execute saved searches |
 | **Triage diffs** | `diff_time_windows`, `pivot_on_entity`, `ingestion_health`, `parser_failure_triage`, `investigate_incident`, `why_did_this_fire`, `find_rare_events`, `trace_request_id`, `related_dashboards_and_searches` | Compare a query across two time windows; pull all events for an entity across sources; probe per-source ingestion freshness; surface top parser failures; one-call first-cut investigation orchestrator; replay a Logan-managed alarm's historical fire window; surface low-frequency field values for a source; search common request-id / trace-id fields across sources; find existing dashboards and saved searches related to a source, entity, or field |
 | **Investigation playbooks** | `record_investigation`, `list_playbooks`, `get_playbook`, `delete_playbook` | Save the current session's audited tool calls as a named playbook, then list, fetch, or delete recorded playbooks |
+| **Reports** | `generate_incident_report` | Convert an investigation result into deterministic Markdown, with optional HTML rendering |
 | **Explore schema** | `list_log_sources`, `list_fields`, `list_entities`, `list_parsers`, `list_labels` | Discover what log data is available |
 | **Visualize** | `visualize` | Generate pie, bar, line, area, table, tile, treemap, heatmap, histogram charts |
 | **Dashboards** | `create_dashboard`, `add_dashboard_tile`, `list_dashboards`, `delete_dashboard` | Create OCI Management Dashboards with LA widgets, grid layout, and scope filters |
@@ -285,6 +286,30 @@ P0 behavior:
 - Learned-query results come from personal + shared catalogs only; builtin and starter templates are excluded.
 - Saved searches are shortlisted from listing metadata, then the top 10 candidates are rescored using fetched query text.
 - Matching uses existing normalization and fuzzy helpers from `fuzzy_match.py`, so field and source naming variations can still surface relevant resources.
+
+### `generate_incident_report` — deterministic incident report
+
+Convert an `investigate_incident` response into a deterministic Markdown incident report, with optional HTML rendering:
+
+```json
+{
+  "tool": "generate_incident_report",
+  "investigation": {
+    "summary": "Apache errors spiked and parser failures were present.",
+    "anomalous_sources": []
+  },
+  "format": "html",
+  "summary_length": "standard"
+}
+```
+
+Returns `{report_id, markdown, html, metadata, artifacts}`. Markdown is always returned. `html` is populated only when `format="html"`.
+
+P0 behavior:
+- Template-first and deterministic; no internal LLM provider is called.
+- Source is an A1 `InvestigationReport` object only.
+- Supported sections are `executive_summary`, `timeline`, `top_findings`, `evidence`, `recommended_next_steps`, and `appendix`.
+- Playbook-run reports, session-id reports, PDF generation, and report delivery are separate follow-ups.
 
 ### `record_investigation` — save a playbook from the audit trail
 
