@@ -1,0 +1,38 @@
+{
+  "are_partial_results": false,
+  "columns": [
+    {
+      "display_name": "Log Source",
+      "internal_name": "msrcid",
+      "type": "COLUMN",
+      "value_type": "STRING"
+    },
+    {
+      "display_name": "Rare Count(Log Source)",
+      "internal_name": "rareVirtualField1",
+      "type": "COLUMN",
+      "value_type": "LONG"
+    },
+    {
+      "display_name": "Rare Percent(Log Source)",
+      "internal_name": "rareVirtualField1_percent",
+      "type": "COLUMN",
+      "value_type": "FLOAT"
+    }
+  ],
+  "items": [
+    {
+      "Log Source": "OCI Audit Logs",
+      "Rare Count(Log Source)": 130,
+      "Rare Percent(Log Source)": 0.00052547664
+    },
+    {
+      "Log Source": "Kubernetes CronJob Object Logs",
+      "Rare Count(Log Source)": 288,
+      "Rare Percent(Log Source)": 0.001164133
+    }
+  ],
+  "total_count": null,
+  "total_group_count": 38,
+  "total_matched_count": 24739443
+}

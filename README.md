@@ -126,7 +126,7 @@ Click **Save**, then start a new Codex session to connect.
 | Capability | Tools | Examples |
 |---|---|---|
 | **Query logs** | `run_query`, `run_batch_queries`, `run_saved_search` | Search logs, run multiple queries in parallel, execute saved searches |
-| **Triage diffs** | `diff_time_windows`, `pivot_on_entity`, `ingestion_health`, `parser_failure_triage`, `investigate_incident`, `why_did_this_fire`, `trace_request_id`, `related_dashboards_and_searches` | Compare a query across two time windows; pull all events for an entity across sources; probe per-source ingestion freshness; surface top parser failures; one-call first-cut investigation orchestrator; replay a Logan-managed alarm's historical fire window; search common request-id / trace-id fields across sources; find existing dashboards and saved searches related to a source, entity, or field |
+| **Triage diffs** | `diff_time_windows`, `pivot_on_entity`, `ingestion_health`, `parser_failure_triage`, `investigate_incident`, `why_did_this_fire`, `find_rare_events`, `trace_request_id`, `related_dashboards_and_searches` | Compare a query across two time windows; pull all events for an entity across sources; probe per-source ingestion freshness; surface top parser failures; one-call first-cut investigation orchestrator; replay a Logan-managed alarm's historical fire window; surface low-frequency field values for a source; search common request-id / trace-id fields across sources; find existing dashboards and saved searches related to a source, entity, or field |
 | **Explore schema** | `list_log_sources`, `list_fields`, `list_entities`, `list_parsers`, `list_labels` | Discover what log data is available |
 | **Visualize** | `visualize` | Generate pie, bar, line, area, table, tile, treemap, heatmap, histogram charts |
 | **Dashboards** | `create_dashboard`, `add_dashboard_tile`, `list_dashboards`, `delete_dashboard` | Create OCI Management Dashboards with LA widgets, grid layout, and scope filters |
@@ -220,6 +220,34 @@ P0 constraints:
 - `window_before_seconds` defaults to the alarm's `pending_duration`; if that metadata is absent or unparsable, it falls back to 300 seconds.
 - Raw top-row expansion is suppressed when the stored Logan query degrades to an unscoped `*`. In that case the response sets `seed.seed_filter_degraded: true`, returns `top_contributing_rows: []`, and explains the omission via `top_contributing_rows_omitted_reason: "unscoped_seed_filter"`.
 - `dashboard_id` is always `null` in P0; explicit dashboard linkage is deferred.
+
+### `find_rare_events` — surface low-frequency field values
+
+Wrapper around Logan's native `rare` command. Given a source, a field, and a current time window, the tool returns low-frequency values plus one history annotation query for `count_in_history`, `first_seen`, and `last_seen`.
+
+```json
+{
+  "tool": "find_rare_events",
+  "source": "Linux Syslog Logs",
+  "field": "Severity",
+  "time_range": {"time_range": "last_24_hours"}
+}
+```
+
+Returns `{source, field, time_range, history_days, rarity_threshold_percentile, rare_values}` where each entry in `rare_values` carries:
+- `value`
+- `count_in_range`
+- `percent_in_range`
+- `count_in_history`
+- `first_seen`
+- `last_seen`
+
+P0 behavior:
+- Uses Logan's native `rare limit = -1 showcount = true showpercent = true <field>` command for the current window.
+- Uses one follow-up `stats` query for history annotation.
+- `rarity_threshold_percentile` defaults to `5.0`; rows above that percentage are filtered out.
+- `history_days` defaults to `30`, with built-in relative windows for `1`, `2`, `7`, `14`, and `30` days and an absolute fallback for other positive values.
+- Live validation is checked with `scripts/validate_rare_query.py`; the parser aligns sparse grouped responses by declared columns before the wrapper consumes them.
 
 ### `trace_request_id` — stitch request-id events across sources
 

@@ -68,6 +68,8 @@ The P0 tier is organized around four narratives. Every P0 feature ladders into o
 | **A7** | `related_dashboards_and_searches` | T1 | S |
 | **G1** | PII redaction (optional, config-driven, off by default) | T4 | L |
 
+**Implementation update (2026-04-23):** `A3`, `A5`, and `A7` are now shipped in the repo. `G1` remains the unshipped stretch item.
+
 ---
 
 ## 5. Branch strategy

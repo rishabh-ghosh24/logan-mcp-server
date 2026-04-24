@@ -32,6 +32,7 @@ from .ingestion_health import IngestionHealthTool
 from .parser_triage import ParserTriageTool
 from .investigate import InvestigateIncidentTool
 from .alarm_postmortem import WhyDidThisFireTool
+from .rare_events import RareEventsTool
 from .trace_lookup import TraceRequestIdTool
 from .related_resources import RelatedDashboardsAndSearchesTool
 from .budget_tracker import BudgetExceededError
@@ -118,6 +119,7 @@ class MCPHandlers:
             oci_client=oci_client,
             query_engine=self.query_engine,
         )
+        self.find_rare_events_tool = RareEventsTool(self.query_engine)
         self.trace_request_id_tool = TraceRequestIdTool(self.pivot_tool)
         self.validator = QueryValidator(self.schema_manager)
         self.visualization = VisualizationEngine()
@@ -164,6 +166,7 @@ class MCPHandlers:
             "parser_failure_triage": self._parser_failure_triage,
             "investigate_incident": self._investigate_incident,
             "why_did_this_fire": self._why_did_this_fire,
+            "find_rare_events": self._find_rare_events,
             "trace_request_id": self._trace_request_id,
             "related_dashboards_and_searches": self._related_dashboards_and_searches,
             # Visualization
@@ -907,6 +910,101 @@ class MCPHandlers:
                 request_id=request_id,
                 time_range=time_range,
                 id_fields=id_fields,
+            )
+        except BudgetExceededError as e:
+            payload = {
+                "status": "budget_exceeded",
+                "error": str(e),
+                "partial": None,
+                "budget": self._budget_tracker.snapshot().to_dict(),
+            }
+            return [{"type": "text", "text": json.dumps(payload, indent=2, default=str)}]
+        return [{"type": "text", "text": json.dumps(result, indent=2, default=str)}]
+
+    async def _find_rare_events(self, args: Dict) -> List[Dict]:
+        """Run find_rare_events with structured validation and budget errors."""
+        source = args.get("source")
+        if not source or not isinstance(source, str):
+            return [{"type": "text", "text": json.dumps(
+                {
+                    "status": "error",
+                    "error_code": "missing_source",
+                    "error": "source is required and must be a string",
+                },
+                indent=2,
+            )}]
+
+        field = args.get("field")
+        if not field or not isinstance(field, str):
+            return [{"type": "text", "text": json.dumps(
+                {
+                    "status": "error",
+                    "error_code": "missing_field",
+                    "error": "field is required and must be a string",
+                },
+                indent=2,
+            )}]
+
+        time_range = args.get("time_range")
+        if not isinstance(time_range, dict) or not time_range:
+            return [{"type": "text", "text": json.dumps(
+                {
+                    "status": "error",
+                    "error_code": "invalid_time_range",
+                    "error": "time_range is required and must be an object",
+                },
+                indent=2,
+            )}]
+
+        try:
+            rarity_threshold_percentile = float(args.get("rarity_threshold_percentile", 5.0))
+        except (TypeError, ValueError):
+            return [{"type": "text", "text": json.dumps(
+                {
+                    "status": "error",
+                    "error_code": "invalid_rarity_threshold_percentile",
+                    "error": "rarity_threshold_percentile must be a positive number",
+                },
+                indent=2,
+            )}]
+        if rarity_threshold_percentile <= 0 or rarity_threshold_percentile > 100:
+            return [{"type": "text", "text": json.dumps(
+                {
+                    "status": "error",
+                    "error_code": "invalid_rarity_threshold_percentile",
+                    "error": "rarity_threshold_percentile must be > 0 and <= 100",
+                },
+                indent=2,
+            )}]
+
+        try:
+            history_days = int(args.get("history_days", 30))
+        except (TypeError, ValueError):
+            return [{"type": "text", "text": json.dumps(
+                {
+                    "status": "error",
+                    "error_code": "invalid_history_days",
+                    "error": "history_days must be a positive integer",
+                },
+                indent=2,
+            )}]
+        if history_days <= 0:
+            return [{"type": "text", "text": json.dumps(
+                {
+                    "status": "error",
+                    "error_code": "invalid_history_days",
+                    "error": "history_days must be a positive integer",
+                },
+                indent=2,
+            )}]
+
+        try:
+            result = await self.find_rare_events_tool.run(
+                source=source,
+                field=field,
+                time_range=time_range,
+                rarity_threshold_percentile=rarity_threshold_percentile,
+                history_days=history_days,
             )
         except BudgetExceededError as e:
             payload = {

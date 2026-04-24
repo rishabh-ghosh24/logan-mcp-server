@@ -1,7 +1,11 @@
 """Exhaustive tests for OCI Log Analytics client — especially pagination."""
 
-import pytest
+import json
+from pathlib import Path
+from types import SimpleNamespace
 from unittest.mock import MagicMock, AsyncMock, patch, PropertyMock
+
+import pytest
 
 from oci_logan_mcp.client import OCILogAnalyticsClient
 from oci_logan_mcp.config import Settings
@@ -690,6 +694,26 @@ class TestSerializeEntityTypes:
 class TestParseQueryResponse:
     """Test _parse_query_response extraction."""
 
+    @staticmethod
+    def _load_query_aggregation_fixture(name: str):
+        base = Path(__file__).parent / "fixtures"
+        with open(base / name) as f:
+            payload = json.load(f)
+
+        def convert(value, keep_dict=False):
+            if isinstance(value, dict):
+                if keep_dict:
+                    return {k: convert(v) for k, v in value.items()}
+                return SimpleNamespace(**{
+                    k: convert(v, keep_dict=(k == "items"))
+                    for k, v in value.items()
+                })
+            if isinstance(value, list):
+                return [convert(v, keep_dict=keep_dict) for v in value]
+            return value
+
+        return convert(payload)
+
     def test_extracts_columns(self, client):
         data = MagicMock()
         col = MagicMock()
@@ -727,6 +751,40 @@ class TestParseQueryResponse:
 
         result = client._parse_query_response(data)
         assert result["rows"] == [["ERROR", 42]]
+
+    def test_aligns_dict_items_to_declared_columns(self, client):
+        data = self._load_query_aggregation_fixture("query_aggregation_good_stats_log_source.json")
+
+        result = client._parse_query_response(data)
+
+        assert result["rows"] == [
+            ["APEX Oracle Unified DB Audit Log Source", 63536],
+            ["Exadata Metrics", 2155815],
+        ]
+
+    def test_fills_missing_sparse_dict_fields_with_none(self, client):
+        data = self._load_query_aggregation_fixture("query_aggregation_stats_rare_severity_single_group.json")
+
+        result = client._parse_query_response(data)
+
+        assert result["rows"] == [[
+            None,
+            478150,
+            1776824082000,
+            1776910473000,
+            None,
+            None,
+        ]]
+
+    def test_parses_multi_group_rare_rows_with_display_name_keys(self, client):
+        data = self._load_query_aggregation_fixture("query_aggregation_raw_rare_log_source.json")
+
+        result = client._parse_query_response(data)
+
+        assert result["rows"] == [
+            ["OCI Audit Logs", 130, 0.00052547664],
+            ["Kubernetes CronJob Object Logs", 288, 0.001164133],
+        ]
 
     def test_empty_response(self, client):
         data = MagicMock()

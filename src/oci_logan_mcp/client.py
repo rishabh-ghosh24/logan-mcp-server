@@ -273,7 +273,17 @@ class OCILogAnalyticsClient:
         rows = []
         if hasattr(data, "items") and data.items:
             for item in data.items:
-                if hasattr(item, "values"):
+                if isinstance(item, dict):
+                    if columns:
+                        row = []
+                        for col in columns:
+                            name = col["name"]
+                            internal_name = col["internal_name"]
+                            row.append(item.get(name, item.get(internal_name)))
+                        rows.append(row)
+                    else:
+                        rows.append(list(item.values()))
+                elif hasattr(item, "values"):
                     values = item.values
                     if callable(values):
                         rows.append(list(values()))
@@ -281,8 +291,6 @@ class OCILogAnalyticsClient:
                         rows.append(list(values))
                     else:
                         rows.append([values])
-                elif isinstance(item, dict):
-                    rows.append(list(item.values()))
 
         return {
             "columns": columns,

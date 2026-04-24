@@ -162,6 +162,7 @@ class TestToolRouting:
             "export_results", "set_compartment", "set_namespace",
             "get_current_context", "list_compartments", "test_connection",
             "find_compartment", "get_query_examples", "get_log_summary",
+            "find_rare_events",
             "trace_request_id",
             "related_dashboards_and_searches",
             "setup_confirmation_secret",
@@ -1955,6 +1956,140 @@ class TestTraceRequestId:
         assert "bytes limit hit" in payload["error"]
         assert "budget" in payload
 
+
+class TestFindRareEvents:
+    @pytest.mark.asyncio
+    async def test_routes_through_handler(self, handlers):
+        handlers.find_rare_events_tool.run = AsyncMock(return_value={
+            "source": "Linux Syslog Logs",
+            "field": "Severity",
+            "time_range": {"time_range": "last_24_hours"},
+            "history_days": 30,
+            "rarity_threshold_percentile": 5.0,
+            "rare_values": [],
+        })
+
+        result = await handlers.handle_tool_call(
+            "find_rare_events",
+            {
+                "source": "Linux Syslog Logs",
+                "field": "Severity",
+                "time_range": {"time_range": "last_24_hours"},
+            },
+        )
+
+        payload = json.loads(result[0]["text"])
+        assert payload["field"] == "Severity"
+        handlers.find_rare_events_tool.run.assert_awaited_once_with(
+            source="Linux Syslog Logs",
+            field="Severity",
+            time_range={"time_range": "last_24_hours"},
+            rarity_threshold_percentile=5.0,
+            history_days=30,
+        )
+
+    @pytest.mark.asyncio
+    async def test_missing_source_returns_structured_error(self, handlers):
+        result = await handlers.handle_tool_call(
+            "find_rare_events",
+            {"field": "Severity", "time_range": {"time_range": "last_24_hours"}},
+        )
+
+        payload = json.loads(result[0]["text"])
+        assert payload["status"] == "error"
+        assert payload["error_code"] == "missing_source"
+
+    @pytest.mark.asyncio
+    async def test_missing_field_returns_structured_error(self, handlers):
+        result = await handlers.handle_tool_call(
+            "find_rare_events",
+            {"source": "Linux Syslog Logs", "time_range": {"time_range": "last_24_hours"}},
+        )
+
+        payload = json.loads(result[0]["text"])
+        assert payload["status"] == "error"
+        assert payload["error_code"] == "missing_field"
+
+    @pytest.mark.asyncio
+    async def test_invalid_time_range_returns_structured_error(self, handlers):
+        result = await handlers.handle_tool_call(
+            "find_rare_events",
+            {"source": "Linux Syslog Logs", "field": "Severity", "time_range": "last_24_hours"},
+        )
+
+        payload = json.loads(result[0]["text"])
+        assert payload["status"] == "error"
+        assert payload["error_code"] == "invalid_time_range"
+
+    @pytest.mark.asyncio
+    async def test_invalid_threshold_returns_structured_error(self, handlers):
+        result = await handlers.handle_tool_call(
+            "find_rare_events",
+            {
+                "source": "Linux Syslog Logs",
+                "field": "Severity",
+                "time_range": {"time_range": "last_24_hours"},
+                "rarity_threshold_percentile": 0,
+            },
+        )
+
+        payload = json.loads(result[0]["text"])
+        assert payload["status"] == "error"
+        assert payload["error_code"] == "invalid_rarity_threshold_percentile"
+
+    @pytest.mark.asyncio
+    async def test_threshold_above_hundred_returns_structured_error(self, handlers):
+        result = await handlers.handle_tool_call(
+            "find_rare_events",
+            {
+                "source": "Linux Syslog Logs",
+                "field": "Severity",
+                "time_range": {"time_range": "last_24_hours"},
+                "rarity_threshold_percentile": 101,
+            },
+        )
+
+        payload = json.loads(result[0]["text"])
+        assert payload["status"] == "error"
+        assert payload["error_code"] == "invalid_rarity_threshold_percentile"
+
+    @pytest.mark.asyncio
+    async def test_invalid_history_days_returns_structured_error(self, handlers):
+        result = await handlers.handle_tool_call(
+            "find_rare_events",
+            {
+                "source": "Linux Syslog Logs",
+                "field": "Severity",
+                "time_range": {"time_range": "last_24_hours"},
+                "history_days": 0,
+            },
+        )
+
+        payload = json.loads(result[0]["text"])
+        assert payload["status"] == "error"
+        assert payload["error_code"] == "invalid_history_days"
+
+    @pytest.mark.asyncio
+    async def test_budget_exceeded_returns_structured_payload(self, handlers):
+        from oci_logan_mcp.budget_tracker import BudgetExceededError
+
+        handlers.find_rare_events_tool.run = AsyncMock(
+            side_effect=BudgetExceededError("bytes limit hit")
+        )
+
+        result = await handlers.handle_tool_call(
+            "find_rare_events",
+            {
+                "source": "Linux Syslog Logs",
+                "field": "Severity",
+                "time_range": {"time_range": "last_24_hours"},
+            },
+        )
+
+        payload = json.loads(result[0]["text"])
+        assert payload["status"] == "budget_exceeded"
+        assert "bytes limit hit" in payload["error"]
+        assert "budget" in payload
 
 class TestRelatedDashboardsAndSearches:
     @pytest.mark.asyncio
