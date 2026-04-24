@@ -128,6 +128,7 @@ generate_incident_report(
 
 ### Deferred to P1
 - Internal LLM prose synthesis for executive summaries and findings narratives.
+- Report persistence / `report_id` lookup. In P0, `report_id` is a returned correlation id only; clients must store the report body if they need it later.
 - `source.playbook_run` — requires N1 replay.
 - `source.session_id` — requires a true per-investigation session boundary, not the process-scoped grouping N6 provides in P0.
 

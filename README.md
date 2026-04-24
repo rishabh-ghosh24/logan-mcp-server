@@ -308,6 +308,7 @@ Returns `{report_id, markdown, html, metadata, artifacts}`. Markdown is always r
 P0 behavior:
 - Template-first and deterministic; no internal LLM provider is called.
 - Source is an A1 `InvestigationReport` object only.
+- `report_id` is returned for correlation only; reports are not persisted in P0.
 - Supported sections are `executive_summary`, `timeline`, `top_findings`, `evidence`, `recommended_next_steps`, and `appendix`.
 - Playbook-run reports, session-id reports, PDF generation, and report delivery are separate follow-ups.
 

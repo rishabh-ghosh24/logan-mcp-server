@@ -68,6 +68,7 @@ Source: [reports-and-playbooks.md](specs/reports-and-playbooks.md)
 - `N3-F1` — Internal LLM prose synthesis for executive summaries and findings narratives, with provider config, prompt management, cost controls, and fallback behavior.
 - `N3-F2` — `source.playbook_run` report generation once N1 replay exists.
 - `N3-F3` — `source.session_id` report generation once N6 has true per-investigation session boundaries.
+- `N3-F4` — Report persistence / `report_id` lookup so later delivery workflows can fetch a generated report by id instead of requiring the client to resend the report body.
 
 ### Triage Toolkit
 
