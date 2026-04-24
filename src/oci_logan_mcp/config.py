@@ -86,9 +86,23 @@ class TelegramConfig:
 
 
 @dataclass
+class ONSConfig:
+    default_topic_ocid: str = ""
+
+
+@dataclass
 class NotificationsConfig:
     slack: SlackConfig = field(default_factory=SlackConfig)
     telegram: TelegramConfig = field(default_factory=TelegramConfig)
+    ons: ONSConfig = field(default_factory=ONSConfig)
+
+
+@dataclass
+class ReportDeliveryConfig:
+    artifact_dir: Path = field(
+        default_factory=lambda: Path.home() / ".oci-logan-mcp" / "reports"
+    )
+    max_email_body_chars: int = 8000
 
 
 @dataclass
@@ -137,6 +151,7 @@ class Settings:
     cost: CostConfig = field(default_factory=CostConfig)
     budget: BudgetConfig = field(default_factory=BudgetConfig)
     ingestion_health: IngestionHealthConfig = field(default_factory=IngestionHealthConfig)
+    report_delivery: ReportDeliveryConfig = field(default_factory=ReportDeliveryConfig)
     read_only: bool = False
     transcript_dir: Path = field(default_factory=lambda: Path.home() / ".oci-logan-mcp" / "transcripts")
 
@@ -182,6 +197,13 @@ class Settings:
                     "bot_token": self.notifications.telegram.bot_token,
                     "default_chat_id": self.notifications.telegram.default_chat_id,
                 },
+                "ons": {
+                    "default_topic_ocid": self.notifications.ons.default_topic_ocid,
+                },
+            },
+            "report_delivery": {
+                "artifact_dir": str(self.report_delivery.artifact_dir),
+                "max_email_body_chars": self.report_delivery.max_email_body_chars,
             },
             "cost": {
                 "cost_per_gb_usd": self.cost.cost_per_gb_usd,
@@ -354,6 +376,21 @@ def _parse_config(data: Dict[str, Any]) -> Settings:
                 bot_token=tg_data.get("bot_token", ""),
                 default_chat_id=tg_data.get("default_chat_id", ""),
             )
+        if ons_data := notif_data.get("ons"):
+            settings.notifications.ons = ONSConfig(
+                default_topic_ocid=ons_data.get("default_topic_ocid", ""),
+            )
+
+    if rd_data := data.get("report_delivery"):
+        settings.report_delivery = ReportDeliveryConfig(
+            artifact_dir=Path(
+                rd_data.get("artifact_dir", settings.report_delivery.artifact_dir)
+            ),
+            max_email_body_chars=rd_data.get(
+                "max_email_body_chars",
+                settings.report_delivery.max_email_body_chars,
+            ),
+        )
 
     if td := data.get("transcript_dir"):
         settings.transcript_dir = Path(td)
@@ -393,6 +430,12 @@ def _apply_env_overrides(settings: Settings) -> Settings:
         settings.notifications.telegram.bot_token = v
     if v := os.environ.get("TELEGRAM_CHAT_ID"):
         settings.notifications.telegram.default_chat_id = v
+    if v := os.environ.get("OCI_LOGAN_ONS_TOPIC_OCID"):
+        settings.notifications.ons.default_topic_ocid = v
+    if v := os.environ.get("OCI_LOGAN_REPORT_ARTIFACT_DIR"):
+        settings.report_delivery.artifact_dir = Path(v)
+    if v := os.environ.get("OCI_LOGAN_REPORT_MAX_EMAIL_CHARS"):
+        settings.report_delivery.max_email_body_chars = int(v)
 
     if (raw := os.environ.get("OCI_LOGAN_MCP_READ_ONLY")) is not None and raw != "":
         normalized = raw.strip().lower()

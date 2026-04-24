@@ -1,16 +1,18 @@
 """Tests for NotificationService."""
 import json
 import pytest
-from unittest.mock import patch, MagicMock
+from unittest.mock import patch, MagicMock, AsyncMock
+from pathlib import Path
 from oci_logan_mcp.notification_service import NotificationService
 from oci_logan_mcp.config import Settings, SlackConfig, TelegramConfig, NotificationsConfig
 
 
-def make_settings(slack_url="", telegram_token="", telegram_chat=""):
+def make_settings(slack_url="", telegram_token="", telegram_chat="", ons_topic=""):
     s = Settings()
     s.notifications.slack.webhook_url = slack_url
     s.notifications.telegram.bot_token = telegram_token
     s.notifications.telegram.default_chat_id = telegram_chat
+    s.notifications.ons.default_topic_ocid = ons_topic
     return s
 
 
@@ -104,6 +106,88 @@ class TestSendToTelegram:
         with patch("urllib.request.urlopen", side_effect=fake_urlopen):
             await svc.send_to_telegram(message="hi", chat_id="-111")
         assert captured["body"]["chat_id"] == "-111"
+
+    @pytest.mark.asyncio
+    async def test_sends_telegram_document(self, tmp_path):
+        pdf = tmp_path / "report.pdf"
+        pdf.write_bytes(b"%PDF-1.4 test")
+        svc = NotificationService(make_settings(
+            telegram_token="123:ABC", telegram_chat="-100999"
+        ))
+
+        captured = {}
+
+        def fake_urlopen(req, timeout=None):
+            captured["url"] = req.full_url
+            captured["content_type"] = req.headers["Content-type"]
+            captured["body"] = req.data
+            resp = MagicMock()
+            resp.__enter__ = lambda s: s
+            resp.__exit__ = MagicMock(return_value=False)
+            resp.read.return_value = json.dumps({
+                "ok": True,
+                "result": {"message_id": 44},
+            }).encode()
+            return resp
+
+        with patch("urllib.request.urlopen", side_effect=fake_urlopen):
+            result = await svc.send_telegram_document(
+                file_path=pdf,
+                caption="Incident summary",
+            )
+
+        assert result["status"] == "sent"
+        assert result["message_id"] == "44"
+        assert captured["url"].endswith("/sendDocument")
+        assert "multipart/form-data" in captured["content_type"]
+        assert b'name="chat_id"' in captured["body"]
+        assert b'name="document"; filename="report.pdf"' in captured["body"]
+        assert b"%PDF-1.4 test" in captured["body"]
+
+    @pytest.mark.asyncio
+    async def test_sends_telegram_document_requires_existing_file(self, tmp_path):
+        svc = NotificationService(make_settings(
+            telegram_token="123:ABC", telegram_chat="-100999"
+        ))
+        with pytest.raises(ValueError, match="file"):
+            await svc.send_telegram_document(file_path=tmp_path / "missing.pdf")
+
+
+class TestSendToOnsEmail:
+    @pytest.mark.asyncio
+    async def test_raises_if_ons_client_missing(self):
+        svc = NotificationService(make_settings(ons_topic="ocid1.onstopic.oc1..abc"))
+        with pytest.raises(ValueError, match="OCI client"):
+            await svc.send_to_ons_email(title="Report", body="Body")
+
+    @pytest.mark.asyncio
+    async def test_raises_if_topic_missing(self):
+        oci_client = MagicMock()
+        svc = NotificationService(make_settings(), oci_client=oci_client)
+        with pytest.raises(ValueError, match="ONS topic"):
+            await svc.send_to_ons_email(title="Report", body="Body")
+
+    @pytest.mark.asyncio
+    async def test_publishes_to_ons_topic(self):
+        oci_client = MagicMock()
+        oci_client.publish_notification = AsyncMock(
+            return_value={"status": "sent", "message_id": "mid-1"}
+        )
+        svc = NotificationService(
+            make_settings(ons_topic="ocid1.onstopic.oc1..abc"),
+            oci_client=oci_client,
+        )
+
+        result = await svc.send_to_ons_email(title="Report", body="Body")
+
+        assert result["status"] == "sent"
+        assert result["destination"] == "email"
+        assert result["message_id"] == "mid-1"
+        oci_client.publish_notification.assert_awaited_once_with(
+            topic_id="ocid1.onstopic.oc1..abc",
+            title="Report",
+            body="Body",
+        )
 
 
 class TestTruncation:
