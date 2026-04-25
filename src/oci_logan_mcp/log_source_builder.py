@@ -197,11 +197,14 @@ def build_field_mappings(
 
 
 def _sorted_udf_fields(available: set) -> List[str]:
-    def sort_key(name: str) -> Tuple[str, int, str]:
+    family_order = {"udfs": 0, "udff": 1, "udfl": 2, "udfd": 3}
+
+    def sort_key(name: str) -> Tuple[int, int, str]:
         match = re.match(r"^(udfs|udff|udfd|udfl)(\d+)$", name)
         if not match:
-            return ("zzzz", 10**9, name)
-        return (match.group(1), int(match.group(2)), name)
+            return (10**9, 10**9, name)
+        family = match.group(1)
+        return (family_order.get(family, 10**9), int(match.group(2)), name)
 
     return sorted((name for name in available if re.match(r"^udf[sdfl]\d+$", name)), key=sort_key)
 
@@ -311,6 +314,30 @@ def _extract_count(result: Dict[str, Any]) -> int:
         return int(rows[0][0] or 0)
     except (TypeError, ValueError):
         return 0
+
+
+def _extract_upload_reference(result: Dict[str, Any]) -> Optional[str]:
+    if not isinstance(result, dict):
+        return None
+    data = result.get("data")
+    if isinstance(data, dict) and data.get("reference") is not None:
+        return str(data["reference"])
+    if result.get("reference") is not None:
+        return str(result["reference"])
+    return None
+
+
+def _upload_file_status(file_info: Dict[str, Any]) -> str:
+    return str(file_info.get("status") or "").upper()
+
+
+def _upload_processing_complete(upload_files: Sequence[Dict[str, Any]]) -> bool:
+    terminal = {"FAILED", "SUCCESS", "SUCCESSFUL", "SUCCEEDED"}
+    return bool(upload_files) and all(_upload_file_status(f) in terminal for f in upload_files)
+
+
+def _upload_processing_failed(upload_files: Sequence[Dict[str, Any]]) -> bool:
+    return any(_upload_file_status(f) == "FAILED" for f in upload_files)
 
 
 def _item_name(item: Any) -> str:
@@ -429,6 +456,17 @@ class LogSourceFromSampleTool:
             char_encoding=char_encoding,
         )
 
+        attempts = max(1, int(poll_attempts or 1))
+        upload_reference = _extract_upload_reference(upload_result)
+        upload_files = []
+        if upload_reference:
+            for attempt in range(attempts):
+                upload_files = await self.oci_client.list_upload_files(upload_reference)
+                if _upload_processing_complete(upload_files) or attempt == attempts - 1:
+                    break
+                if poll_interval_seconds:
+                    await asyncio.sleep(poll_interval_seconds)
+
         upload_filter_field = "Upload Name"
         upload_filter = (
             f"{_quote_lql_field(upload_filter_field)} = '{_quote_lql(effective_upload_name)}'"
@@ -438,7 +476,6 @@ class LogSourceFromSampleTool:
         parse_failed_query = f"{verification_filter} AND 'Parse Failed' = 1 | stats count"
 
         ingested_count = 0
-        attempts = max(1, int(poll_attempts or 1))
         for attempt in range(attempts):
             count_result = await self.query_engine.execute(
                 query=count_query,
@@ -485,7 +522,9 @@ class LogSourceFromSampleTool:
                     "query": field_query,
                 })
 
-        if parse_failed_count > 0:
+        if _upload_processing_failed(upload_files):
+            status = "FAIL"
+        elif parse_failed_count > 0:
             status = "FAIL"
         elif ingested_count <= 0:
             status = "INDETERMINATE"
@@ -525,6 +564,8 @@ class LogSourceFromSampleTool:
             "verification": {
                 "time_range": verification_time_range,
                 "upload_name": effective_upload_name,
+                "upload_reference": upload_reference,
+                "upload_files": upload_files,
                 "upload_filter_field": upload_filter_field,
                 "timestamp_configured": False,
                 "timestamp_warning": (

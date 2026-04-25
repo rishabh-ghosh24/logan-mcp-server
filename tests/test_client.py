@@ -303,6 +303,53 @@ class TestCustomContentAndUpload:
         assert call.kwargs["upload_name"] == "sample-upload"
         assert result["data"] == {"upload": "ok"}
 
+    @pytest.mark.asyncio
+    async def test_list_upload_files_returns_processing_status(self, client):
+        item = MagicMock()
+        item.reference = "file-ref"
+        item.name = "sample.ndjson"
+        item.status = "FAILED"
+        item.total_chunks = 0
+        item.chunks_consumed = 0
+        item.chunks_success = 0
+        item.chunks_fail = 0
+        item.time_started = "2026-04-25T23:30:59+00:00"
+        item.source_name = "App Logs"
+        item.entity_type = "Host (Linux)"
+        item.entity_name = "app-host"
+        item.log_group_id = "ocid1.loganalyticsloggroup.oc1..test"
+        item.log_group_name = "Testlogsources"
+        item.failure_details = "Unexpected error"
+        response = MagicMock()
+        response.data = MagicMock()
+        response.data.items = [item]
+        client._la_client.list_upload_files.return_value = response
+
+        result = await client.list_upload_files("upload-ref")
+
+        client._la_client.list_upload_files.assert_called_once_with(
+            namespace_name="testns",
+            upload_reference="upload-ref",
+        )
+        assert result == [
+            {
+                "reference": "file-ref",
+                "name": "sample.ndjson",
+                "status": "FAILED",
+                "total_chunks": 0,
+                "chunks_consumed": 0,
+                "chunks_success": 0,
+                "chunks_fail": 0,
+                "time_started": "2026-04-25T23:30:59+00:00",
+                "source_name": "App Logs",
+                "entity_type": "Host (Linux)",
+                "entity_name": "app-host",
+                "log_group_id": "ocid1.loganalyticsloggroup.oc1..test",
+                "log_group_name": "Testlogsources",
+                "failure_details": "Unexpected error",
+            }
+        ]
+
 
 class TestListEntitiesPagination:
     """Test list_entities uses oci.pagination for full results."""

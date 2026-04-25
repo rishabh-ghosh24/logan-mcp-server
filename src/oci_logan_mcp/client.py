@@ -435,6 +435,37 @@ class OCILogAnalyticsClient:
             "headers": dict(response.headers),
         }
 
+    async def list_upload_files(self, upload_reference: str) -> List[Dict[str, Any]]:
+        """List file-level processing status for a Log Analytics upload."""
+        await self._rate_limiter.acquire()
+
+        response = await asyncio.to_thread(
+            self._la_client.list_upload_files,
+            namespace_name=self._namespace,
+            upload_reference=upload_reference,
+        )
+        self._rate_limiter.reset()
+
+        return [
+            {
+                "reference": getattr(f, "reference", None),
+                "name": getattr(f, "name", None),
+                "status": getattr(f, "status", None),
+                "total_chunks": getattr(f, "total_chunks", None),
+                "chunks_consumed": getattr(f, "chunks_consumed", None),
+                "chunks_success": getattr(f, "chunks_success", None),
+                "chunks_fail": getattr(f, "chunks_fail", None),
+                "time_started": getattr(f, "time_started", None),
+                "source_name": getattr(f, "source_name", None),
+                "entity_type": getattr(f, "entity_type", None),
+                "entity_name": getattr(f, "entity_name", None),
+                "log_group_id": getattr(f, "log_group_id", None),
+                "log_group_name": getattr(f, "log_group_name", None),
+                "failure_details": getattr(f, "failure_details", None),
+            }
+            for f in _get_items(response.data)
+        ]
+
     async def list_entities(self, entity_type: Optional[str] = None) -> List[Dict[str, Any]]:
         """List monitored entities (auto-paginates across all pages)."""
         await self._rate_limiter.acquire()

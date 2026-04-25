@@ -90,6 +90,20 @@ def test_build_field_mappings_prefers_explicit_and_does_not_auto_map_time():
     assert skipped == []
 
 
+def test_build_field_mappings_uses_safe_udf_fallback_order():
+    mappings, skipped = build_field_mappings(
+        [("first", "$.first"), ("second", "$.second"), ("third", "$.third")],
+        [{"name": "udfd1"}, {"name": "udff1"}, {"name": "udfs2"}, {"name": "udfs1"}],
+    )
+
+    assert mappings == {
+        "first": "udfs1",
+        "second": "udfs2",
+        "third": "udff1",
+    }
+    assert skipped == []
+
+
 def test_build_custom_content_zip_contains_parser_and_source_xml():
     payload = build_custom_content_zip(
         source_name="BlueCat Edge DNS Logs",
@@ -206,6 +220,44 @@ async def test_create_from_sample_fails_when_parse_failures_are_seen():
 
     assert result["status"] == "FAIL"
     assert result["verification"]["parse_failed_count"] == 1
+
+
+@pytest.mark.asyncio
+async def test_create_from_sample_fails_when_upload_processing_fails():
+    oci_client = AsyncMock()
+    oci_client.list_parsers.return_value = []
+    oci_client.list_log_sources.return_value = []
+    oci_client.list_fields.return_value = [{"name": "event"}, {"name": "udfs1"}]
+    oci_client.import_custom_content.return_value = {}
+    oci_client.upload_log_file.return_value = {"data": {"reference": "upload-ref"}}
+    oci_client.list_upload_files.return_value = [
+        {
+            "name": "sample.ndjson",
+            "status": "FAILED",
+            "failure_details": "Unexpected error encountered",
+        }
+    ]
+
+    query_engine = AsyncMock()
+    query_engine.execute.side_effect = [
+        {"data": {"rows": [[0]]}},
+        {"data": {"rows": [[0]]}},
+    ]
+
+    tool = LogSourceFromSampleTool(oci_client=oci_client, query_engine=query_engine)
+    result = await tool.create_from_sample(
+        source_name="App Logs",
+        sample_logs=['{"event":"x"}'],
+        log_group_id="ocid1.loganalyticsloggroup.oc1..test",
+        upload_name="sample-upload",
+        acknowledge_data_review=True,
+        poll_attempts=1,
+        poll_interval_seconds=0,
+    )
+
+    assert result["status"] == "FAIL"
+    assert result["verification"]["upload_reference"] == "upload-ref"
+    assert result["verification"]["upload_files"][0]["status"] == "FAILED"
 
 
 @pytest.mark.asyncio
