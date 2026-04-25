@@ -459,9 +459,18 @@ class LogSourceFromSampleTool:
         attempts = max(1, int(poll_attempts or 1))
         upload_reference = _extract_upload_reference(upload_result)
         upload_files = []
+        upload_status_errors = []
         if upload_reference:
             for attempt in range(attempts):
-                upload_files = await self.oci_client.list_upload_files(upload_reference)
+                try:
+                    upload_files = await self.oci_client.list_upload_files(upload_reference)
+                except Exception as exc:
+                    upload_status_errors.append(str(exc))
+                    if attempt == attempts - 1:
+                        break
+                    if poll_interval_seconds:
+                        await asyncio.sleep(poll_interval_seconds)
+                    continue
                 if _upload_processing_complete(upload_files) or attempt == attempts - 1:
                     break
                 if poll_interval_seconds:
@@ -566,6 +575,7 @@ class LogSourceFromSampleTool:
                 "upload_name": effective_upload_name,
                 "upload_reference": upload_reference,
                 "upload_files": upload_files,
+                "upload_status_errors": upload_status_errors,
                 "upload_filter_field": upload_filter_field,
                 "timestamp_configured": False,
                 "timestamp_warning": (

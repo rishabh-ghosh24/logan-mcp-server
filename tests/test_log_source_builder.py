@@ -261,6 +261,42 @@ async def test_create_from_sample_fails_when_upload_processing_fails():
 
 
 @pytest.mark.asyncio
+async def test_create_from_sample_retries_transient_upload_status_errors():
+    oci_client = AsyncMock()
+    oci_client.list_parsers.return_value = []
+    oci_client.list_log_sources.return_value = []
+    oci_client.list_fields.return_value = [{"name": "event"}, {"name": "udfs1"}]
+    oci_client.import_custom_content.return_value = {}
+    oci_client.upload_log_file.return_value = {"data": {"reference": "upload-ref"}}
+    oci_client.list_upload_files.side_effect = [
+        Exception("upload not visible yet"),
+        [{"name": "sample.ndjson", "status": "SUCCESSFUL"}],
+    ]
+
+    query_engine = AsyncMock()
+    query_engine.execute.side_effect = [
+        {"data": {"rows": [[1]]}},
+        {"data": {"rows": [[0]]}},
+        {"data": {"rows": [[1]]}},
+    ]
+
+    tool = LogSourceFromSampleTool(oci_client=oci_client, query_engine=query_engine)
+    result = await tool.create_from_sample(
+        source_name="App Logs",
+        sample_logs=['{"event":"x"}'],
+        log_group_id="ocid1.loganalyticsloggroup.oc1..test",
+        upload_name="sample-upload",
+        acknowledge_data_review=True,
+        poll_attempts=2,
+        poll_interval_seconds=0,
+    )
+
+    assert result["status"] == "PASS"
+    assert result["verification"]["upload_status_errors"] == ["upload not visible yet"]
+    assert result["verification"]["upload_files"][0]["status"] == "SUCCESSFUL"
+
+
+@pytest.mark.asyncio
 async def test_create_from_sample_requires_data_review_acknowledgement():
     tool = LogSourceFromSampleTool(oci_client=AsyncMock(), query_engine=AsyncMock())
 
