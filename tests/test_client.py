@@ -1,6 +1,7 @@
 """Exhaustive tests for OCI Log Analytics client — especially pagination."""
 
 import json
+from io import BytesIO
 from pathlib import Path
 from types import SimpleNamespace
 from unittest.mock import MagicMock, AsyncMock, patch, PropertyMock
@@ -254,6 +255,53 @@ class TestListFieldsPagination:
 
         call_kwargs = mock_paginate.call_args.kwargs
         assert "source_name" not in call_kwargs
+
+
+class TestCustomContentAndUpload:
+    """Test wrappers used by create_log_source_from_sample."""
+
+    @pytest.mark.asyncio
+    async def test_import_custom_content_wraps_zip_bytes(self, client):
+        response = MagicMock()
+        response.data = MagicMock()
+        response.headers = {"opc-request-id": "req1"}
+
+        with patch("oci_logan_mcp.client.oci.util.to_dict", return_value={"ok": True}):
+            client._la_client.import_custom_content.return_value = response
+            result = await client.import_custom_content(b"zip-bytes", overwrite=True)
+
+        call = client._la_client.import_custom_content.call_args
+        assert call.kwargs["namespace_name"] == "testns"
+        assert isinstance(call.kwargs["import_custom_content_file_body"], BytesIO)
+        assert call.kwargs["import_custom_content_file_body"].getvalue() == b"zip-bytes"
+        assert call.kwargs["is_overwrite"] is True
+        assert result["data"] == {"ok": True}
+        assert result["headers"]["opc-request-id"] == "req1"
+
+    @pytest.mark.asyncio
+    async def test_upload_log_file_sends_content_to_source_and_log_group(self, client):
+        response = MagicMock()
+        response.data = MagicMock()
+        response.headers = {"opc-request-id": "req2"}
+
+        with patch("oci_logan_mcp.client.oci.util.to_dict", return_value={"upload": "ok"}):
+            client._la_client.upload_log_file.return_value = response
+            result = await client.upload_log_file(
+                source_name="App Logs",
+                filename="sample.ndjson",
+                log_group_id="ocid1.loganalyticsloggroup.oc1..test",
+                content='{"event":"x"}\n',
+                upload_name="sample-upload",
+            )
+
+        call = client._la_client.upload_log_file.call_args
+        assert call.kwargs["namespace_name"] == "testns"
+        assert call.kwargs["log_source_name"] == "App Logs"
+        assert call.kwargs["filename"] == "sample.ndjson"
+        assert call.kwargs["opc_meta_loggrpid"] == "ocid1.loganalyticsloggroup.oc1..test"
+        assert call.kwargs["upload_log_file_body"].getvalue() == b'{"event":"x"}\n'
+        assert call.kwargs["upload_name"] == "sample-upload"
+        assert result["data"] == {"upload": "ok"}
 
 
 class TestListEntitiesPagination:

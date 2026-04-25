@@ -23,6 +23,14 @@ class ValidationResult:
 class QueryValidator:
     """Validates queries and provides intelligent suggestions."""
 
+    SYNTHETIC_FIELDS = frozenset({
+        "Log Source",
+        "Original Log Content",
+        "Parse Failed",
+        "Time",
+        "Upload Name",
+    })
+
     OPERATORS = [
         "where", "stats", "timestats", "sort", "head", "tail",
         "fields", "rename", "eval", "lookup", "join", "dedup",
@@ -118,6 +126,7 @@ class QueryValidator:
             return errors, suggestions, fixed_query
 
         available_set = set(f.lower() for f in available_fields)
+        available_set.update(f.lower() for f in self.SYNTHETIC_FIELDS)
 
         for ref_field in referenced_fields:
             if ref_field.lower() not in available_set:

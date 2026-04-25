@@ -35,6 +35,7 @@ def test_mutating_tools_contains_known_writers():
         "send_to_slack",
         "send_to_telegram",
         "deliver_report",
+        "create_log_source_from_sample",
     }
     assert expected_subset <= MUTATING_TOOLS
 

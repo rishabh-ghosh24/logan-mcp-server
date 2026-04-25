@@ -2,6 +2,7 @@
 
 import asyncio
 import logging
+from io import BytesIO
 from typing import Optional, List, Dict, Any
 from datetime import datetime
 from pathlib import Path
@@ -373,6 +374,66 @@ class OCILogAnalyticsClient:
             }
             for f in _get_items(response.data)
         ]
+
+    async def import_custom_content(self, content_zip: bytes, *, overwrite: bool = True) -> Dict[str, Any]:
+        """Import a Log Analytics custom-content zip."""
+        await self._rate_limiter.acquire()
+
+        response = await asyncio.to_thread(
+            self._la_client.import_custom_content,
+            namespace_name=self._namespace,
+            import_custom_content_file_body=BytesIO(content_zip),
+            is_overwrite=overwrite,
+        )
+        self._rate_limiter.reset()
+
+        return {
+            "data": oci.util.to_dict(response.data) if response.data is not None else None,
+            "headers": dict(response.headers),
+        }
+
+    async def upload_log_file(
+        self,
+        *,
+        source_name: str,
+        filename: str,
+        log_group_id: str,
+        content: Any,
+        upload_name: Optional[str] = None,
+        entity_id: Optional[str] = None,
+        timezone: Optional[str] = None,
+        log_set: Optional[str] = None,
+        char_encoding: Optional[str] = "UTF-8",
+    ) -> Dict[str, Any]:
+        """Upload a log file to Log Analytics for processing by a source."""
+        await self._rate_limiter.acquire()
+
+        body = content if isinstance(content, bytes) else str(content).encode("utf-8")
+        kwargs = {
+            "namespace_name": self._namespace,
+            "log_source_name": source_name,
+            "filename": filename,
+            "opc_meta_loggrpid": log_group_id,
+            "upload_log_file_body": BytesIO(body),
+        }
+        if upload_name:
+            kwargs["upload_name"] = upload_name
+        if entity_id:
+            kwargs["entity_id"] = entity_id
+        if timezone:
+            kwargs["timezone"] = timezone
+        if log_set:
+            kwargs["log_set"] = log_set
+        if char_encoding:
+            kwargs["char_encoding"] = char_encoding
+
+        response = await asyncio.to_thread(self._la_client.upload_log_file, **kwargs)
+        self._rate_limiter.reset()
+
+        return {
+            "data": oci.util.to_dict(response.data) if response.data is not None else None,
+            "headers": dict(response.headers),
+        }
 
     async def list_entities(self, entity_type: Optional[str] = None) -> List[Dict[str, Any]]:
         """List monitored entities (auto-paginates across all pages)."""

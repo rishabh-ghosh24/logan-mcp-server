@@ -164,6 +164,7 @@ class TestToolRouting:
             "get_current_context", "list_compartments", "test_connection",
             "find_compartment", "get_query_examples", "get_log_summary",
             "find_rare_events",
+            "create_log_source_from_sample",
             "trace_request_id",
             "related_dashboards_and_searches",
             "setup_confirmation_secret",
@@ -926,6 +927,12 @@ GUARDED_TOOL_ARGS = {
         "dashboard_id": "ocid1.db.test", "title": "T",
         "query": "* | stats count", "visualization_type": "bar",
     },
+    "create_log_source_from_sample": {
+        "source_name": "App Logs",
+        "sample_logs": ['{"event":"x"}'],
+        "log_group_id": "ocid1.loganalyticsloggroup.oc1..test",
+        "acknowledge_data_review": True,
+    },
 }
 
 
@@ -956,6 +963,7 @@ class TestConfirmationIntegration:
         h.saved_search.update_search = AsyncMock(return_value={"id": "s"})
         h.dashboard_service.delete_dashboard = AsyncMock(return_value={"deleted": True})
         h.dashboard_service.add_tile = AsyncMock(return_value={"dashboard_id": "d"})
+        h.log_source_builder_tool.create_from_sample = AsyncMock(return_value={"status": "PASS"})
         return h
 
     @pytest.mark.asyncio
@@ -1020,6 +1028,40 @@ class TestConfirmationIntegration:
         assert text["status"] == "confirmation_failed", (
             f"{tool_name} did not reject changed args"
         )
+
+    @pytest.mark.asyncio
+    async def test_create_log_source_confirmation_includes_upload_warning(
+        self, handlers_confirmed
+    ):
+        """Confirmation summary should make sample upload responsibility explicit."""
+        result = await handlers_confirmed.handle_tool_call(
+            "create_log_source_from_sample",
+            dict(GUARDED_TOOL_ARGS["create_log_source_from_sample"]),
+        )
+        text = json.loads(result[0]["text"])
+
+        assert text["status"] == "confirmation_required"
+        assert "Only provide logs" in text["summary"]
+        assert "sample_line_count: 1" in text["summary"]
+
+    @pytest.mark.asyncio
+    async def test_create_log_source_invoked_audit_redacts_sample_logs(
+        self, handlers_confirmed
+    ):
+        await handlers_confirmed.handle_tool_call(
+            "create_log_source_from_sample",
+            dict(GUARDED_TOOL_ARGS["create_log_source_from_sample"]),
+        )
+
+        invoked = [
+            entry for entry in handlers_confirmed.audit_logger.iter_entries()
+            if entry["tool"] == "create_log_source_from_sample"
+            and entry["outcome"] == "invoked"
+        ][0]
+        args = invoked["args"]
+        assert args["sample_logs"] == "<redacted>"
+        assert args["sample_log_count"] == 1
+        assert "sample_sha256" in args
 
 
 # ---------------------------------------------------------------------------

@@ -1,5 +1,6 @@
 """MCP request handlers for tool and resource operations."""
 
+import hashlib
 import json
 import logging
 from typing import TYPE_CHECKING, Any, Dict, List, Optional
@@ -35,6 +36,7 @@ from .alarm_postmortem import WhyDidThisFireTool
 from .rare_events import RareEventsTool
 from .trace_lookup import TraceRequestIdTool
 from .related_resources import RelatedDashboardsAndSearchesTool
+from .log_source_builder import DATA_WARNING, LogSourceFromSampleTool, normalize_sample_logs
 from .budget_tracker import BudgetExceededError
 from .playbook_recorder import PlaybookRecorder
 from .playbook_store import PlaybookNotFoundError, PlaybookStore
@@ -126,6 +128,10 @@ class MCPHandlers:
         self.find_rare_events_tool = RareEventsTool(self.query_engine)
         self.report_generator = ReportGenerator()
         self.trace_request_id_tool = TraceRequestIdTool(self.pivot_tool)
+        self.log_source_builder_tool = LogSourceFromSampleTool(
+            oci_client=oci_client,
+            query_engine=self.query_engine,
+        )
         self.validator = QueryValidator(self.schema_manager)
         self.visualization = VisualizationEngine()
         self.saved_search = SavedSearchService(oci_client, cache)
@@ -192,6 +198,7 @@ class MCPHandlers:
             "deliver_report": self._deliver_report,
             "why_did_this_fire": self._why_did_this_fire,
             "find_rare_events": self._find_rare_events,
+            "create_log_source_from_sample": self._create_log_source_from_sample,
             "trace_request_id": self._trace_request_id,
             "related_dashboards_and_searches": self._related_dashboards_and_searches,
             # Visualization
@@ -317,6 +324,15 @@ class MCPHandlers:
                         }
                     except Exception:
                         summary_extras = None
+                elif name == "create_log_source_from_sample":
+                    try:
+                        sample_line_count = len(normalize_sample_logs(arguments.get("sample_logs", [])))
+                    except Exception:
+                        sample_line_count = "unknown"
+                    summary_extras = {
+                        "data_warning": DATA_WARNING,
+                        "sample_line_count": sample_line_count,
+                    }
                 confirmation = self.confirmation_manager.request_confirmation(
                     name, arguments, summary_extras=summary_extras,
                 )
@@ -347,15 +363,18 @@ class MCPHandlers:
                     outcome="confirmed",
                 )
 
-            # Strip confirmation params before passing to handler
-            arguments = clean_args
+            # Strip confirmation params before passing to handler while preserving
+            # non-secret payloads that may be redacted in audit entries.
+            arguments = self._strip_confirmation_args(arguments)
 
         try:
             result = await handler(arguments)
             if guarded_call and self.audit_logger:
                 summary = result[0]["text"][:200] if result else ""
                 self.audit_logger.log(
-                    user=user_id, tool=name, args=arguments,
+                    user=user_id,
+                    tool=name,
+                    args=self._clean_args_for_audit(name, arguments),
                     outcome="executed", result_summary=summary,
                 )
             return result
@@ -363,13 +382,41 @@ class MCPHandlers:
             logger.exception(f"Error in tool {name}")
             if guarded_call and self.audit_logger:
                 self.audit_logger.log(
-                    user=user_id, tool=name, args=arguments,
+                    user=user_id,
+                    tool=name,
+                    args=self._clean_args_for_audit(name, arguments),
                     outcome="execution_failed", error=str(e),
                 )
             return [{"type": "text", "text": f"Error executing {name}: {str(e)}"}]
 
     def _clean_args_for_audit(self, tool_name: str, arguments: Dict[str, Any]) -> Dict[str, Any]:
-        clean_args = {
+        clean_args = self._strip_confirmation_args(arguments)
+        if tool_name == "deliver_report":
+            clean_args = dict(clean_args)
+            if "recipients" in clean_args:
+                clean_args["recipients"] = "<redacted>"
+        elif tool_name == "create_log_source_from_sample":
+            clean_args = dict(clean_args)
+            if "sample_logs" in clean_args:
+                sample_logs = clean_args["sample_logs"]
+                clean_args["sample_logs"] = "<redacted>"
+                try:
+                    lines = normalize_sample_logs(sample_logs)
+                    clean_args["sample_log_count"] = len(lines)
+                    digest_payload = ("\n".join(lines) + "\n").encode("utf-8")
+                except Exception:
+                    clean_args["sample_log_count"] = "unknown"
+                    digest_payload = json.dumps(
+                        sample_logs,
+                        sort_keys=True,
+                        default=str,
+                    ).encode("utf-8")
+                clean_args["sample_sha256"] = hashlib.sha256(digest_payload).hexdigest()
+        return clean_args
+
+    @staticmethod
+    def _strip_confirmation_args(arguments: Dict[str, Any]) -> Dict[str, Any]:
+        return {
             k: v for k, v in arguments.items()
             if k not in (
                 "confirmation_token",
@@ -377,11 +424,6 @@ class MCPHandlers:
                 "confirmation_secret_confirm",
             )
         }
-        if tool_name == "deliver_report":
-            clean_args = dict(clean_args)
-            if "recipients" in clean_args:
-                clean_args["recipients"] = "<redacted>"
-        return clean_args
 
     def _build_confirmation_unavailable_response(self, status: str) -> Dict[str, str]:
         """Return user-facing guidance when confirmation is unavailable."""
@@ -585,6 +627,31 @@ class MCPHandlers:
             formatted = self._format_cluster_result(result)
             return [{"type": "text", "text": json.dumps(formatted, indent=2, default=str)}]
 
+        return [{"type": "text", "text": json.dumps(result, indent=2, default=str)}]
+
+    async def _create_log_source_from_sample(self, args: Dict) -> List[Dict]:
+        """Create parser/source from sample logs, upload samples, and verify parsing."""
+        result = await self.log_source_builder_tool.create_from_sample(
+            source_name=args["source_name"],
+            sample_logs=args["sample_logs"],
+            log_group_id=args["log_group_id"],
+            parser_name=args.get("parser_name"),
+            parser_display_name=args.get("parser_display_name"),
+            field_mappings=args.get("field_mappings"),
+            entity_type=args.get("entity_type", "omc_host_linux"),
+            filename=args.get("filename", "sample.ndjson"),
+            upload_name=args.get("upload_name"),
+            entity_id=args.get("entity_id"),
+            timezone=args.get("timezone"),
+            log_set=args.get("log_set"),
+            char_encoding=args.get("char_encoding", "UTF-8"),
+            acknowledge_data_review=args.get("acknowledge_data_review", False),
+            overwrite=args.get("overwrite", False),
+            verification_time_range=args.get("verification_time_range", "last_30_days"),
+            field_check_limit=args.get("field_check_limit", 20),
+            poll_attempts=args.get("poll_attempts", 6),
+            poll_interval_seconds=args.get("poll_interval_seconds", 10),
+        )
         return [{"type": "text", "text": json.dumps(result, indent=2, default=str)}]
 
     @staticmethod

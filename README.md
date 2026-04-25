@@ -130,6 +130,7 @@ Click **Save**, then start a new Codex session to connect.
 | **Investigation playbooks** | `record_investigation`, `list_playbooks`, `get_playbook`, `delete_playbook` | Save the current session's audited tool calls as a named playbook, then list, fetch, or delete recorded playbooks |
 | **Reports** | `generate_incident_report` | Convert an investigation result into deterministic Markdown, with optional HTML rendering |
 | **Explore schema** | `list_log_sources`, `list_fields`, `list_entities`, `list_parsers`, `list_labels` | Discover what log data is available |
+| **Onboard sources** | `create_log_source_from_sample` | Generate a JSON/NDJSON parser and source from sample logs, upload the sample workload, and verify parse failures |
 | **Visualize** | `visualize` | Generate pie, bar, line, area, table, tile, treemap, heatmap, histogram charts |
 | **Dashboards** | `create_dashboard`, `add_dashboard_tile`, `list_dashboards`, `delete_dashboard` | Create OCI Management Dashboards with LA widgets, grid layout, and scope filters |
 | **Alerts** | `create_alert`, `update_alert`, `list_alerts`, `delete_alert` | Create OCI-native alarms from LA queries with metric extraction and ONS notifications |
@@ -157,6 +158,22 @@ Probe log-source freshness in one call. Classifies every source as `healthy`, `s
 Returns `{summary, checked_at, findings: [...]}` where each finding carries `status`, `severity`, `last_log_ts`, `age_seconds`, and a human-readable `message`.
 
 Configurable via `ingestion_health.stoppage_threshold_seconds` (default 600s) and `ingestion_health.freshness_probe_window` (default `last_1_hour`) in `config.yaml`.
+
+### `create_log_source_from_sample` — onboard JSON/NDJSON logs
+
+Create a custom Log Analytics parser/source from non-sensitive JSON/NDJSON sample lines, upload the same sample workload, and verify that upload batch with a `'Parse Failed'` check plus per-field populated counts. CSV and plain text parser generation are planned follow-up formats. The tool is guarded because it creates OCI resources and uploads log content.
+
+```json
+{
+  "tool": "create_log_source_from_sample",
+  "source_name": "BlueCat Edge DNS Logs",
+  "sample_logs": ["{\"eventType\":\"query-response\",\"sourceAddress\":\"192.0.2.10\"}"],
+  "log_group_id": "ocid1.loganalyticsloggroup.oc1..example",
+  "acknowledge_data_review": true
+}
+```
+
+`acknowledge_data_review` must be true: the caller is responsible for providing logs that are safe to upload and stripped of secrets, tokens, PII, and customer-sensitive values. Existing parser/source names return `CONFLICT` unless `overwrite=true` is explicitly supplied. Verification uses the generated/uploaded `'Upload Name'` so parse-failure checks are scoped to this sample workload, not every record in the tenancy, and uses `last_30_days` by default to avoid false negatives from pasted samples whose event time is older than the upload time.
 
 ### `parser_failure_triage` — which parsers are broken?
 
@@ -519,6 +536,7 @@ of executing:
 - `create_alert`, `update_alert`, `delete_alert`
 - `create_saved_search`, `update_saved_search`, `delete_saved_search`
 - `create_dashboard`, `add_dashboard_tile`, `delete_dashboard`
+- `create_log_source_from_sample`
 - `send_to_slack`, `send_to_telegram`
 - `set_compartment`, `set_namespace`, `update_tenancy_context`
 - `save_learned_query`, `remember_preference`, `setup_confirmation_secret`
@@ -528,7 +546,7 @@ All query, validation, listing, visualization, `export_results`, `list_playbooks
 and `get_playbook` tools remain available. Use this mode when giving an
 untrusted agent, a newcomer, or an automated process access to the server.
 
-All delete and update operations on OCI resources (alerts, dashboards, saved searches) are protected by **two-factor server-side confirmation**. This prevents any MCP client — Claude, Codex, or others — from accidentally modifying or destroying resources.
+Mutating OCI resource operations are protected by **two-factor server-side confirmation**. This prevents any MCP client — Claude, Codex, or others — from accidentally creating, modifying, or destroying resources.
 
 ### Guarded Tools
 
@@ -540,8 +558,12 @@ All delete and update operations on OCI resources (alerts, dashboards, saved sea
 | `update_alert` | Modifies an existing alert |
 | `update_saved_search` | Modifies an existing saved search |
 | `add_dashboard_tile` | Modifies an existing dashboard |
+| `create_alert` | Creates an OCI Monitoring alarm backed by an LA query |
+| `create_saved_search` | Creates an LA saved search |
+| `create_dashboard` | Creates an OCI Management Dashboard |
+| `create_log_source_from_sample` | Creates an LA parser/source, uploads sample logs, and verifies parse failures |
 
-`create_*` tools are **not** guarded — they are additive and don't affect existing resources.
+Guarded create tools are additive but still create OCI resources or upload log content, so they require explicit confirmation.
 
 ### Per-User Confirmation Secrets
 

@@ -76,6 +76,133 @@ def get_tools() -> List[Dict[str, Any]]:
             "description": "List log groups in the current compartment.",
             "inputSchema": {"type": "object", "properties": {}},
         },
+        {
+            "name": "create_log_source_from_sample",
+            "destructive": True,
+            "description": (
+                "Create a Log Analytics parser and log source from JSON/NDJSON sample logs, "
+                "upload the sample workload to OCI Log Analytics, and verify parse failures. "
+                "Only provide logs you are allowed to upload; remove secrets, tokens, PII, "
+                "and customer-sensitive values before continuing. "
+                "TWO-FACTOR CONFIRMATION REQUIRED: First call returns a confirmation token "
+                "and summary. To execute, re-invoke with confirmation_token and your "
+                "confirmation secret."
+            ),
+            "inputSchema": {
+                "type": "object",
+                "required": [
+                    "source_name",
+                    "sample_logs",
+                    "log_group_id",
+                    "acknowledge_data_review",
+                ],
+                "properties": {
+                    "source_name": {
+                        "type": "string",
+                        "description": "Name of the Log Analytics source to create.",
+                    },
+                    "sample_logs": {
+                        "oneOf": [
+                            {"type": "string"},
+                            {"type": "array", "items": {"type": "string"}},
+                        ],
+                        "description": "Non-sensitive JSON/NDJSON sample log lines to upload and verify.",
+                    },
+                    "log_group_id": {
+                        "type": "string",
+                        "description": "Log Analytics log group OCID used for sample upload.",
+                    },
+                    "acknowledge_data_review": {
+                        "type": "boolean",
+                        "description": (
+                            "Must be true to confirm the sample logs were reviewed "
+                            "and stripped of secrets, tokens, PII, and sensitive values."
+                        ),
+                    },
+                    "overwrite": {
+                        "type": "boolean",
+                        "description": (
+                            "Overwrite an existing parser/source with the same names. "
+                            "Default: false; name collisions return CONFLICT."
+                        ),
+                    },
+                    "parser_name": {
+                        "type": "string",
+                        "description": "Optional parser internal name. Defaults to a sanitized source-based name.",
+                    },
+                    "parser_display_name": {
+                        "type": "string",
+                        "description": "Optional parser display name.",
+                    },
+                    "field_mappings": {
+                        "type": "object",
+                        "additionalProperties": {"type": "string"},
+                        "description": "Optional mapping of inferred sample keys to Log Analytics field internal names.",
+                    },
+                    "entity_type": {
+                        "type": "string",
+                        "description": "Entity type for the source. Default: omc_host_linux.",
+                    },
+                    "filename": {
+                        "type": "string",
+                        "description": "Filename used for the sample upload. Default: sample.ndjson.",
+                    },
+                    "upload_name": {
+                        "type": "string",
+                        "description": "Optional OCI Log Analytics upload name.",
+                    },
+                    "entity_id": {
+                        "type": "string",
+                        "description": "Optional entity OCID associated with the sample upload.",
+                    },
+                    "timezone": {
+                        "type": "string",
+                        "description": "Optional timezone for log timestamps without explicit timezone.",
+                    },
+                    "log_set": {
+                        "type": "string",
+                        "description": "Optional Log Analytics log set for the sample upload.",
+                    },
+                    "char_encoding": {
+                        "type": "string",
+                        "description": "Character encoding for the sample upload. Default: UTF-8.",
+                    },
+                    "verification_time_range": {
+                        "type": "string",
+                        "enum": [
+                            "last_15_min",
+                            "last_1_hour",
+                            "last_24_hours",
+                            "last_7_days",
+                            "last_30_days",
+                        ],
+                        "description": "Time range used for verification queries. Default: last_30_days.",
+                    },
+                    "field_check_limit": {
+                        "type": "integer",
+                        "minimum": 0,
+                        "maximum": 20,
+                        "description": "Maximum number of mapped fields to verify for non-null values. Default: 20.",
+                    },
+                    "poll_attempts": {
+                        "type": "integer",
+                        "description": "Number of ingestion polling attempts. Default: 6.",
+                    },
+                    "poll_interval_seconds": {
+                        "type": "number",
+                        "description": "Seconds between ingestion polling attempts. Default: 10.",
+                    },
+                    "confirmation_token": {
+                        "type": "string",
+                        "description": "Server-generated token from the confirmation step. Omit on first call.",
+                    },
+                    "confirmation_secret": {
+                        "type": "string",
+                        "description": "Your confirmation secret. Required with token to execute. You MUST ask the user for this value each time — NEVER reuse a previously provided secret.",
+                    },
+                },
+            },
+        },
         # Query Execution Tools
         {
             "name": "validate_query",
