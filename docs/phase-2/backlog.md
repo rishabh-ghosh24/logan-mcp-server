@@ -133,6 +133,19 @@ Source: current review on `feat/related-dashboards-and-searches`
 
 - `A7-F1` — Skip low-value saved-search detail fetches when the shortlist has enough positive-score candidates and the remaining zero-score entries are unlikely to improve ranking. Current behavior is safe and capped at 10 detail fetches; this is a latency / efficiency follow-up, not a correctness blocker.
 
+### Log Source Builder
+
+#### LSB — `create_log_source_from_sample`
+Source: review and live validation on `feat/log-source-from-sample`
+
+- `LSB-F1` — Add CSV parser/source generation after the JSON/NDJSON foundation lands.
+- `LSB-F2` — Add plain-text parser/source generation after CSV support.
+- `LSB-F3` — Decide whether confirmation summaries should include a precomputed auto `upload_name`, and if so include it in the confirmation fingerprint because it is the verification anchor.
+- `LSB-F4` — Validate native JSON parser flags (`is_single_line_content`, `header_content`, `should_tokenize_original_text`) against NDJSON samples containing escaped newline values.
+- `LSB-F5` — Add explicit cleanup / rollback handling when parser upsert succeeds but source upsert or upload fails, or expose a guarded `cleanup_on_failure` mode.
+- `LSB-F6` — Remove dead content-pack XML helper/import paths once there is no remaining preview/export need.
+- `LSB-F7` — Replace full-tenant `list_parsers()` / `list_log_sources()` conflict checks with narrower get-by-name calls if OCI exposes reliable endpoints.
+
 ## Notes From the Audit
 
 Some earlier plan-doc follow-ups were already resolved later in Phase 2 and are therefore **not** tracked as open backlog here. Examples:

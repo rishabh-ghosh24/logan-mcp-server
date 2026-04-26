@@ -10,6 +10,8 @@ from io import BytesIO
 from typing import Any, Dict, List, Optional, Sequence, Tuple
 from xml.sax.saxutils import escape
 
+import oci
+
 
 FieldPath = Tuple[str, str]
 
@@ -340,6 +342,27 @@ def _upload_processing_failed(upload_files: Sequence[Dict[str, Any]]) -> bool:
     return any(_upload_file_status(f) == "FAILED" for f in upload_files)
 
 
+def _is_retryable_upload_status_error(exc: Exception) -> bool:
+    return (
+        isinstance(exc, oci.exceptions.ServiceError)
+        and getattr(exc, "status", None) in {404, 503}
+    )
+
+
+def _summarize_upload_status_error(exc: Exception) -> Dict[str, Any]:
+    if isinstance(exc, oci.exceptions.ServiceError):
+        return {
+            "type": type(exc).__name__,
+            "status": getattr(exc, "status", None),
+            "code": getattr(exc, "code", None),
+            "message": getattr(exc, "message", str(exc)),
+        }
+    return {
+        "type": type(exc).__name__,
+        "message": str(exc),
+    }
+
+
 def _item_name(item: Any) -> str:
     if isinstance(item, dict):
         return str(item.get("name") or item.get("display_name") or "")
@@ -458,7 +481,7 @@ class LogSourceFromSampleTool:
             display_name=source_name,
             entity_type=entity_type,
         )
-        effective_upload_name = upload_name or f"{parser_name}_sample_{int(time.time())}"
+        effective_upload_name = upload_name or f"{parser_name}_sample_{time.time_ns()}"
         upload_result = await self.oci_client.upload_log_file(
             source_name=source_name,
             filename=filename,
@@ -480,7 +503,9 @@ class LogSourceFromSampleTool:
                 try:
                     upload_files = await self.oci_client.list_upload_files(upload_reference)
                 except Exception as exc:
-                    upload_status_errors.append(str(exc))
+                    if not _is_retryable_upload_status_error(exc):
+                        raise
+                    upload_status_errors.append(_summarize_upload_status_error(exc))
                     if attempt == attempts - 1:
                         break
                     if poll_interval_seconds:

@@ -5,8 +5,10 @@ import zipfile
 from io import BytesIO
 from unittest.mock import AsyncMock
 
+import oci
 import pytest
 
+import oci_logan_mcp.log_source_builder as log_source_builder
 from oci_logan_mcp.log_source_builder import (
     LogSourceFromSampleTool,
     build_custom_content_zip,
@@ -288,7 +290,12 @@ async def test_create_from_sample_retries_transient_upload_status_errors():
     oci_client.upsert_log_source.return_value = {}
     oci_client.upload_log_file.return_value = {"data": {"reference": "upload-ref"}}
     oci_client.list_upload_files.side_effect = [
-        Exception("upload not visible yet"),
+        oci.exceptions.ServiceError(
+            status=404,
+            code="NotAuthorizedOrNotFound",
+            headers={"opc-request-id": "req-1"},
+            message="upload not visible yet",
+        ),
         [{"name": "sample.ndjson", "status": "SUCCESSFUL"}],
     ]
 
@@ -311,8 +318,81 @@ async def test_create_from_sample_retries_transient_upload_status_errors():
     )
 
     assert result["status"] == "PASS"
-    assert result["verification"]["upload_status_errors"] == ["upload not visible yet"]
+    assert result["verification"]["upload_status_errors"] == [
+        {
+            "type": "ServiceError",
+            "status": 404,
+            "code": "NotAuthorizedOrNotFound",
+            "message": "upload not visible yet",
+        }
+    ]
     assert result["verification"]["upload_files"][0]["status"] == "SUCCESSFUL"
+
+
+@pytest.mark.asyncio
+async def test_create_from_sample_does_not_retry_non_transient_upload_status_errors():
+    oci_client = AsyncMock()
+    oci_client.list_parsers.return_value = []
+    oci_client.list_log_sources.return_value = []
+    oci_client.list_fields.return_value = [{"name": "event"}, {"name": "udfs1"}]
+    oci_client.upsert_json_parser.return_value = {}
+    oci_client.upsert_log_source.return_value = {}
+    oci_client.upload_log_file.return_value = {"data": {"reference": "upload-ref"}}
+    oci_client.list_upload_files.side_effect = oci.exceptions.ServiceError(
+        status=403,
+        code="Forbidden",
+        headers={"opc-request-id": "req-1"},
+        message="not allowed",
+    )
+
+    tool = LogSourceFromSampleTool(oci_client=oci_client, query_engine=AsyncMock())
+
+    with pytest.raises(oci.exceptions.ServiceError):
+        await tool.create_from_sample(
+            source_name="App Logs",
+            sample_logs=['{"event":"x"}'],
+            log_group_id="ocid1.loganalyticsloggroup.oc1..test",
+            upload_name="sample-upload",
+            acknowledge_data_review=True,
+            poll_attempts=2,
+            poll_interval_seconds=0,
+        )
+
+    assert oci_client.list_upload_files.await_count == 1
+
+
+@pytest.mark.asyncio
+async def test_create_from_sample_auto_upload_name_uses_nanosecond_suffix(monkeypatch):
+    monkeypatch.setattr(log_source_builder.time, "time_ns", lambda: 123456789)
+
+    oci_client = AsyncMock()
+    oci_client.list_parsers.return_value = []
+    oci_client.list_log_sources.return_value = []
+    oci_client.list_fields.return_value = [{"name": "event"}]
+    oci_client.upsert_json_parser.return_value = {}
+    oci_client.upsert_log_source.return_value = {}
+    oci_client.upload_log_file.return_value = {}
+
+    query_engine = AsyncMock()
+    query_engine.execute.side_effect = [
+        {"data": {"rows": [[1]]}},
+        {"data": {"rows": [[0]]}},
+        {"data": {"rows": [[1]]}},
+    ]
+
+    tool = LogSourceFromSampleTool(oci_client=oci_client, query_engine=query_engine)
+    result = await tool.create_from_sample(
+        source_name="App Logs",
+        sample_logs=['{"event":"x"}'],
+        log_group_id="ocid1.loganalyticsloggroup.oc1..test",
+        parser_name="App_JSON",
+        acknowledge_data_review=True,
+        poll_attempts=1,
+        poll_interval_seconds=0,
+    )
+
+    assert result["verification"]["upload_name"] == "App_JSON_sample_123456789"
+    assert oci_client.upload_log_file.await_args.kwargs["upload_name"] == "App_JSON_sample_123456789"
 
 
 @pytest.mark.asyncio
