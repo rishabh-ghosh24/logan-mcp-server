@@ -231,13 +231,17 @@ def _prepare_csv_sample(
     if not field_paths:
         raise ValueError("No CSV fields found in sample logs")
 
+    mapped_column_count = min(len(header), max_fields)
+    prepared_header = header[:mapped_column_count]
+    prepared_rows = [row[:mapped_column_count] for row in data_rows]
+
     return PreparedSample(
         format=FORMAT_CSV,
         field_paths=field_paths,
-        sample_content="".join(_csv_line(row) for row in data_rows),
+        sample_content="".join(_csv_line(row) for row in prepared_rows),
         expected_row_count=len(data_rows),
         truncated_at_max_fields=truncated,
-        header_content=_csv_line(header).rstrip("\n"),
+        header_content=_csv_line(prepared_header).rstrip("\n"),
     )
 
 

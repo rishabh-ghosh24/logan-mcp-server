@@ -425,6 +425,8 @@ class OCILogAnalyticsClient:
             display_name=display_name,
             description=description,
             type="JSON",
+            # Native JSON parser exports use multi-line mode; NDJSON still works
+            # because each uploaded line is independently parsed as JSON content.
             is_single_line_content=False,
             header_content="$:0",
             example_content=example_content,
@@ -481,6 +483,7 @@ class OCILogAnalyticsClient:
             display_name=display_name,
             description=description,
             type="DELIMITED",
+            # CSV uploads are prepared as one record per physical line.
             is_single_line_content=True,
             field_delimiter=field_delimiter,
             field_qualifier=field_qualifier,

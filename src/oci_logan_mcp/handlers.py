@@ -331,12 +331,7 @@ class MCPHandlers:
                         summary_extras = None
                 elif name == "create_log_source_from_sample":
                     try:
-                        if arguments.get("format") == "csv":
-                            sample_line_count = infer_csv_field_paths(
-                                arguments.get("sample_logs", [])
-                            )[1]
-                        else:
-                            sample_line_count = len(normalize_sample_logs(arguments.get("sample_logs", [])))
+                        sample_line_count, _ = self._sample_audit_payload(arguments)
                     except Exception:
                         sample_line_count = "unknown"
                     summary_extras = {
@@ -408,14 +403,14 @@ class MCPHandlers:
         elif tool_name == "create_log_source_from_sample":
             clean_args = dict(clean_args)
             if "sample_logs" in clean_args:
-                sample_logs = clean_args["sample_logs"]
-                clean_args["sample_logs"] = "<redacted>"
                 try:
-                    lines = normalize_sample_logs(sample_logs)
-                    clean_args["sample_log_count"] = len(lines)
-                    digest_payload = ("\n".join(lines) + "\n").encode("utf-8")
+                    sample_log_count, digest_payload = self._sample_audit_payload(clean_args)
+                    clean_args["sample_logs"] = "<redacted>"
+                    clean_args["sample_log_count"] = sample_log_count
                 except Exception:
                     clean_args["sample_log_count"] = "unknown"
+                    sample_logs = clean_args["sample_logs"]
+                    clean_args["sample_logs"] = "<redacted>"
                     digest_payload = json.dumps(
                         sample_logs,
                         sort_keys=True,
@@ -423,6 +418,16 @@ class MCPHandlers:
                     ).encode("utf-8")
                 clean_args["sample_sha256"] = hashlib.sha256(digest_payload).hexdigest()
         return clean_args
+
+    @staticmethod
+    def _sample_audit_payload(arguments: Dict[str, Any]) -> tuple[int, bytes]:
+        sample_logs = arguments.get("sample_logs", [])
+        if arguments.get("format") == "csv":
+            _, row_count, sample_content, header_content, _ = infer_csv_field_paths(sample_logs)
+            return row_count, f"{header_content}\n{sample_content}".encode("utf-8")
+
+        lines = normalize_sample_logs(sample_logs)
+        return len(lines), ("\n".join(lines) + "\n").encode("utf-8")
 
     @staticmethod
     def _strip_confirmation_args(arguments: Dict[str, Any]) -> Dict[str, Any]:

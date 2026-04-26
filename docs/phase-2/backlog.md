@@ -141,7 +141,7 @@ Source: review and live validation on `feat/log-source-from-sample`
 - `LSB-F2` — Add plain-text parser/source generation after CSV support.
 - `LSB-F3` — Decide whether confirmation summaries should include a precomputed auto `upload_name`, and if so include it in the confirmation fingerprint because it is the verification anchor.
 - `LSB-F4` — Validate native JSON parser flags (`is_single_line_content`, `header_content`, `should_tokenize_original_text`) against NDJSON samples containing escaped newline values.
-- `LSB-F5` — Add explicit cleanup / rollback handling when parser upsert succeeds but source upsert or upload fails, or expose a guarded `cleanup_on_failure` mode.
+- `LSB-F5` — Add explicit cleanup / rollback handling when parser upsert succeeds but source upsert, upload, or upload-status verification fails, or expose a guarded `cleanup_on_failure` mode.
 - `LSB-F6` — Remove dead content-pack XML helper/import paths once there is no remaining preview/export need.
 - `LSB-F7` — Replace full-tenant `list_parsers()` / `list_log_sources()` conflict checks with narrower get-by-name calls if OCI exposes reliable endpoints.
 

@@ -1,8 +1,9 @@
 """Tests for creating Log Analytics sources from sample logs."""
 
+import csv
 import json
 import zipfile
-from io import BytesIO
+from io import BytesIO, StringIO
 from unittest.mock import AsyncMock
 
 import oci
@@ -103,11 +104,11 @@ def test_infer_csv_field_paths_rejects_unsupported_shapes():
         infer_csv_field_paths('Source IP,Message\n192.0.2.10,"line one\nline two"\n')
 
 
-def test_infer_csv_field_paths_truncates_at_max_fields():
+def test_infer_csv_field_paths_truncates_upload_content_at_max_fields():
     header = ",".join(f"field{i}" for i in range(41))
     row = ",".join(str(i) for i in range(41))
 
-    fields, row_count, _, _, truncated = infer_csv_field_paths(
+    fields, row_count, sample_content, header_content, truncated = infer_csv_field_paths(
         f"{header}\n{row}\n",
         max_fields=40,
     )
@@ -117,6 +118,12 @@ def test_infer_csv_field_paths_truncates_at_max_fields():
     assert ("field40", "41") not in fields
     assert row_count == 1
     assert truncated is True
+    assert next(csv.reader(StringIO(header_content))) == [
+        f"field{i}" for i in range(40)
+    ]
+    assert next(csv.reader(StringIO(sample_content))) == [
+        str(i) for i in range(40)
+    ]
 
 
 def test_build_field_mappings_prefers_explicit_and_does_not_auto_map_time():

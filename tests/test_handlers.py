@@ -1,5 +1,6 @@
 """Tests for MCP request handlers — routing, visualization, scope resolution."""
 
+import hashlib
 import json
 import pytest
 from unittest.mock import MagicMock, AsyncMock, patch
@@ -1083,6 +1084,52 @@ class TestConfirmationIntegration:
         assert args["sample_logs"] == "<redacted>"
         assert args["sample_log_count"] == 1
         assert "sample_sha256" in args
+
+    @pytest.mark.asyncio
+    async def test_create_log_source_csv_audit_uses_record_count_and_canonical_digest(
+        self, handlers_confirmed
+    ):
+        args = dict(GUARDED_TOOL_ARGS["create_log_source_from_sample"])
+        args["format"] = "csv"
+        args["sample_logs"] = (
+            '\ufeffSource IP,User-Agent\r\n'
+            '192.0.2.10,"Mozilla, Test"\r\n'
+            '192.0.2.11,Chrome\r\n'
+        )
+
+        await handlers_confirmed.handle_tool_call("create_log_source_from_sample", args)
+
+        invoked = [
+            entry for entry in handlers_confirmed.audit_logger.iter_entries()
+            if entry["tool"] == "create_log_source_from_sample"
+            and entry["outcome"] == "invoked"
+        ][0]
+        audit_args = invoked["args"]
+        expected_payload = (
+            'Source IP,User-Agent\n'
+            '192.0.2.10,"Mozilla, Test"\n'
+            '192.0.2.11,Chrome\n'
+        ).encode("utf-8")
+        assert audit_args["sample_logs"] == "<redacted>"
+        assert audit_args["sample_log_count"] == 2
+        assert audit_args["sample_sha256"] == hashlib.sha256(expected_payload).hexdigest()
+
+    @pytest.mark.asyncio
+    async def test_create_log_source_confirmation_rejects_format_change(
+        self, handlers_confirmed
+    ):
+        args = dict(GUARDED_TOOL_ARGS["create_log_source_from_sample"])
+        result = await handlers_confirmed.handle_tool_call("create_log_source_from_sample", args)
+        token = json.loads(result[0]["text"])["confirmation_token"]
+
+        modified_args = dict(args)
+        modified_args["format"] = "csv"
+        modified_args["confirmation_token"] = token
+        modified_args["confirmation_secret"] = "integration-secret"
+
+        result = await handlers_confirmed.handle_tool_call("create_log_source_from_sample", modified_args)
+        text = json.loads(result[0]["text"])
+        assert text["status"] == "confirmation_failed"
 
 
 # ---------------------------------------------------------------------------
