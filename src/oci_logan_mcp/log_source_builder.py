@@ -21,7 +21,12 @@ CONTENT_VERSION = "3.119.2.0.0"
 DEFAULT_MAX_FIELDS = 40
 FORMAT_JSON_NDJSON = "json_ndjson"
 FORMAT_CSV = "csv"
-SUPPORTED_SAMPLE_FORMATS = frozenset({FORMAT_JSON_NDJSON, FORMAT_CSV})
+FORMAT_REGEX_TEXT = "regex_text"
+SUPPORTED_SAMPLE_FORMATS = frozenset({
+    FORMAT_JSON_NDJSON,
+    FORMAT_CSV,
+    FORMAT_REGEX_TEXT,
+})
 ALLOWED_VERIFICATION_TIME_RANGES = frozenset({
     "last_15_min",
     "last_1_hour",
@@ -74,6 +79,7 @@ class PreparedSample:
     expected_row_count: int
     truncated_at_max_fields: bool
     header_content: Optional[str] = None
+    regex_pattern: Optional[str] = None
 
 
 def normalize_sample_logs(
@@ -124,6 +130,29 @@ def infer_csv_field_paths(
     )
 
 
+def infer_regex_text_field_paths(
+    sample_logs: Any,
+    *,
+    regex_pattern: str,
+    regex_field_keys: Sequence[str],
+    max_fields: int = DEFAULT_MAX_FIELDS,
+) -> Tuple[List[FieldPath], int, str, str, bool]:
+    """Infer regex capture-group fields from explicit group names."""
+    prepared = _prepare_regex_text_sample(
+        sample_logs,
+        regex_pattern=regex_pattern,
+        regex_field_keys=regex_field_keys,
+        max_fields=max_fields,
+    )
+    return (
+        prepared.field_paths,
+        prepared.expected_row_count,
+        prepared.sample_content,
+        prepared.regex_pattern or "",
+        prepared.truncated_at_max_fields,
+    )
+
+
 def _infer_json_field_paths(
     sample_lines: Sequence[str],
     *,
@@ -162,6 +191,8 @@ def _prepare_sample(
     sample_logs: Any,
     *,
     format: str,
+    regex_pattern: Optional[str] = None,
+    regex_field_keys: Optional[Sequence[str]] = None,
     max_fields: int = DEFAULT_MAX_FIELDS,
 ) -> PreparedSample:
     if format == FORMAT_JSON_NDJSON:
@@ -176,6 +207,13 @@ def _prepare_sample(
         )
     if format == FORMAT_CSV:
         return _prepare_csv_sample(sample_logs, max_fields=max_fields)
+    if format == FORMAT_REGEX_TEXT:
+        return _prepare_regex_text_sample(
+            sample_logs,
+            regex_pattern=regex_pattern,
+            regex_field_keys=regex_field_keys,
+            max_fields=max_fields,
+        )
     valid_formats = ", ".join(sorted(SUPPORTED_SAMPLE_FORMATS))
     raise ValueError(f"format must be one of: {valid_formats}")
 
@@ -242,6 +280,60 @@ def _prepare_csv_sample(
         expected_row_count=len(data_rows),
         truncated_at_max_fields=truncated,
         header_content=_csv_line(prepared_header).rstrip("\n"),
+    )
+
+
+def _prepare_regex_text_sample(
+    sample_logs: Any,
+    *,
+    regex_pattern: Optional[str],
+    regex_field_keys: Optional[Sequence[str]],
+    max_fields: int = DEFAULT_MAX_FIELDS,
+) -> PreparedSample:
+    if not regex_pattern:
+        raise ValueError("regex_pattern is required when format is regex_text")
+    if not regex_field_keys or isinstance(regex_field_keys, (str, bytes)):
+        raise ValueError("regex_field_keys must be a non-empty array of field keys")
+
+    try:
+        compiled = re.compile(regex_pattern)
+    except re.error as exc:
+        raise ValueError(f"regex_pattern is invalid: {exc}") from exc
+
+    if compiled.groups <= 0:
+        raise ValueError("regex_pattern must contain at least one capture group")
+    if compiled.groups != len(regex_field_keys):
+        raise ValueError(
+            "regex_field_keys length must match regex_pattern capture group count"
+        )
+
+    lines = normalize_sample_logs(sample_logs)
+    for line_number, line in enumerate(lines, start=1):
+        if not compiled.search(line):
+            raise ValueError(
+                f"sample line {line_number} does not match regex_pattern"
+            )
+
+    used_names: Dict[str, str] = {}
+    field_paths: List[FieldPath] = []
+    truncated = False
+    for index, field_key in enumerate(regex_field_keys, start=1):
+        if len(field_paths) >= max_fields:
+            truncated = True
+            continue
+        key = _dedupe_csv_field_key(str(field_key), str(index), used_names)
+        field_paths.append((key, str(index)))
+
+    if not field_paths:
+        raise ValueError("No regex capture fields found in sample logs")
+
+    return PreparedSample(
+        format=FORMAT_REGEX_TEXT,
+        field_paths=field_paths,
+        sample_content="\n".join(lines) + "\n",
+        expected_row_count=len(lines),
+        truncated_at_max_fields=truncated,
+        regex_pattern=regex_pattern,
     )
 
 
@@ -446,7 +538,12 @@ def default_parser_name(source_name: str, *, format: str = FORMAT_JSON_NDJSON) -
         base = "custom_log_source"
     if not base[0].isalpha():
         base = f"p_{base}"
-    suffix = "CSV" if format == FORMAT_CSV else "JSON"
+    if format == FORMAT_CSV:
+        suffix = "CSV"
+    elif format == FORMAT_REGEX_TEXT:
+        suffix = "REGEX"
+    else:
+        suffix = "JSON"
     return f"{base}_{suffix}"
 
 
@@ -562,10 +659,20 @@ def _format_mapped_fields_for_result(
         item = {"sample_key": key, "logan_field": mappings[key]}
         if format == FORMAT_CSV:
             item["csv_column"] = int(path)
+        elif format == FORMAT_REGEX_TEXT:
+            item["regex_group"] = int(path)
         else:
             item["json_path"] = path
         mapped_fields.append(item)
     return mapped_fields
+
+
+def _format_label(format: str) -> str:
+    if format == FORMAT_CSV:
+        return "CSV"
+    if format == FORMAT_REGEX_TEXT:
+        return "REGEX_TEXT"
+    return "JSON_NDJSON"
 
 
 class LogSourceFromSampleTool:
@@ -594,6 +701,8 @@ class LogSourceFromSampleTool:
         acknowledge_data_review: bool = False,
         overwrite: bool = False,
         format: str = FORMAT_JSON_NDJSON,
+        regex_pattern: Optional[str] = None,
+        regex_field_keys: Optional[Sequence[str]] = None,
         verification_time_range: str = "last_30_days",
         field_check_limit: int = 20,
         poll_attempts: int = 6,
@@ -612,7 +721,12 @@ class LogSourceFromSampleTool:
         if format not in SUPPORTED_SAMPLE_FORMATS:
             valid_formats = ", ".join(sorted(SUPPORTED_SAMPLE_FORMATS))
             raise ValueError(f"format must be one of: {valid_formats}")
-        prepared = _prepare_sample(sample_logs, format=format)
+        prepared = _prepare_sample(
+            sample_logs,
+            format=format,
+            regex_pattern=regex_pattern,
+            regex_field_keys=regex_field_keys,
+        )
 
         parser_name = parser_name or default_parser_name(source_name, format=format)
         parser_display_name = parser_display_name or source_name
@@ -650,6 +764,15 @@ class LogSourceFromSampleTool:
                 header_content=prepared.header_content or "",
                 example_content=prepared.sample_content,
             )
+        elif format == FORMAT_REGEX_TEXT:
+            parser_result = await self.oci_client.upsert_regex_parser(
+                parser_name=parser_name,
+                display_name=parser_display_name,
+                field_paths=prepared.field_paths,
+                field_mappings=mappings,
+                regex_pattern=prepared.regex_pattern or "",
+                example_content=prepared.sample_content,
+            )
         else:
             parser_result = await self.oci_client.upsert_json_parser(
                 parser_name=parser_name,
@@ -665,7 +788,14 @@ class LogSourceFromSampleTool:
             entity_type=entity_type,
         )
         effective_upload_name = upload_name or f"{parser_name}_sample_{time.time_ns()}"
-        effective_filename = filename or ("sample.csv" if format == FORMAT_CSV else "sample.ndjson")
+        if filename:
+            effective_filename = filename
+        elif format == FORMAT_CSV:
+            effective_filename = "sample.csv"
+        elif format == FORMAT_REGEX_TEXT:
+            effective_filename = "sample.log"
+        else:
+            effective_filename = "sample.ndjson"
         upload_result = await self.oci_client.upload_log_file(
             source_name=source_name,
             filename=effective_filename,
@@ -778,7 +908,7 @@ class LogSourceFromSampleTool:
                 "entity_type": entity_type,
             },
             "inference": {
-                "format": "CSV" if format == FORMAT_CSV else "JSON_NDJSON",
+                "format": _format_label(format),
                 "sample_line_count": prepared.expected_row_count,
                 "mapped_field_count": len(mappings),
                 "max_inferred_fields": DEFAULT_MAX_FIELDS,

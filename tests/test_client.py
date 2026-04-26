@@ -340,6 +340,40 @@ class TestCustomContentAndUpload:
         assert result["data"] == {"parser": "ok"}
 
     @pytest.mark.asyncio
+    async def test_upsert_regex_parser_uses_native_parser_model(self, client):
+        response = MagicMock()
+        response.data = MagicMock()
+        response.headers = {"opc-request-id": "parser-req"}
+
+        with patch("oci_logan_mcp.client.oci.util.to_dict", return_value={"parser": "ok"}):
+            client._la_client.upsert_parser.return_value = response
+            result = await client.upsert_regex_parser(
+                parser_name="App_REGEX",
+                display_name="App Regex",
+                field_paths=[("severity", "1"), ("sourceip", "2")],
+                field_mappings={"severity": "udfs1", "sourceip": "clnthostip"},
+                regex_pattern=r"^(\w+) ip=(\S+)$",
+                example_content="INFO ip=192.0.2.10\n",
+            )
+
+        call = client._la_client.upsert_parser.call_args
+        details = call.kwargs["upsert_log_analytics_parser_details"]
+        assert call.kwargs["namespace_name"] == "testns"
+        assert details.name == "App_REGEX"
+        assert details.display_name == "App Regex"
+        assert details.type == "REGEX"
+        assert details.content == r"^(\w+) ip=(\S+)$"
+        assert details.is_single_line_content is True
+        assert details.example_content == "INFO ip=192.0.2.10\n"
+        assert details.field_maps[0].parser_field_sequence == 1
+        assert details.field_maps[0].parser_field_name == "udfs1"
+        assert details.field_maps[0].structured_column_info is None
+        assert details.field_maps[0].parser_field_expression is None
+        assert details.field_maps[1].parser_field_sequence == 2
+        assert details.field_maps[1].parser_field_name == "clnthostip"
+        assert result["data"] == {"parser": "ok"}
+
+    @pytest.mark.asyncio
     async def test_upsert_log_source_binds_parser_and_entity_type(self, client):
         response = MagicMock()
         response.data = MagicMock()

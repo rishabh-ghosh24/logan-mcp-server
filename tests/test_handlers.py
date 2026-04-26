@@ -156,6 +156,29 @@ async def test_create_log_source_handler_passes_csv_format_without_forcing_ndjso
     assert kwargs["filename"] is None
 
 
+@pytest.mark.asyncio
+async def test_create_log_source_handler_passes_regex_text_arguments(handlers):
+    handlers.log_source_builder_tool.create_from_sample = AsyncMock(return_value={"status": "PASS"})
+
+    result = await handlers._create_log_source_from_sample({
+        "source_name": "Regex Logs",
+        "sample_logs": "INFO user=alice ip=192.0.2.10 action=login\n",
+        "log_group_id": "ocid1.loganalyticsloggroup.oc1..test",
+        "format": "regex_text",
+        "regex_pattern": r"^(\w+) user=(\S+) ip=(\S+) action=(\S+)$",
+        "regex_field_keys": ["severity", "user", "sourceip", "action"],
+        "acknowledge_data_review": True,
+    })
+
+    payload = json.loads(result[0]["text"])
+    assert payload["status"] == "PASS"
+    kwargs = handlers.log_source_builder_tool.create_from_sample.await_args.kwargs
+    assert kwargs["format"] == "regex_text"
+    assert kwargs["regex_pattern"] == r"^(\w+) user=(\S+) ip=(\S+) action=(\S+)$"
+    assert kwargs["regex_field_keys"] == ["severity", "user", "sourceip", "action"]
+    assert kwargs["filename"] is None
+
+
 
 
 # ---------------------------------------------------------------------------

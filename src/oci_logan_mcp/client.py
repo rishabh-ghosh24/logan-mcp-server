@@ -509,6 +509,61 @@ class OCILogAnalyticsClient:
             "headers": dict(response.headers),
         }
 
+    async def upsert_regex_parser(
+        self,
+        *,
+        parser_name: str,
+        display_name: str,
+        field_paths: Sequence[Tuple[str, str]],
+        field_mappings: Dict[str, str],
+        regex_pattern: str,
+        example_content: str,
+        description: str = "Auto-generated parser from sample regex text logs.",
+    ) -> Dict[str, Any]:
+        """Create or update a regex parser using the native Log Analytics API."""
+        await self._rate_limiter.acquire()
+
+        field_maps = []
+        for key, group_number in field_paths:
+            field_name = field_mappings.get(key)
+            if not field_name:
+                continue
+            field_maps.append(
+                oci.log_analytics.models.LogAnalyticsParserField(
+                    parser_field_sequence=int(group_number),
+                    parser_field_name=field_name,
+                )
+            )
+
+        details = oci.log_analytics.models.UpsertLogAnalyticsParserDetails(
+            name=parser_name,
+            display_name=display_name,
+            description=description,
+            type="REGEX",
+            # v1 regex text support treats each physical line as one record.
+            is_single_line_content=True,
+            content=regex_pattern,
+            example_content=example_content,
+            is_system=False,
+            encoding="UTF-8",
+            language="en_US",
+            field_maps=field_maps,
+            is_parser_written_once=False,
+            is_default=False,
+            should_tokenize_original_text=True,
+        )
+        response = await asyncio.to_thread(
+            self._la_client.upsert_parser,
+            namespace_name=self._namespace,
+            upsert_log_analytics_parser_details=details,
+        )
+        self._rate_limiter.reset()
+
+        return {
+            "data": oci.util.to_dict(response.data) if response.data is not None else None,
+            "headers": dict(response.headers),
+        }
+
     async def upsert_log_source(
         self,
         *,

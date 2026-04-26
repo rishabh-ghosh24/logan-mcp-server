@@ -663,6 +663,8 @@ class MCPHandlers:
             acknowledge_data_review=args.get("acknowledge_data_review", False),
             overwrite=args.get("overwrite", False),
             format=args.get("format", "json_ndjson"),
+            regex_pattern=args.get("regex_pattern"),
+            regex_field_keys=args.get("regex_field_keys"),
             verification_time_range=args.get("verification_time_range", "last_30_days"),
             field_check_limit=args.get("field_check_limit", 20),
             poll_attempts=args.get("poll_attempts", 6),
