@@ -493,7 +493,7 @@ async def test_create_from_sample_quotes_mapped_field_names_with_spaces():
 
     queries = [call.kwargs["query"] for call in query_engine.execute.await_args_list]
     assert (
-        "* AND 'Upload Name' = 'field-check-upload' AND 'Original Log Content' is not null | stats count"
+        "* AND 'Upload Name' = 'field-check-upload' | stats count('Original Log Content')"
         in queries
     )
 

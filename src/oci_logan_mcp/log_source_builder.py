@@ -521,7 +521,7 @@ class LogSourceFromSampleTool:
         if ingested_count > 0:
             for field_name in checked_fields:
                 field_query = (
-                    f"{verification_filter} AND {_quote_lql_field(field_name)} is not null | stats count"
+                    f"{verification_filter} | stats count({_quote_lql_field(field_name)})"
                 )
                 field_result = await self.query_engine.execute(
                     query=field_query,
