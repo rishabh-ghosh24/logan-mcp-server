@@ -80,7 +80,7 @@ def get_tools() -> List[Dict[str, Any]]:
             "name": "create_log_source_from_sample",
             "destructive": True,
             "description": (
-                "Create a Log Analytics parser and log source from JSON/NDJSON or CSV sample logs, "
+                "Create a Log Analytics parser and log source from JSON/NDJSON, CSV, or regex text sample logs, "
                 "upload the sample workload to OCI Log Analytics, and verify parse failures. "
                 "Only provide logs you are allowed to upload; remove secrets, tokens, PII, "
                 "and customer-sensitive values before continuing. "
@@ -106,14 +106,30 @@ def get_tools() -> List[Dict[str, Any]]:
                             {"type": "string"},
                             {"type": "array", "items": {"type": "string"}},
                         ],
-                        "description": "Non-sensitive JSON/NDJSON or CSV sample logs to upload and verify.",
+                        "description": "Non-sensitive JSON/NDJSON, CSV, or regex text sample logs to upload and verify.",
                     },
                     "format": {
                         "type": "string",
-                        "enum": ["json_ndjson", "csv"],
+                        "enum": ["json_ndjson", "csv", "regex_text"],
                         "description": (
                             "Sample format. Use json_ndjson for one JSON object per line, "
-                            "or csv for comma-delimited data with a header row. Default: json_ndjson."
+                            "csv for comma-delimited data with a header row, or regex_text "
+                            "for line-oriented text parsed by regex capture groups. Default: json_ndjson."
+                        ),
+                    },
+                    "regex_pattern": {
+                        "type": "string",
+                        "description": (
+                            "Required when format=regex_text. Regular expression with numbered "
+                            "capture groups; each non-empty sample line must match."
+                        ),
+                    },
+                    "regex_field_keys": {
+                        "type": "array",
+                        "items": {"type": "string"},
+                        "description": (
+                            "Required when format=regex_text. Ordered field keys aligned 1:1 "
+                            "with regex_pattern capture groups."
                         ),
                     },
                     "log_group_id": {
@@ -153,7 +169,7 @@ def get_tools() -> List[Dict[str, Any]]:
                     },
                     "filename": {
                         "type": "string",
-                        "description": "Filename used for the sample upload. Default: sample.ndjson for JSON/NDJSON, sample.csv for CSV.",
+                        "description": "Filename used for the sample upload. Default: sample.ndjson for JSON/NDJSON, sample.csv for CSV, sample.log for regex text.",
                     },
                     "upload_name": {
                         "type": "string",
