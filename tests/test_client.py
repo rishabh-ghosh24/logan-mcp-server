@@ -279,6 +279,60 @@ class TestCustomContentAndUpload:
         assert result["headers"]["opc-request-id"] == "req1"
 
     @pytest.mark.asyncio
+    async def test_upsert_json_parser_uses_native_parser_model(self, client):
+        response = MagicMock()
+        response.data = MagicMock()
+        response.headers = {"opc-request-id": "parser-req"}
+
+        with patch("oci_logan_mcp.client.oci.util.to_dict", return_value={"parser": "ok"}):
+            client._la_client.upsert_parser.return_value = response
+            result = await client.upsert_json_parser(
+                parser_name="App_JSON",
+                display_name="App JSON",
+                field_paths=[("alpha", "$.alpha")],
+                field_mappings={"alpha": "udfs1"},
+                example_content='{"alpha":"one"}',
+            )
+
+        call = client._la_client.upsert_parser.call_args
+        details = call.kwargs["upsert_log_analytics_parser_details"]
+        assert call.kwargs["namespace_name"] == "testns"
+        assert details.name == "App_JSON"
+        assert details.display_name == "App JSON"
+        assert details.type == "JSON"
+        assert details.header_content == "$:0"
+        assert details.example_content == '{"alpha":"one"}'
+        assert details.field_maps[0].parser_field_name == "udfs1"
+        assert details.field_maps[0].structured_column_info == "$.alpha"
+        assert result["data"] == {"parser": "ok"}
+
+    @pytest.mark.asyncio
+    async def test_upsert_log_source_binds_parser_and_entity_type(self, client):
+        response = MagicMock()
+        response.data = MagicMock()
+        response.headers = {"opc-request-id": "source-req"}
+
+        with patch("oci_logan_mcp.client.oci.util.to_dict", return_value={"source": "ok"}):
+            client._la_client.upsert_source.return_value = response
+            result = await client.upsert_log_source(
+                source_name="App Logs",
+                parser_name="App_JSON",
+                display_name="App Logs",
+                entity_type="omc_host_linux",
+            )
+
+        call = client._la_client.upsert_source.call_args
+        details = call.kwargs["upsert_log_analytics_source_details"]
+        assert call.kwargs["namespace_name"] == "testns"
+        assert call.kwargs["is_ignore_warning"] is True
+        assert details.name == "App Logs"
+        assert details.type_name == "os_file"
+        assert details.parsers[0].name == "App_JSON"
+        assert details.parsers[0].parser_sequence == 1
+        assert details.entity_types[0].entity_type == "omc_host_linux"
+        assert result["data"] == {"source": "ok"}
+
+    @pytest.mark.asyncio
     async def test_upload_log_file_sends_content_to_source_and_log_group(self, client):
         response = MagicMock()
         response.data = MagicMock()

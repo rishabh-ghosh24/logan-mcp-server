@@ -127,7 +127,7 @@ def test_build_custom_content_zip_contains_parser_and_source_xml():
 
 
 @pytest.mark.asyncio
-async def test_create_from_sample_imports_uploads_and_checks_parse_failure():
+async def test_create_from_sample_upserts_uploads_and_checks_parse_failure():
     oci_client = AsyncMock()
     oci_client.list_parsers.return_value = []
     oci_client.list_log_sources.return_value = []
@@ -137,10 +137,8 @@ async def test_create_from_sample_imports_uploads_and_checks_parse_failure():
         {"name": "clnthostip"},
         {"name": "udfs1"},
     ]
-    oci_client.import_custom_content.return_value = {
-        "parser_names": ["BlueCat_Edge_DNS_JSON"],
-        "source_names": ["BlueCat Edge DNS Logs"],
-    }
+    oci_client.upsert_json_parser.return_value = {"data": {"name": "BlueCat_Edge_DNS_JSON"}}
+    oci_client.upsert_log_source.return_value = {"data": {"name": "BlueCat Edge DNS Logs"}}
     oci_client.upload_log_file.return_value = {"upload_name": "logan-sample"}
 
     query_engine = AsyncMock()
@@ -176,8 +174,17 @@ async def test_create_from_sample_imports_uploads_and_checks_parse_failure():
     assert result["verification"]["upload_filter_field"] == "Upload Name"
     assert result["inference"]["truncated_at_max_fields"] is False
     assert "Only provide logs" in result["data_warning"]
-    oci_client.import_custom_content.assert_awaited_once()
-    assert oci_client.import_custom_content.await_args.kwargs["overwrite"] is False
+    oci_client.upsert_json_parser.assert_awaited_once()
+    parser_kwargs = oci_client.upsert_json_parser.await_args.kwargs
+    assert parser_kwargs["parser_name"] == "BlueCat_Edge_DNS_JSON"
+    assert parser_kwargs["example_content"].endswith("\n")
+    assert len(parser_kwargs["example_content"].splitlines()) == 2
+    oci_client.upsert_log_source.assert_awaited_once_with(
+        source_name="BlueCat Edge DNS Logs",
+        parser_name="BlueCat_Edge_DNS_JSON",
+        display_name="BlueCat Edge DNS Logs",
+        entity_type="omc_host_linux",
+    )
     oci_client.upload_log_file.assert_awaited_once()
     assert oci_client.upload_log_file.await_args.kwargs["upload_name"] == "logan-sample"
     queries = [call.kwargs["query"] for call in query_engine.execute.await_args_list]
@@ -198,7 +205,8 @@ async def test_create_from_sample_fails_when_parse_failures_are_seen():
     oci_client.list_parsers.return_value = []
     oci_client.list_log_sources.return_value = []
     oci_client.list_fields.return_value = [{"name": "event"}, {"name": "udfs1"}]
-    oci_client.import_custom_content.return_value = {}
+    oci_client.upsert_json_parser.return_value = {}
+    oci_client.upsert_log_source.return_value = {}
     oci_client.upload_log_file.return_value = {}
 
     query_engine = AsyncMock()
@@ -228,7 +236,8 @@ async def test_create_from_sample_fails_when_upload_processing_fails():
     oci_client.list_parsers.return_value = []
     oci_client.list_log_sources.return_value = []
     oci_client.list_fields.return_value = [{"name": "event"}, {"name": "udfs1"}]
-    oci_client.import_custom_content.return_value = {}
+    oci_client.upsert_json_parser.return_value = {}
+    oci_client.upsert_log_source.return_value = {}
     oci_client.upload_log_file.return_value = {"data": {"reference": "upload-ref"}}
     oci_client.list_upload_files.return_value = [
         {
@@ -266,7 +275,8 @@ async def test_create_from_sample_retries_transient_upload_status_errors():
     oci_client.list_parsers.return_value = []
     oci_client.list_log_sources.return_value = []
     oci_client.list_fields.return_value = [{"name": "event"}, {"name": "udfs1"}]
-    oci_client.import_custom_content.return_value = {}
+    oci_client.upsert_json_parser.return_value = {}
+    oci_client.upsert_log_source.return_value = {}
     oci_client.upload_log_file.return_value = {"data": {"reference": "upload-ref"}}
     oci_client.list_upload_files.side_effect = [
         Exception("upload not visible yet"),
@@ -327,7 +337,8 @@ async def test_create_from_sample_refuses_name_collision_without_overwrite():
         "parser_exists": True,
         "source_exists": True,
     }
-    oci_client.import_custom_content.assert_not_awaited()
+    oci_client.upsert_json_parser.assert_not_awaited()
+    oci_client.upsert_log_source.assert_not_awaited()
     oci_client.upload_log_file.assert_not_awaited()
 
 
@@ -354,7 +365,8 @@ async def test_create_from_sample_reports_single_name_collisions(parsers, source
 
     assert result["status"] == "CONFLICT"
     assert result["conflicts"] == expected
-    oci_client.import_custom_content.assert_not_awaited()
+    oci_client.upsert_json_parser.assert_not_awaited()
+    oci_client.upsert_log_source.assert_not_awaited()
     oci_client.upload_log_file.assert_not_awaited()
 
 
@@ -364,7 +376,8 @@ async def test_create_from_sample_returns_indeterminate_when_upload_not_queryabl
     oci_client.list_parsers.return_value = []
     oci_client.list_log_sources.return_value = []
     oci_client.list_fields.return_value = [{"name": "event"}, {"name": "udfs1"}]
-    oci_client.import_custom_content.return_value = {}
+    oci_client.upsert_json_parser.return_value = {}
+    oci_client.upsert_log_source.return_value = {}
     oci_client.upload_log_file.return_value = {}
 
     query_engine = AsyncMock()
@@ -393,7 +406,8 @@ async def test_create_from_sample_warns_when_only_some_uploaded_lines_are_querya
     oci_client.list_parsers.return_value = []
     oci_client.list_log_sources.return_value = []
     oci_client.list_fields.return_value = [{"name": "event"}]
-    oci_client.import_custom_content.return_value = {}
+    oci_client.upsert_json_parser.return_value = {}
+    oci_client.upsert_log_source.return_value = {}
     oci_client.upload_log_file.return_value = {}
 
     query_engine = AsyncMock()
@@ -422,7 +436,8 @@ async def test_create_from_sample_warns_when_some_fields_are_empty():
     oci_client.list_parsers.return_value = []
     oci_client.list_log_sources.return_value = []
     oci_client.list_fields.return_value = [{"name": "event"}, {"name": "udfs1"}]
-    oci_client.import_custom_content.return_value = {}
+    oci_client.upsert_json_parser.return_value = {}
+    oci_client.upsert_log_source.return_value = {}
     oci_client.upload_log_file.return_value = {}
 
     query_engine = AsyncMock()
@@ -453,7 +468,8 @@ async def test_create_from_sample_quotes_mapped_field_names_with_spaces():
     oci_client.list_parsers.return_value = []
     oci_client.list_log_sources.return_value = []
     oci_client.list_fields.return_value = [{"name": "Original Log Content"}]
-    oci_client.import_custom_content.return_value = {}
+    oci_client.upsert_json_parser.return_value = {}
+    oci_client.upsert_log_source.return_value = {}
     oci_client.upload_log_file.return_value = {}
 
     query_engine = AsyncMock()
@@ -488,7 +504,8 @@ async def test_create_from_sample_reports_inference_truncation_in_result():
     oci_client.list_parsers.return_value = []
     oci_client.list_log_sources.return_value = []
     oci_client.list_fields.return_value = [{"name": f"udfs{i}"} for i in range(1, 41)]
-    oci_client.import_custom_content.return_value = {}
+    oci_client.upsert_json_parser.return_value = {}
+    oci_client.upsert_log_source.return_value = {}
     oci_client.upload_log_file.return_value = {}
 
     query_engine = AsyncMock()

@@ -432,17 +432,21 @@ class LogSourceFromSampleTool:
 
         available_fields = await self.oci_client.list_fields()
         mappings, skipped = build_field_mappings(inferred_paths, available_fields, field_mappings)
-        content_zip = build_custom_content_zip(
-            source_name=source_name,
+
+        sample_content = "\n".join(lines) + "\n"
+        parser_result = await self.oci_client.upsert_json_parser(
             parser_name=parser_name,
-            parser_display_name=parser_display_name,
+            display_name=parser_display_name,
             field_paths=inferred_paths,
             field_mappings=mappings,
+            example_content=sample_content,
+        )
+        source_result = await self.oci_client.upsert_log_source(
+            source_name=source_name,
+            parser_name=parser_name,
+            display_name=source_name,
             entity_type=entity_type,
         )
-
-        import_result = await self.oci_client.import_custom_content(content_zip, overwrite=overwrite)
-        sample_content = "\n".join(lines) + "\n"
         effective_upload_name = upload_name or f"{parser_name}_sample_{int(time.time())}"
         upload_result = await self.oci_client.upload_log_file(
             source_name=source_name,
@@ -567,7 +571,8 @@ class LogSourceFromSampleTool:
                 "skipped_fields": skipped,
             },
             "oci": {
-                "import": _safe_oci_result(import_result),
+                "parser": _safe_oci_result(parser_result),
+                "source": _safe_oci_result(source_result),
                 "upload": _safe_oci_result(upload_result),
             },
             "verification": {
