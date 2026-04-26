@@ -137,7 +137,15 @@ async def test_create_from_sample_upserts_uploads_and_checks_parse_failure():
         {"name": "clnthostip"},
         {"name": "udfs1"},
     ]
-    oci_client.upsert_json_parser.return_value = {"data": {"name": "BlueCat_Edge_DNS_JSON"}}
+    oci_client.upsert_json_parser.return_value = {
+        "data": {
+            "name": "BlueCat_Edge_DNS_JSON",
+            "example_content": (
+                '{"time":1773402155051,"eventType":"query-response","sourceAddress":"192.0.2.10"}\n'
+                '{"time":1773402155052,"eventType":"query-response","sourceAddress":"192.0.2.11"}\n'
+            ),
+        },
+    }
     oci_client.upsert_log_source.return_value = {"data": {"name": "BlueCat Edge DNS Logs"}}
     oci_client.upload_log_file.return_value = {"upload_name": "logan-sample"}
 
@@ -173,6 +181,7 @@ async def test_create_from_sample_upserts_uploads_and_checks_parse_failure():
     assert result["verification"]["upload_name"] == "logan-sample"
     assert result["verification"]["upload_filter_field"] == "Upload Name"
     assert result["inference"]["truncated_at_max_fields"] is False
+    assert result["oci"]["parser"]["data"]["example_content"] == "<redacted>"
     assert "Only provide logs" in result["data_warning"]
     oci_client.upsert_json_parser.assert_awaited_once()
     parser_kwargs = oci_client.upsert_json_parser.await_args.kwargs

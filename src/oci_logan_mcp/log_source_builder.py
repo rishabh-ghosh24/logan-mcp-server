@@ -350,7 +350,11 @@ def _contains_name(items: Sequence[Any], name: str) -> bool:
     return any(_item_name(item) == name for item in items)
 
 
-def _safe_oci_result(result: Dict[str, Any]) -> Dict[str, Any]:
+def _safe_oci_result(
+    result: Dict[str, Any],
+    *,
+    redact_data_keys: Sequence[str] = (),
+) -> Dict[str, Any]:
     allowed_headers = {"opc-request-id", "opc-work-request-id"}
     safe = dict(result or {})
     headers = safe.get("headers")
@@ -360,6 +364,13 @@ def _safe_oci_result(result: Dict[str, Any]) -> Dict[str, Any]:
             for key, value in headers.items()
             if key.lower() in allowed_headers
         }
+    data = safe.get("data")
+    if isinstance(data, dict) and redact_data_keys:
+        safe_data = dict(data)
+        for key in redact_data_keys:
+            if key in safe_data:
+                safe_data[key] = "<redacted>"
+        safe["data"] = safe_data
     return safe
 
 
@@ -571,7 +582,7 @@ class LogSourceFromSampleTool:
                 "skipped_fields": skipped,
             },
             "oci": {
-                "parser": _safe_oci_result(parser_result),
+                "parser": _safe_oci_result(parser_result, redact_data_keys=("example_content",)),
                 "source": _safe_oci_result(source_result),
                 "upload": _safe_oci_result(upload_result),
             },
