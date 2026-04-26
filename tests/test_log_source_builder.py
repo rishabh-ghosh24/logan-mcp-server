@@ -166,6 +166,22 @@ def test_infer_regex_text_field_paths_accepts_oci_java_regex_constructs():
     assert truncated is False
 
 
+def test_infer_regex_text_field_paths_ignores_literal_parens_and_char_class_parens():
+    with pytest.raises(ValueError, match="at least one capture group"):
+        infer_regex_text_field_paths(
+            ["literal (paren)"],
+            regex_pattern=r"literal \\\(paren\\\)",
+            regex_field_keys=["value"],
+        )
+
+    with pytest.raises(ValueError, match="at least one capture group"):
+        infer_regex_text_field_paths(
+            ["a"],
+            regex_pattern=r"[abc(def)]",
+            regex_field_keys=["value"],
+        )
+
+
 def test_infer_regex_text_field_paths_rejects_invalid_regex_setup():
     with pytest.raises(ValueError, match="regex_pattern is required"):
         infer_regex_text_field_paths(
