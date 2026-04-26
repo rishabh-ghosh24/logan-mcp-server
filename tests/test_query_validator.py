@@ -40,6 +40,17 @@ class TestQueryValidator:
         assert len(result.errors) == 0
 
     @pytest.mark.asyncio
+    async def test_validate_allows_log_analytics_synthetic_fields(self, validator):
+        """Synthetic LA fields can be queryable even when absent from schema discovery."""
+        result = await validator.validate(
+            "* AND 'Upload Name' = 'sample-upload' AND 'Parse Failed' = 1 | "
+            "fields 'Log Source', 'Original Log Content', 'Time', 'Upload Name'"
+        )
+
+        assert result.valid is True
+        assert result.errors == []
+
+    @pytest.mark.asyncio
     async def test_unbalanced_quotes(self, validator):
         """Test detection of unbalanced quotes."""
         result = await validator.validate("'Error | stats count")

@@ -110,6 +110,40 @@ def test_find_rare_events_schema():
     assert spec["inputSchema"]["required"] == ["source", "field", "time_range"]
 
 
+def test_create_log_source_from_sample_schema():
+    tools = {t["name"]: t for t in get_tools()}
+    spec = tools["create_log_source_from_sample"]
+    props = spec["inputSchema"]["properties"]
+
+    assert spec["destructive"] is True
+    assert "TWO-FACTOR CONFIRMATION" in spec["description"]
+    assert "source_name" in props
+    assert "sample_logs" in props
+    assert "log_group_id" in props
+    assert "format" in props
+    assert props["format"]["enum"] == ["json_ndjson", "csv"]
+    assert "acknowledge_data_review" in props
+    assert "overwrite" in props
+    assert "verification_time_range" in props
+    assert props["verification_time_range"]["enum"] == [
+        "last_15_min",
+        "last_1_hour",
+        "last_24_hours",
+        "last_7_days",
+        "last_30_days",
+    ]
+    assert "field_check_limit" in props
+    assert "log_set" in props
+    assert "confirmation_token" in props
+    assert "confirmation_secret" in props
+    assert spec["inputSchema"]["required"] == [
+        "source_name",
+        "sample_logs",
+        "log_group_id",
+        "acknowledge_data_review",
+    ]
+
+
 def test_playbook_tool_schemas():
     tools = {t["name"]: t for t in get_tools()}
     assert "record_investigation" in tools

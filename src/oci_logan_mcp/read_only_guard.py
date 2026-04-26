@@ -36,6 +36,7 @@ MUTATING_TOOLS: frozenset[str] = frozenset(
         "send_to_slack",
         "send_to_telegram",
         "deliver_report",
+        "create_log_source_from_sample",
     }
 )
 

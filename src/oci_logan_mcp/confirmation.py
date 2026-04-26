@@ -32,6 +32,7 @@ GUARDED_TOOLS = frozenset({
     "create_alert",
     "create_saved_search",
     "create_dashboard",
+    "create_log_source_from_sample",
 })
 
 _SUMMARY_KEYS: Dict[str, list] = {
@@ -50,6 +51,12 @@ _SUMMARY_KEYS: Dict[str, list] = {
     ],
     "create_dashboard": [
         "display_name", "tiles",
+    ],
+    "create_log_source_from_sample": [
+        "source_name", "parser_name", "format", "log_group_id",
+        "entity_type", "filename", "overwrite",
+        "acknowledge_data_review", "verification_time_range", "poll_attempts",
+        "sample_line_count", "data_warning",
     ],
     "run_query": [
         "query", "time_range", "time_start", "time_end",
@@ -195,7 +202,7 @@ class ConfirmationManager:
         for key in _SUMMARY_KEYS.get(tool_name, []):
             if key in arguments:
                 val = str(arguments[key])
-                if len(val) > 120:
+                if key != "data_warning" and len(val) > 120:
                     val = val[:120] + "..."
                 parts.append(f"  {key}: {val}")
         return "\n".join(parts)

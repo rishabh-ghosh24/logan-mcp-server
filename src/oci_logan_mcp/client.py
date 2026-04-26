@@ -2,7 +2,8 @@
 
 import asyncio
 import logging
-from typing import Optional, List, Dict, Any
+from io import BytesIO
+from typing import Optional, List, Dict, Any, Sequence, Tuple
 from datetime import datetime
 from pathlib import Path
 
@@ -370,6 +371,259 @@ class OCILogAnalyticsClient:
                 "display_name": getattr(f, "display_name", f.name),
                 "data_type": getattr(f, "data_type", "STRING"),
                 "description": getattr(f, "description", ""),
+            }
+            for f in _get_items(response.data)
+        ]
+
+    async def import_custom_content(self, content_zip: bytes, *, overwrite: bool = True) -> Dict[str, Any]:
+        """Import a Log Analytics custom-content zip."""
+        await self._rate_limiter.acquire()
+
+        response = await asyncio.to_thread(
+            self._la_client.import_custom_content,
+            namespace_name=self._namespace,
+            import_custom_content_file_body=BytesIO(content_zip),
+            is_overwrite=overwrite,
+        )
+        self._rate_limiter.reset()
+
+        return {
+            "data": oci.util.to_dict(response.data) if response.data is not None else None,
+            "headers": dict(response.headers),
+        }
+
+    async def upsert_json_parser(
+        self,
+        *,
+        parser_name: str,
+        display_name: str,
+        field_paths: Sequence[Tuple[str, str]],
+        field_mappings: Dict[str, str],
+        example_content: str,
+        description: str = "Auto-generated parser from sample JSON/NDJSON logs.",
+    ) -> Dict[str, Any]:
+        """Create or update a JSON parser using the native Log Analytics API."""
+        await self._rate_limiter.acquire()
+
+        field_maps = []
+        sequence = 1
+        for key, json_path in field_paths:
+            field_name = field_mappings.get(key)
+            if not field_name:
+                continue
+            field_maps.append(
+                oci.log_analytics.models.LogAnalyticsParserField(
+                    parser_field_sequence=sequence,
+                    parser_field_name=field_name,
+                    structured_column_info=json_path,
+                )
+            )
+            sequence += 1
+
+        details = oci.log_analytics.models.UpsertLogAnalyticsParserDetails(
+            name=parser_name,
+            display_name=display_name,
+            description=description,
+            type="JSON",
+            # Native JSON parser exports use multi-line mode; NDJSON still works
+            # because each uploaded line is independently parsed as JSON content.
+            is_single_line_content=False,
+            header_content="$:0",
+            example_content=example_content,
+            is_system=False,
+            encoding="UTF-8",
+            language="en_US",
+            field_maps=field_maps,
+            is_parser_written_once=False,
+            is_default=False,
+            should_tokenize_original_text=True,
+        )
+        response = await asyncio.to_thread(
+            self._la_client.upsert_parser,
+            namespace_name=self._namespace,
+            upsert_log_analytics_parser_details=details,
+        )
+        self._rate_limiter.reset()
+
+        return {
+            "data": oci.util.to_dict(response.data) if response.data is not None else None,
+            "headers": dict(response.headers),
+        }
+
+    async def upsert_delimited_parser(
+        self,
+        *,
+        parser_name: str,
+        display_name: str,
+        field_paths: Sequence[Tuple[str, str]],
+        field_mappings: Dict[str, str],
+        header_content: str,
+        example_content: str,
+        field_delimiter: str = ",",
+        field_qualifier: str = '"',
+        description: str = "Auto-generated parser from sample CSV logs.",
+    ) -> Dict[str, Any]:
+        """Create or update a delimited parser using the native Log Analytics API."""
+        await self._rate_limiter.acquire()
+
+        field_maps = []
+        for key, column_number in field_paths:
+            field_name = field_mappings.get(key)
+            if not field_name:
+                continue
+            field_maps.append(
+                oci.log_analytics.models.LogAnalyticsParserField(
+                    parser_field_sequence=int(column_number),
+                    parser_field_name=field_name,
+                )
+            )
+
+        details = oci.log_analytics.models.UpsertLogAnalyticsParserDetails(
+            name=parser_name,
+            display_name=display_name,
+            description=description,
+            type="DELIMITED",
+            # CSV uploads are prepared as one record per physical line.
+            is_single_line_content=True,
+            field_delimiter=field_delimiter,
+            field_qualifier=field_qualifier,
+            header_content=header_content,
+            example_content=example_content,
+            is_system=False,
+            encoding="UTF-8",
+            language="en_US",
+            field_maps=field_maps,
+            is_parser_written_once=False,
+            is_default=False,
+            should_tokenize_original_text=True,
+        )
+        response = await asyncio.to_thread(
+            self._la_client.upsert_parser,
+            namespace_name=self._namespace,
+            upsert_log_analytics_parser_details=details,
+        )
+        self._rate_limiter.reset()
+
+        return {
+            "data": oci.util.to_dict(response.data) if response.data is not None else None,
+            "headers": dict(response.headers),
+        }
+
+    async def upsert_log_source(
+        self,
+        *,
+        source_name: str,
+        parser_name: str,
+        display_name: str,
+        entity_type: str,
+        description: str = "Auto-generated log source from sample logs.",
+    ) -> Dict[str, Any]:
+        """Create or update a log source and bind it to the parser/entity type."""
+        await self._rate_limiter.acquire()
+
+        details = oci.log_analytics.models.UpsertLogAnalyticsSourceDetails(
+            name=source_name,
+            display_name=display_name,
+            description=description,
+            type_name="os_file",
+            warning_config=0,
+            is_secure_content=True,
+            is_system=False,
+            parsers=[
+                oci.log_analytics.models.LogAnalyticsParser(
+                    name=parser_name,
+                    parser_sequence=1,
+                )
+            ],
+            entity_types=[
+                oci.log_analytics.models.LogAnalyticsSourceEntityType(
+                    entity_type=entity_type,
+                )
+            ],
+        )
+        response = await asyncio.to_thread(
+            self._la_client.upsert_source,
+            namespace_name=self._namespace,
+            upsert_log_analytics_source_details=details,
+            is_ignore_warning=True,
+        )
+        self._rate_limiter.reset()
+
+        return {
+            "data": oci.util.to_dict(response.data) if response.data is not None else None,
+            "headers": dict(response.headers),
+        }
+
+    async def upload_log_file(
+        self,
+        *,
+        source_name: str,
+        filename: str,
+        log_group_id: str,
+        content: Any,
+        upload_name: Optional[str] = None,
+        entity_id: Optional[str] = None,
+        timezone: Optional[str] = None,
+        log_set: Optional[str] = None,
+        char_encoding: Optional[str] = "UTF-8",
+    ) -> Dict[str, Any]:
+        """Upload a log file to Log Analytics for processing by a source."""
+        await self._rate_limiter.acquire()
+
+        body = content if isinstance(content, bytes) else str(content).encode("utf-8")
+        kwargs = {
+            "namespace_name": self._namespace,
+            "log_source_name": source_name,
+            "filename": filename,
+            "opc_meta_loggrpid": log_group_id,
+            "upload_log_file_body": BytesIO(body),
+        }
+        if upload_name:
+            kwargs["upload_name"] = upload_name
+        if entity_id:
+            kwargs["entity_id"] = entity_id
+        if timezone:
+            kwargs["timezone"] = timezone
+        if log_set:
+            kwargs["log_set"] = log_set
+        if char_encoding:
+            kwargs["char_encoding"] = char_encoding
+
+        response = await asyncio.to_thread(self._la_client.upload_log_file, **kwargs)
+        self._rate_limiter.reset()
+
+        return {
+            "data": oci.util.to_dict(response.data) if response.data is not None else None,
+            "headers": dict(response.headers),
+        }
+
+    async def list_upload_files(self, upload_reference: str) -> List[Dict[str, Any]]:
+        """List file-level processing status for a Log Analytics upload."""
+        await self._rate_limiter.acquire()
+
+        response = await asyncio.to_thread(
+            self._la_client.list_upload_files,
+            namespace_name=self._namespace,
+            upload_reference=upload_reference,
+        )
+        self._rate_limiter.reset()
+
+        return [
+            {
+                "reference": getattr(f, "reference", None),
+                "name": getattr(f, "name", None),
+                "status": getattr(f, "status", None),
+                "total_chunks": getattr(f, "total_chunks", None),
+                "chunks_consumed": getattr(f, "chunks_consumed", None),
+                "chunks_success": getattr(f, "chunks_success", None),
+                "chunks_fail": getattr(f, "chunks_fail", None),
+                "time_started": getattr(f, "time_started", None),
+                "source_name": getattr(f, "source_name", None),
+                "entity_type": getattr(f, "entity_type", None),
+                "entity_name": getattr(f, "entity_name", None),
+                "log_group_id": getattr(f, "log_group_id", None),
+                "log_group_name": getattr(f, "log_group_name", None),
+                "failure_details": getattr(f, "failure_details", None),
             }
             for f in _get_items(response.data)
         ]

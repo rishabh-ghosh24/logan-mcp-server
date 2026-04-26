@@ -1,6 +1,7 @@
 """Exhaustive tests for OCI Log Analytics client — especially pagination."""
 
 import json
+from io import BytesIO
 from pathlib import Path
 from types import SimpleNamespace
 from unittest.mock import MagicMock, AsyncMock, patch, PropertyMock
@@ -254,6 +255,187 @@ class TestListFieldsPagination:
 
         call_kwargs = mock_paginate.call_args.kwargs
         assert "source_name" not in call_kwargs
+
+
+class TestCustomContentAndUpload:
+    """Test wrappers used by create_log_source_from_sample."""
+
+    @pytest.mark.asyncio
+    async def test_import_custom_content_wraps_zip_bytes(self, client):
+        response = MagicMock()
+        response.data = MagicMock()
+        response.headers = {"opc-request-id": "req1"}
+
+        with patch("oci_logan_mcp.client.oci.util.to_dict", return_value={"ok": True}):
+            client._la_client.import_custom_content.return_value = response
+            result = await client.import_custom_content(b"zip-bytes", overwrite=True)
+
+        call = client._la_client.import_custom_content.call_args
+        assert call.kwargs["namespace_name"] == "testns"
+        assert isinstance(call.kwargs["import_custom_content_file_body"], BytesIO)
+        assert call.kwargs["import_custom_content_file_body"].getvalue() == b"zip-bytes"
+        assert call.kwargs["is_overwrite"] is True
+        assert result["data"] == {"ok": True}
+        assert result["headers"]["opc-request-id"] == "req1"
+
+    @pytest.mark.asyncio
+    async def test_upsert_json_parser_uses_native_parser_model(self, client):
+        response = MagicMock()
+        response.data = MagicMock()
+        response.headers = {"opc-request-id": "parser-req"}
+
+        with patch("oci_logan_mcp.client.oci.util.to_dict", return_value={"parser": "ok"}):
+            client._la_client.upsert_parser.return_value = response
+            result = await client.upsert_json_parser(
+                parser_name="App_JSON",
+                display_name="App JSON",
+                field_paths=[("alpha", "$.alpha")],
+                field_mappings={"alpha": "udfs1"},
+                example_content='{"alpha":"one"}',
+            )
+
+        call = client._la_client.upsert_parser.call_args
+        details = call.kwargs["upsert_log_analytics_parser_details"]
+        assert call.kwargs["namespace_name"] == "testns"
+        assert details.name == "App_JSON"
+        assert details.display_name == "App JSON"
+        assert details.type == "JSON"
+        assert details.header_content == "$:0"
+        assert details.example_content == '{"alpha":"one"}'
+        assert details.field_maps[0].parser_field_name == "udfs1"
+        assert details.field_maps[0].structured_column_info == "$.alpha"
+        assert result["data"] == {"parser": "ok"}
+
+    @pytest.mark.asyncio
+    async def test_upsert_delimited_parser_uses_native_parser_model(self, client):
+        response = MagicMock()
+        response.data = MagicMock()
+        response.headers = {"opc-request-id": "parser-req"}
+
+        with patch("oci_logan_mcp.client.oci.util.to_dict", return_value={"parser": "ok"}):
+            client._la_client.upsert_parser.return_value = response
+            result = await client.upsert_delimited_parser(
+                parser_name="App_CSV",
+                display_name="App CSV",
+                field_paths=[("Source_IP", "1")],
+                field_mappings={"Source_IP": "clnthostip"},
+                header_content="Source IP",
+                example_content="192.0.2.10\n",
+            )
+
+        call = client._la_client.upsert_parser.call_args
+        details = call.kwargs["upsert_log_analytics_parser_details"]
+        assert call.kwargs["namespace_name"] == "testns"
+        assert details.name == "App_CSV"
+        assert details.display_name == "App CSV"
+        assert details.type == "DELIMITED"
+        assert details.is_single_line_content is True
+        assert details.field_delimiter == ","
+        assert details.field_qualifier == '"'
+        assert details.header_content == "Source IP"
+        assert details.example_content == "192.0.2.10\n"
+        assert details.field_maps[0].parser_field_sequence == 1
+        assert details.field_maps[0].parser_field_name == "clnthostip"
+        assert details.field_maps[0].structured_column_info is None
+        assert result["data"] == {"parser": "ok"}
+
+    @pytest.mark.asyncio
+    async def test_upsert_log_source_binds_parser_and_entity_type(self, client):
+        response = MagicMock()
+        response.data = MagicMock()
+        response.headers = {"opc-request-id": "source-req"}
+
+        with patch("oci_logan_mcp.client.oci.util.to_dict", return_value={"source": "ok"}):
+            client._la_client.upsert_source.return_value = response
+            result = await client.upsert_log_source(
+                source_name="App Logs",
+                parser_name="App_JSON",
+                display_name="App Logs",
+                entity_type="omc_host_linux",
+            )
+
+        call = client._la_client.upsert_source.call_args
+        details = call.kwargs["upsert_log_analytics_source_details"]
+        assert call.kwargs["namespace_name"] == "testns"
+        assert call.kwargs["is_ignore_warning"] is True
+        assert details.name == "App Logs"
+        assert details.type_name == "os_file"
+        assert details.parsers[0].name == "App_JSON"
+        assert details.parsers[0].parser_sequence == 1
+        assert details.entity_types[0].entity_type == "omc_host_linux"
+        assert result["data"] == {"source": "ok"}
+
+    @pytest.mark.asyncio
+    async def test_upload_log_file_sends_content_to_source_and_log_group(self, client):
+        response = MagicMock()
+        response.data = MagicMock()
+        response.headers = {"opc-request-id": "req2"}
+
+        with patch("oci_logan_mcp.client.oci.util.to_dict", return_value={"upload": "ok"}):
+            client._la_client.upload_log_file.return_value = response
+            result = await client.upload_log_file(
+                source_name="App Logs",
+                filename="sample.ndjson",
+                log_group_id="ocid1.loganalyticsloggroup.oc1..test",
+                content='{"event":"x"}\n',
+                upload_name="sample-upload",
+            )
+
+        call = client._la_client.upload_log_file.call_args
+        assert call.kwargs["namespace_name"] == "testns"
+        assert call.kwargs["log_source_name"] == "App Logs"
+        assert call.kwargs["filename"] == "sample.ndjson"
+        assert call.kwargs["opc_meta_loggrpid"] == "ocid1.loganalyticsloggroup.oc1..test"
+        assert call.kwargs["upload_log_file_body"].getvalue() == b'{"event":"x"}\n'
+        assert call.kwargs["upload_name"] == "sample-upload"
+        assert result["data"] == {"upload": "ok"}
+
+    @pytest.mark.asyncio
+    async def test_list_upload_files_returns_processing_status(self, client):
+        item = MagicMock()
+        item.reference = "file-ref"
+        item.name = "sample.ndjson"
+        item.status = "FAILED"
+        item.total_chunks = 0
+        item.chunks_consumed = 0
+        item.chunks_success = 0
+        item.chunks_fail = 0
+        item.time_started = "2026-04-25T23:30:59+00:00"
+        item.source_name = "App Logs"
+        item.entity_type = "Host (Linux)"
+        item.entity_name = "app-host"
+        item.log_group_id = "ocid1.loganalyticsloggroup.oc1..test"
+        item.log_group_name = "Testlogsources"
+        item.failure_details = "Unexpected error"
+        response = MagicMock()
+        response.data = MagicMock()
+        response.data.items = [item]
+        client._la_client.list_upload_files.return_value = response
+
+        result = await client.list_upload_files("upload-ref")
+
+        client._la_client.list_upload_files.assert_called_once_with(
+            namespace_name="testns",
+            upload_reference="upload-ref",
+        )
+        assert result == [
+            {
+                "reference": "file-ref",
+                "name": "sample.ndjson",
+                "status": "FAILED",
+                "total_chunks": 0,
+                "chunks_consumed": 0,
+                "chunks_success": 0,
+                "chunks_fail": 0,
+                "time_started": "2026-04-25T23:30:59+00:00",
+                "source_name": "App Logs",
+                "entity_type": "Host (Linux)",
+                "entity_name": "app-host",
+                "log_group_id": "ocid1.loganalyticsloggroup.oc1..test",
+                "log_group_name": "Testlogsources",
+                "failure_details": "Unexpected error",
+            }
+        ]
 
 
 class TestListEntitiesPagination:
