@@ -53,7 +53,7 @@ _SUMMARY_KEYS: Dict[str, list] = {
         "display_name", "tiles",
     ],
     "create_log_source_from_sample": [
-        "source_name", "parser_name", "log_group_id",
+        "source_name", "parser_name", "format", "log_group_id",
         "entity_type", "filename", "overwrite",
         "acknowledge_data_review", "verification_time_range", "poll_attempts",
         "sample_line_count", "data_warning",

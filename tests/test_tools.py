@@ -120,6 +120,8 @@ def test_create_log_source_from_sample_schema():
     assert "source_name" in props
     assert "sample_logs" in props
     assert "log_group_id" in props
+    assert "format" in props
+    assert props["format"]["enum"] == ["json_ndjson", "csv"]
     assert "acknowledge_data_review" in props
     assert "overwrite" in props
     assert "verification_time_range" in props

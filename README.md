@@ -130,7 +130,7 @@ Click **Save**, then start a new Codex session to connect.
 | **Investigation playbooks** | `record_investigation`, `list_playbooks`, `get_playbook`, `delete_playbook` | Save the current session's audited tool calls as a named playbook, then list, fetch, or delete recorded playbooks |
 | **Reports** | `generate_incident_report` | Convert an investigation result into deterministic Markdown, with optional HTML rendering |
 | **Explore schema** | `list_log_sources`, `list_fields`, `list_entities`, `list_parsers`, `list_labels` | Discover what log data is available |
-| **Onboard sources** | `create_log_source_from_sample` | Generate a JSON/NDJSON parser and source from sample logs, upload the sample workload, and verify parse failures |
+| **Onboard sources** | `create_log_source_from_sample` | Generate a JSON/NDJSON or CSV parser and source from sample logs, upload the sample workload, and verify parse failures |
 | **Visualize** | `visualize` | Generate pie, bar, line, area, table, tile, treemap, heatmap, histogram charts |
 | **Dashboards** | `create_dashboard`, `add_dashboard_tile`, `list_dashboards`, `delete_dashboard` | Create OCI Management Dashboards with LA widgets, grid layout, and scope filters |
 | **Alerts** | `create_alert`, `update_alert`, `list_alerts`, `delete_alert` | Create OCI-native alarms from LA queries with metric extraction and ONS notifications |
@@ -159,15 +159,16 @@ Returns `{summary, checked_at, findings: [...]}` where each finding carries `sta
 
 Configurable via `ingestion_health.stoppage_threshold_seconds` (default 600s) and `ingestion_health.freshness_probe_window` (default `last_1_hour`) in `config.yaml`.
 
-### `create_log_source_from_sample` — onboard JSON/NDJSON logs
+### `create_log_source_from_sample` — onboard JSON/NDJSON or CSV logs
 
-Create a custom Log Analytics parser/source from non-sensitive JSON/NDJSON sample lines, upload the same sample workload, and verify that upload batch with a `'Parse Failed'` check plus per-field populated counts. CSV and plain text parser generation are planned follow-up formats. The tool is guarded because it creates OCI resources and uploads log content.
+Create a custom Log Analytics parser/source from non-sensitive JSON/NDJSON sample lines or CSV content with a header row, upload the same sample workload, and verify that upload batch with a `'Parse Failed'` check plus per-field populated counts. Plain text parser generation is a planned follow-up format. The tool is guarded because it creates OCI resources and uploads log content.
 
 ```json
 {
   "tool": "create_log_source_from_sample",
   "source_name": "BlueCat Edge DNS Logs",
   "sample_logs": ["{\"eventType\":\"query-response\",\"sourceAddress\":\"192.0.2.10\"}"],
+  "format": "json_ndjson",
   "log_group_id": "ocid1.loganalyticsloggroup.oc1..example",
   "acknowledge_data_review": true
 }

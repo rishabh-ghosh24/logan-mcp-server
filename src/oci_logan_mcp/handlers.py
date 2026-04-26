@@ -36,7 +36,12 @@ from .alarm_postmortem import WhyDidThisFireTool
 from .rare_events import RareEventsTool
 from .trace_lookup import TraceRequestIdTool
 from .related_resources import RelatedDashboardsAndSearchesTool
-from .log_source_builder import DATA_WARNING, LogSourceFromSampleTool, normalize_sample_logs
+from .log_source_builder import (
+    DATA_WARNING,
+    LogSourceFromSampleTool,
+    infer_csv_field_paths,
+    normalize_sample_logs,
+)
 from .budget_tracker import BudgetExceededError
 from .playbook_recorder import PlaybookRecorder
 from .playbook_store import PlaybookNotFoundError, PlaybookStore
@@ -326,7 +331,12 @@ class MCPHandlers:
                         summary_extras = None
                 elif name == "create_log_source_from_sample":
                     try:
-                        sample_line_count = len(normalize_sample_logs(arguments.get("sample_logs", [])))
+                        if arguments.get("format") == "csv":
+                            sample_line_count = infer_csv_field_paths(
+                                arguments.get("sample_logs", [])
+                            )[1]
+                        else:
+                            sample_line_count = len(normalize_sample_logs(arguments.get("sample_logs", [])))
                     except Exception:
                         sample_line_count = "unknown"
                     summary_extras = {
@@ -639,7 +649,7 @@ class MCPHandlers:
             parser_display_name=args.get("parser_display_name"),
             field_mappings=args.get("field_mappings"),
             entity_type=args.get("entity_type", "omc_host_linux"),
-            filename=args.get("filename", "sample.ndjson"),
+            filename=args.get("filename"),
             upload_name=args.get("upload_name"),
             entity_id=args.get("entity_id"),
             timezone=args.get("timezone"),
@@ -647,6 +657,7 @@ class MCPHandlers:
             char_encoding=args.get("char_encoding", "UTF-8"),
             acknowledge_data_review=args.get("acknowledge_data_review", False),
             overwrite=args.get("overwrite", False),
+            format=args.get("format", "json_ndjson"),
             verification_time_range=args.get("verification_time_range", "last_30_days"),
             field_check_limit=args.get("field_check_limit", 20),
             poll_attempts=args.get("poll_attempts", 6),

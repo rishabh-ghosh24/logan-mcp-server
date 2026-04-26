@@ -13,6 +13,7 @@ from oci_logan_mcp.log_source_builder import (
     LogSourceFromSampleTool,
     build_custom_content_zip,
     build_field_mappings,
+    infer_csv_field_paths,
     infer_json_field_paths,
     normalize_sample_logs,
 )
@@ -79,6 +80,45 @@ def test_infer_json_field_paths_truncates_at_max_fields():
     assert ("field40", "$.field40") not in fields
 
 
+def test_infer_csv_field_paths_handles_bom_headers_and_quoted_commas():
+    fields, row_count, sample_content, header_content, truncated = infer_csv_field_paths(
+        '\ufeffSource IP,User-Agent,Bytes In\n192.0.2.10,"Mozilla, Test",42\n'
+    )
+
+    assert fields == [("Source_IP", "1"), ("User_Agent", "2"), ("Bytes_In", "3")]
+    assert row_count == 1
+    assert sample_content == '192.0.2.10,"Mozilla, Test",42\n'
+    assert header_content == "Source IP,User-Agent,Bytes In"
+    assert truncated is False
+
+
+def test_infer_csv_field_paths_rejects_unsupported_shapes():
+    with pytest.raises(ValueError, match="at least one data row"):
+        infer_csv_field_paths("Source IP,User-Agent\n")
+
+    with pytest.raises(ValueError, match="at least two columns"):
+        infer_csv_field_paths("Only Column\nvalue\n")
+
+    with pytest.raises(ValueError, match="embedded newlines"):
+        infer_csv_field_paths('Source IP,Message\n192.0.2.10,"line one\nline two"\n')
+
+
+def test_infer_csv_field_paths_truncates_at_max_fields():
+    header = ",".join(f"field{i}" for i in range(41))
+    row = ",".join(str(i) for i in range(41))
+
+    fields, row_count, _, _, truncated = infer_csv_field_paths(
+        f"{header}\n{row}\n",
+        max_fields=40,
+    )
+
+    assert len(fields) == 40
+    assert ("field39", "40") in fields
+    assert ("field40", "41") not in fields
+    assert row_count == 1
+    assert truncated is True
+
+
 def test_build_field_mappings_prefers_explicit_and_does_not_auto_map_time():
     mappings, skipped = build_field_mappings(
         [("time", "$.time"), ("eventType", "$.eventType"), ("unknown", "$.unknown")],
@@ -89,6 +129,16 @@ def test_build_field_mappings_prefers_explicit_and_does_not_auto_map_time():
     assert mappings["time"] == "udfs1"
     assert mappings["eventType"] == "event"
     assert mappings["unknown"] == "udfs2"
+    assert skipped == []
+
+
+def test_build_field_mappings_normalizes_common_field_lookup():
+    mappings, skipped = build_field_mappings(
+        [("Source_IP", "1"), ("Bytes_In", "2")],
+        [{"name": "clnthostip"}, {"name": "udfs1"}],
+    )
+
+    assert mappings == {"Source_IP": "clnthostip", "Bytes_In": "udfs1"}
     assert skipped == []
 
 
@@ -208,6 +258,72 @@ async def test_create_from_sample_upserts_uploads_and_checks_parse_failure():
         in queries
     )
     assert all(call.kwargs["time_range"] == "last_30_days" for call in query_engine.execute.await_args_list)
+
+
+@pytest.mark.asyncio
+async def test_create_from_csv_sample_upserts_uploads_and_checks_parse_failure():
+    oci_client = AsyncMock()
+    oci_client.list_parsers.return_value = []
+    oci_client.list_log_sources.return_value = []
+    oci_client.list_fields.return_value = [
+        {"name": "clnthostip"},
+        {"name": "udfs1"},
+    ]
+    oci_client.upsert_delimited_parser.return_value = {
+        "data": {
+            "name": "CSV_App_Parser",
+            "example_content": '192.0.2.10,"Mozilla, Test"\n192.0.2.11,Chrome\n',
+        },
+    }
+    oci_client.upsert_log_source.return_value = {"data": {"name": "CSV App Logs"}}
+    oci_client.upload_log_file.return_value = {"upload_name": "csv-sample"}
+
+    query_engine = AsyncMock()
+    query_engine.execute.side_effect = [
+        {"data": {"rows": [[2]]}},
+        {"data": {"rows": [[0]]}},
+        {"data": {"rows": [[2]]}},
+        {"data": {"rows": [[2]]}},
+    ]
+
+    tool = LogSourceFromSampleTool(oci_client=oci_client, query_engine=query_engine)
+    result = await tool.create_from_sample(
+        source_name="CSV App Logs",
+        sample_logs='Source IP,User-Agent\n192.0.2.10,"Mozilla, Test"\n192.0.2.11,Chrome\n',
+        log_group_id="ocid1.loganalyticsloggroup.oc1..test",
+        parser_name="CSV_App_Parser",
+        upload_name="csv-sample",
+        format="csv",
+        acknowledge_data_review=True,
+        poll_attempts=1,
+        poll_interval_seconds=0,
+    )
+
+    assert result["status"] == "PASS"
+    assert result["inference"]["format"] == "CSV"
+    assert result["inference"]["sample_line_count"] == 2
+    assert result["verification"]["uploaded_line_count"] == 2
+    assert result["oci"]["parser"]["data"]["example_content"] == "<redacted>"
+    assert result["inference"]["mapped_fields"] == [
+        {"sample_key": "Source_IP", "csv_column": 1, "logan_field": "clnthostip"},
+        {"sample_key": "User_Agent", "csv_column": 2, "logan_field": "udfs1"},
+    ]
+    oci_client.upsert_json_parser.assert_not_awaited()
+    oci_client.upsert_delimited_parser.assert_awaited_once()
+    parser_kwargs = oci_client.upsert_delimited_parser.await_args.kwargs
+    assert parser_kwargs["parser_name"] == "CSV_App_Parser"
+    assert parser_kwargs["header_content"] == "Source IP,User-Agent"
+    assert parser_kwargs["example_content"] == '192.0.2.10,"Mozilla, Test"\n192.0.2.11,Chrome\n'
+    assert parser_kwargs["field_mappings"] == {
+        "Source_IP": "clnthostip",
+        "User_Agent": "udfs1",
+    }
+    oci_client.upload_log_file.assert_awaited_once()
+    assert oci_client.upload_log_file.await_args.kwargs["filename"] == "sample.csv"
+    assert (
+        oci_client.upload_log_file.await_args.kwargs["content"]
+        == '192.0.2.10,"Mozilla, Test"\n192.0.2.11,Chrome\n'
+    )
 
 
 @pytest.mark.asyncio

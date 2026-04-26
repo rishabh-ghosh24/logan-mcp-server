@@ -138,7 +138,6 @@ Source: current review on `feat/related-dashboards-and-searches`
 #### LSB — `create_log_source_from_sample`
 Source: review and live validation on `feat/log-source-from-sample`
 
-- `LSB-F1` — Add CSV parser/source generation after the JSON/NDJSON foundation lands.
 - `LSB-F2` — Add plain-text parser/source generation after CSV support.
 - `LSB-F3` — Decide whether confirmation summaries should include a precomputed auto `upload_name`, and if so include it in the confirmation fingerprint because it is the verification anchor.
 - `LSB-F4` — Validate native JSON parser flags (`is_single_line_content`, `header_content`, `should_tokenize_original_text`) against NDJSON samples containing escaped newline values.

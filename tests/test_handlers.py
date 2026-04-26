@@ -136,6 +136,25 @@ def test_mcp_handlers_exposes_unified_catalog(handlers):
     assert isinstance(handlers.catalog, UnifiedCatalog)
 
 
+@pytest.mark.asyncio
+async def test_create_log_source_handler_passes_csv_format_without_forcing_ndjson_filename(handlers):
+    handlers.log_source_builder_tool.create_from_sample = AsyncMock(return_value={"status": "PASS"})
+
+    result = await handlers._create_log_source_from_sample({
+        "source_name": "CSV Logs",
+        "sample_logs": "Source IP,User-Agent\n192.0.2.10,Test\n",
+        "log_group_id": "ocid1.loganalyticsloggroup.oc1..test",
+        "format": "csv",
+        "acknowledge_data_review": True,
+    })
+
+    payload = json.loads(result[0]["text"])
+    assert payload["status"] == "PASS"
+    kwargs = handlers.log_source_builder_tool.create_from_sample.await_args.kwargs
+    assert kwargs["format"] == "csv"
+    assert kwargs["filename"] is None
+
+
 
 
 # ---------------------------------------------------------------------------
@@ -931,6 +950,7 @@ GUARDED_TOOL_ARGS = {
         "source_name": "App Logs",
         "sample_logs": ['{"event":"x"}'],
         "log_group_id": "ocid1.loganalyticsloggroup.oc1..test",
+        "format": "json_ndjson",
         "acknowledge_data_review": True,
     },
 }
@@ -1042,6 +1062,7 @@ class TestConfirmationIntegration:
 
         assert text["status"] == "confirmation_required"
         assert "Only provide logs" in text["summary"]
+        assert "format: json_ndjson" in text["summary"]
         assert "sample_line_count: 1" in text["summary"]
 
     @pytest.mark.asyncio

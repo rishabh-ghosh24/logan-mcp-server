@@ -1,12 +1,14 @@
 """Create Log Analytics parsers and sources from sample log lines."""
 
 import asyncio
+import csv
 import json
 import re
 import time
 import zipfile
 from collections.abc import Iterable
-from io import BytesIO
+from dataclasses import dataclass
+from io import BytesIO, StringIO
 from typing import Any, Dict, List, Optional, Sequence, Tuple
 from xml.sax.saxutils import escape
 
@@ -17,6 +19,9 @@ FieldPath = Tuple[str, str]
 
 CONTENT_VERSION = "3.119.2.0.0"
 DEFAULT_MAX_FIELDS = 40
+FORMAT_JSON_NDJSON = "json_ndjson"
+FORMAT_CSV = "csv"
+SUPPORTED_SAMPLE_FORMATS = frozenset({FORMAT_JSON_NDJSON, FORMAT_CSV})
 ALLOWED_VERIFICATION_TIME_RANGES = frozenset({
     "last_15_min",
     "last_1_hour",
@@ -61,6 +66,16 @@ COMMON_FIELD_MAP = {
 }
 
 
+@dataclass(frozen=True)
+class PreparedSample:
+    format: str
+    field_paths: List[FieldPath]
+    sample_content: str
+    expected_row_count: int
+    truncated_at_max_fields: bool
+    header_content: Optional[str] = None
+
+
 def normalize_sample_logs(
     sample_logs: Any,
     *,
@@ -91,6 +106,22 @@ def normalize_sample_logs(
 def infer_json_field_paths(sample_lines: Sequence[str], *, max_fields: int = DEFAULT_MAX_FIELDS) -> List[FieldPath]:
     """Infer JSON leaf fields and JSONPath expressions from sample lines."""
     return _infer_json_field_paths(sample_lines, max_fields=max_fields)[0]
+
+
+def infer_csv_field_paths(
+    sample_logs: Any,
+    *,
+    max_fields: int = DEFAULT_MAX_FIELDS,
+) -> Tuple[List[FieldPath], int, str, str, bool]:
+    """Infer CSV header fields and column positions from sample content."""
+    prepared = _prepare_csv_sample(sample_logs, max_fields=max_fields)
+    return (
+        prepared.field_paths,
+        prepared.expected_row_count,
+        prepared.sample_content,
+        prepared.header_content or "",
+        prepared.truncated_at_max_fields,
+    )
 
 
 def _infer_json_field_paths(
@@ -127,6 +158,104 @@ def _infer_json_field_paths(
     return discovered, truncated
 
 
+def _prepare_sample(
+    sample_logs: Any,
+    *,
+    format: str,
+    max_fields: int = DEFAULT_MAX_FIELDS,
+) -> PreparedSample:
+    if format == FORMAT_JSON_NDJSON:
+        lines = normalize_sample_logs(sample_logs)
+        field_paths, truncated = _infer_json_field_paths(lines, max_fields=max_fields)
+        return PreparedSample(
+            format=FORMAT_JSON_NDJSON,
+            field_paths=field_paths,
+            sample_content="\n".join(lines) + "\n",
+            expected_row_count=len(lines),
+            truncated_at_max_fields=truncated,
+        )
+    if format == FORMAT_CSV:
+        return _prepare_csv_sample(sample_logs, max_fields=max_fields)
+    valid_formats = ", ".join(sorted(SUPPORTED_SAMPLE_FORMATS))
+    raise ValueError(f"format must be one of: {valid_formats}")
+
+
+def _prepare_csv_sample(
+    sample_logs: Any,
+    *,
+    max_fields: int = DEFAULT_MAX_FIELDS,
+    max_lines: int = 1000,
+    max_bytes: int = 1_000_000,
+) -> PreparedSample:
+    raw_text = _sample_logs_to_text(sample_logs)
+    raw_text = raw_text.replace("\r\n", "\n").replace("\r", "\n")
+    non_empty_lines = [line for line in raw_text.split("\n") if line.strip()]
+    if not non_empty_lines:
+        raise ValueError("CSV sample must contain a header row and at least one data row")
+    if len(non_empty_lines) > max_lines:
+        raise ValueError(f"sample_logs must contain at most {max_lines} lines")
+
+    csv_text = "\n".join(non_empty_lines) + "\n"
+    if len(csv_text.encode("utf-8")) > max_bytes:
+        raise ValueError(f"sample_logs must contain at most {max_bytes} bytes")
+
+    rows = list(csv.reader(StringIO(csv_text)))
+    if len(rows) != len(non_empty_lines):
+        raise ValueError("CSV cells with embedded newlines are not supported in v1")
+    if len(rows) < 2:
+        raise ValueError("CSV sample must include a header row and at least one data row")
+
+    header = [cell.strip() for cell in rows[0]]
+    if header:
+        header[0] = header[0].lstrip("\ufeff")
+    if len(header) < 2:
+        raise ValueError("CSV sample must contain at least two columns")
+    if any(not cell for cell in header):
+        raise ValueError("CSV header cells must be non-empty")
+
+    data_rows = rows[1:]
+    for row in data_rows:
+        if len(row) != len(header):
+            raise ValueError("CSV data rows must have the same number of columns as the header")
+
+    used_names: Dict[str, str] = {}
+    field_paths: List[FieldPath] = []
+    truncated = False
+    for index, header_cell in enumerate(header, start=1):
+        if len(field_paths) >= max_fields:
+            truncated = True
+            continue
+        key = _dedupe_csv_field_key(header_cell, str(index), used_names)
+        field_paths.append((key, str(index)))
+
+    if not field_paths:
+        raise ValueError("No CSV fields found in sample logs")
+
+    return PreparedSample(
+        format=FORMAT_CSV,
+        field_paths=field_paths,
+        sample_content="".join(_csv_line(row) for row in data_rows),
+        expected_row_count=len(data_rows),
+        truncated_at_max_fields=truncated,
+        header_content=_csv_line(header).rstrip("\n"),
+    )
+
+
+def _sample_logs_to_text(sample_logs: Any) -> str:
+    if isinstance(sample_logs, str):
+        return sample_logs
+    if isinstance(sample_logs, Iterable):
+        return "\n".join(str(item) for item in sample_logs)
+    raise ValueError("sample_logs must be a string or array of strings")
+
+
+def _csv_line(row: Sequence[str]) -> str:
+    stream = StringIO()
+    writer = csv.writer(stream, lineterminator="\n")
+    writer.writerow(row)
+    return stream.getvalue()
+
+
 def _walk_json(value: Any, path: str) -> Iterable[FieldPath]:
     if isinstance(value, dict):
         for key, child in value.items():
@@ -160,9 +289,27 @@ def _dedupe_field_key(leaf: str, path: str, used_names: Dict[str, str]) -> str:
     return candidate
 
 
+def _dedupe_csv_field_key(leaf: str, path: str, used_names: Dict[str, str]) -> str:
+    clean = _clean_key(leaf)
+    candidate = clean
+    suffix = 2
+    while candidate in used_names:
+        candidate = f"{clean}_{suffix}"
+        suffix += 1
+    used_names[candidate] = path
+    return candidate
+
+
 def _clean_key(value: str) -> str:
     cleaned = re.sub(r"[^A-Za-z0-9_]+", "_", value).strip("_")
     return cleaned or "field"
+
+
+def _common_field_target(key: str) -> Optional[str]:
+    lowered = key.lower()
+    return COMMON_FIELD_MAP.get(lowered) or COMMON_FIELD_MAP.get(
+        re.sub(r"[^a-z0-9]+", "", lowered)
+    )
 
 
 def build_field_mappings(
@@ -184,7 +331,7 @@ def build_field_mappings(
             mappings[key] = target
             continue
 
-        common_target = COMMON_FIELD_MAP.get(key.lower())
+        common_target = _common_field_target(key)
         if common_target and common_target in available:
             mappings[key] = common_target
             continue
@@ -289,13 +436,14 @@ def build_custom_content_zip(
     return buffer.getvalue()
 
 
-def default_parser_name(source_name: str) -> str:
+def default_parser_name(source_name: str, *, format: str = FORMAT_JSON_NDJSON) -> str:
     base = re.sub(r"[^A-Za-z0-9]+", "_", source_name).strip("_")
     if not base:
         base = "custom_log_source"
     if not base[0].isalpha():
         base = f"p_{base}"
-    return f"{base}_JSON"
+    suffix = "CSV" if format == FORMAT_CSV else "JSON"
+    return f"{base}_{suffix}"
 
 
 def _quote_lql(value: str) -> str:
@@ -397,6 +545,25 @@ def _safe_oci_result(
     return safe
 
 
+def _format_mapped_fields_for_result(
+    field_paths: Sequence[FieldPath],
+    mappings: Dict[str, str],
+    *,
+    format: str,
+) -> List[Dict[str, Any]]:
+    mapped_fields = []
+    for key, path in field_paths:
+        if key not in mappings:
+            continue
+        item = {"sample_key": key, "logan_field": mappings[key]}
+        if format == FORMAT_CSV:
+            item["csv_column"] = int(path)
+        else:
+            item["json_path"] = path
+        mapped_fields.append(item)
+    return mapped_fields
+
+
 class LogSourceFromSampleTool:
     """Create a Log Analytics parser/source, upload samples, and verify parsing."""
 
@@ -414,7 +581,7 @@ class LogSourceFromSampleTool:
         parser_display_name: Optional[str] = None,
         field_mappings: Optional[Dict[str, str]] = None,
         entity_type: str = "omc_host_linux",
-        filename: str = "sample.ndjson",
+        filename: Optional[str] = None,
         upload_name: Optional[str] = None,
         entity_id: Optional[str] = None,
         timezone: Optional[str] = None,
@@ -422,6 +589,7 @@ class LogSourceFromSampleTool:
         char_encoding: str = "UTF-8",
         acknowledge_data_review: bool = False,
         overwrite: bool = False,
+        format: str = FORMAT_JSON_NDJSON,
         verification_time_range: str = "last_30_days",
         field_check_limit: int = 20,
         poll_attempts: int = 6,
@@ -437,10 +605,12 @@ class LogSourceFromSampleTool:
                 f"verification_time_range must be one of: {valid_ranges}"
             )
 
-        lines = normalize_sample_logs(sample_logs)
-        inferred_paths, truncated_at_max_fields = _infer_json_field_paths(lines)
+        if format not in SUPPORTED_SAMPLE_FORMATS:
+            valid_formats = ", ".join(sorted(SUPPORTED_SAMPLE_FORMATS))
+            raise ValueError(f"format must be one of: {valid_formats}")
+        prepared = _prepare_sample(sample_logs, format=format)
 
-        parser_name = parser_name or default_parser_name(source_name)
+        parser_name = parser_name or default_parser_name(source_name, format=format)
         parser_display_name = parser_display_name or source_name
         existing_parsers = await self.oci_client.list_parsers()
         existing_sources = await self.oci_client.list_log_sources()
@@ -465,16 +635,25 @@ class LogSourceFromSampleTool:
             }
 
         available_fields = await self.oci_client.list_fields()
-        mappings, skipped = build_field_mappings(inferred_paths, available_fields, field_mappings)
+        mappings, skipped = build_field_mappings(prepared.field_paths, available_fields, field_mappings)
 
-        sample_content = "\n".join(lines) + "\n"
-        parser_result = await self.oci_client.upsert_json_parser(
-            parser_name=parser_name,
-            display_name=parser_display_name,
-            field_paths=inferred_paths,
-            field_mappings=mappings,
-            example_content=sample_content,
-        )
+        if format == FORMAT_CSV:
+            parser_result = await self.oci_client.upsert_delimited_parser(
+                parser_name=parser_name,
+                display_name=parser_display_name,
+                field_paths=prepared.field_paths,
+                field_mappings=mappings,
+                header_content=prepared.header_content or "",
+                example_content=prepared.sample_content,
+            )
+        else:
+            parser_result = await self.oci_client.upsert_json_parser(
+                parser_name=parser_name,
+                display_name=parser_display_name,
+                field_paths=prepared.field_paths,
+                field_mappings=mappings,
+                example_content=prepared.sample_content,
+            )
         source_result = await self.oci_client.upsert_log_source(
             source_name=source_name,
             parser_name=parser_name,
@@ -482,11 +661,12 @@ class LogSourceFromSampleTool:
             entity_type=entity_type,
         )
         effective_upload_name = upload_name or f"{parser_name}_sample_{time.time_ns()}"
+        effective_filename = filename or ("sample.csv" if format == FORMAT_CSV else "sample.ndjson")
         upload_result = await self.oci_client.upload_log_file(
             source_name=source_name,
-            filename=filename,
+            filename=effective_filename,
             log_group_id=log_group_id,
-            content=sample_content,
+            content=prepared.sample_content,
             upload_name=effective_upload_name,
             entity_id=entity_id,
             timezone=timezone,
@@ -577,7 +757,7 @@ class LogSourceFromSampleTool:
             status = "FAIL"
         elif ingested_count <= 0:
             status = "INDETERMINATE"
-        elif ingested_count < len(lines):
+        elif ingested_count < prepared.expected_row_count:
             status = "PASS_WITH_WARNINGS"
         elif any(check["populated_count"] <= 0 for check in field_checks):
             status = "PASS_WITH_WARNINGS"
@@ -594,16 +774,16 @@ class LogSourceFromSampleTool:
                 "entity_type": entity_type,
             },
             "inference": {
-                "format": "JSON_NDJSON",
-                "sample_line_count": len(lines),
+                "format": "CSV" if format == FORMAT_CSV else "JSON_NDJSON",
+                "sample_line_count": prepared.expected_row_count,
                 "mapped_field_count": len(mappings),
                 "max_inferred_fields": DEFAULT_MAX_FIELDS,
-                "truncated_at_max_fields": truncated_at_max_fields,
-                "mapped_fields": [
-                    {"sample_key": key, "json_path": path, "logan_field": mappings[key]}
-                    for key, path in inferred_paths
-                    if key in mappings
-                ],
+                "truncated_at_max_fields": prepared.truncated_at_max_fields,
+                "mapped_fields": _format_mapped_fields_for_result(
+                    prepared.field_paths,
+                    mappings,
+                    format=format,
+                ),
                 "skipped_fields": skipped,
             },
             "oci": {
@@ -623,7 +803,7 @@ class LogSourceFromSampleTool:
                     "No parser timestamp configuration is generated yet; "
                     "Log Analytics may use ingestion/default time behavior."
                 ),
-                "uploaded_line_count": len(lines),
+                "uploaded_line_count": prepared.expected_row_count,
                 "ingested_count": ingested_count,
                 "parse_failed_count": parse_failed_count,
                 "field_checks": field_checks,

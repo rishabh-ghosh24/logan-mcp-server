@@ -307,6 +307,39 @@ class TestCustomContentAndUpload:
         assert result["data"] == {"parser": "ok"}
 
     @pytest.mark.asyncio
+    async def test_upsert_delimited_parser_uses_native_parser_model(self, client):
+        response = MagicMock()
+        response.data = MagicMock()
+        response.headers = {"opc-request-id": "parser-req"}
+
+        with patch("oci_logan_mcp.client.oci.util.to_dict", return_value={"parser": "ok"}):
+            client._la_client.upsert_parser.return_value = response
+            result = await client.upsert_delimited_parser(
+                parser_name="App_CSV",
+                display_name="App CSV",
+                field_paths=[("Source_IP", "1")],
+                field_mappings={"Source_IP": "clnthostip"},
+                header_content="Source IP",
+                example_content="192.0.2.10\n",
+            )
+
+        call = client._la_client.upsert_parser.call_args
+        details = call.kwargs["upsert_log_analytics_parser_details"]
+        assert call.kwargs["namespace_name"] == "testns"
+        assert details.name == "App_CSV"
+        assert details.display_name == "App CSV"
+        assert details.type == "DELIMITED"
+        assert details.is_single_line_content is True
+        assert details.field_delimiter == ","
+        assert details.field_qualifier == '"'
+        assert details.header_content == "Source IP"
+        assert details.example_content == "192.0.2.10\n"
+        assert details.field_maps[0].parser_field_sequence == 1
+        assert details.field_maps[0].parser_field_name == "clnthostip"
+        assert details.field_maps[0].structured_column_info is None
+        assert result["data"] == {"parser": "ok"}
+
+    @pytest.mark.asyncio
     async def test_upsert_log_source_binds_parser_and_entity_type(self, client):
         response = MagicMock()
         response.data = MagicMock()
