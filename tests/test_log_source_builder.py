@@ -152,6 +152,20 @@ def test_infer_regex_text_field_paths_maps_capture_groups_to_keys():
     assert truncated is False
 
 
+def test_infer_regex_text_field_paths_accepts_oci_java_regex_constructs():
+    fields, row_count, sample_content, pattern, truncated = infer_regex_text_field_paths(
+        ["2005-Aug-05 12:45:23,123 AM PST Host1 system:Sample log entry"],
+        regex_pattern=r"{TIMEDATE}\s+(\p{Upper}\p{Lower}+\d*)\s+(\S+):(.*)",
+        regex_field_keys=["host", "service", "message"],
+    )
+
+    assert fields == [("host", "1"), ("service", "2"), ("message", "3")]
+    assert row_count == 1
+    assert sample_content == "2005-Aug-05 12:45:23,123 AM PST Host1 system:Sample log entry\n"
+    assert pattern == r"{TIMEDATE}\s+(\p{Upper}\p{Lower}+\d*)\s+(\S+):(.*)"
+    assert truncated is False
+
+
 def test_infer_regex_text_field_paths_rejects_invalid_regex_setup():
     with pytest.raises(ValueError, match="regex_pattern is required"):
         infer_regex_text_field_paths(
@@ -172,6 +186,13 @@ def test_infer_regex_text_field_paths_rejects_invalid_regex_setup():
             ["INFO user=alice"],
             regex_pattern=r"^(\w+) user=(\S+)$",
             regex_field_keys=["severity"],
+        )
+
+    with pytest.raises(ValueError, match="unbalanced parentheses"):
+        infer_regex_text_field_paths(
+            ["INFO user=alice"],
+            regex_pattern=r"^(\w+ user=(\S+)$",
+            regex_field_keys=["severity", "user"],
         )
 
     with pytest.raises(ValueError, match="does not match regex_pattern"):

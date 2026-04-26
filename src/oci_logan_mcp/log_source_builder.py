@@ -295,24 +295,23 @@ def _prepare_regex_text_sample(
     if not regex_field_keys or isinstance(regex_field_keys, (str, bytes)):
         raise ValueError("regex_field_keys must be a non-empty array of field keys")
 
-    try:
-        compiled = re.compile(regex_pattern)
-    except re.error as exc:
-        raise ValueError(f"regex_pattern is invalid: {exc}") from exc
+    group_count = _count_java_regex_capture_groups(regex_pattern)
 
-    if compiled.groups <= 0:
+    if group_count <= 0:
         raise ValueError("regex_pattern must contain at least one capture group")
-    if compiled.groups != len(regex_field_keys):
+    if group_count != len(regex_field_keys):
         raise ValueError(
             "regex_field_keys length must match regex_pattern capture group count"
         )
 
     lines = normalize_sample_logs(sample_logs)
-    for line_number, line in enumerate(lines, start=1):
-        if not compiled.search(line):
-            raise ValueError(
-                f"sample line {line_number} does not match regex_pattern"
-            )
+    compiled = _try_compile_python_regex(regex_pattern)
+    if compiled is not None:
+        for line_number, line in enumerate(lines, start=1):
+            if not compiled.search(line):
+                raise ValueError(
+                    f"sample line {line_number} does not match regex_pattern"
+                )
 
     used_names: Dict[str, str] = {}
     field_paths: List[FieldPath] = []
@@ -335,6 +334,73 @@ def _prepare_regex_text_sample(
         truncated_at_max_fields=truncated,
         regex_pattern=regex_pattern,
     )
+
+
+def _try_compile_python_regex(regex_pattern: str) -> Optional[re.Pattern]:
+    r"""Use Python regex only as an optional local smoke check.
+
+    OCI parser regex uses Java SE 8 syntax plus Log Analytics macros, so valid
+    OCI patterns such as ``\p{Upper}`` and ``{TIMEDATE}`` may not compile with
+    Python's regex engine. In those cases the live OCI parser/upload
+    verification remains the authoritative validation.
+    """
+    try:
+        return re.compile(regex_pattern)
+    except re.error:
+        return None
+
+
+def _count_java_regex_capture_groups(regex_pattern: str) -> int:
+    """Count Java regex capture groups with lightweight structural validation."""
+    captures = 0
+    depth = 0
+    in_class = False
+    escaped = False
+
+    for index, char in enumerate(regex_pattern):
+        if escaped:
+            escaped = False
+            continue
+        if char == "\\":
+            escaped = True
+            continue
+        if in_class:
+            if char == "]":
+                in_class = False
+            continue
+        if char == "[":
+            in_class = True
+            continue
+        if char == "(":
+            depth += 1
+            if _is_capturing_java_group(regex_pattern, index):
+                captures += 1
+            continue
+        if char == ")":
+            depth -= 1
+            if depth < 0:
+                raise ValueError("regex_pattern has unbalanced parentheses")
+
+    if escaped:
+        raise ValueError("regex_pattern ends with a dangling escape")
+    if in_class:
+        raise ValueError("regex_pattern has an unterminated character class")
+    if depth:
+        raise ValueError("regex_pattern has unbalanced parentheses")
+    return captures
+
+
+def _is_capturing_java_group(regex_pattern: str, index: int) -> bool:
+    """Return whether '(' at index starts a Java capturing group."""
+    if regex_pattern[index:index + 2] != "(?":
+        return True
+
+    marker = regex_pattern[index + 2:index + 4]
+    if marker.startswith("<"):
+        # Java named groups use (?<name>...), while lookbehind uses (?<=...)
+        # and (?<!...). Named groups still capture.
+        return marker not in {"<=", "<!"}
+    return False
 
 
 def _sample_logs_to_text(sample_logs: Any) -> str:
