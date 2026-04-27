@@ -1449,6 +1449,21 @@ async def test_read_only_blocks_mutating_tool(handlers, settings):
 
 
 @pytest.mark.asyncio
+async def test_read_only_blocks_report_generation_without_persisting(handlers, settings):
+    settings.read_only = True
+
+    result = await handlers.handle_tool_call(
+        "generate_incident_report",
+        {"investigation": {"summary": "Parser failures increased."}},
+    )
+
+    payload = json.loads(result[0]["text"])
+    assert payload["status"] == "read_only_blocked"
+    assert payload["tool"] == "generate_incident_report"
+    assert not handlers.report_store.root.exists()
+
+
+@pytest.mark.asyncio
 async def test_read_only_allows_reader(handlers, settings, monkeypatch):
     settings.read_only = True
     # Stub the reader to avoid OCI calls
@@ -2468,6 +2483,7 @@ class TestIncidentReports:
                         "title": "Older report",
                         "generated_at": "2026-04-27T10:00:00Z",
                         "summary_length": "standard",
+                        "word_count": 21,
                     },
                     "artifacts": [],
                 },
@@ -2479,6 +2495,7 @@ class TestIncidentReports:
                         "title": "Newer report",
                         "generated_at": "2026-04-27T12:00:00Z",
                         "summary_length": "standard",
+                        "word_count": 42,
                     },
                     "artifacts": [],
                 },
@@ -2505,6 +2522,7 @@ class TestIncidentReports:
         ]
         assert listed["reports"][0]["markdown_path"].endswith("/report.md")
         assert listed["reports"][0]["metadata_path"].endswith("/metadata.json")
+        assert listed["reports"][0]["word_count"] == 42
         assert listed["warnings"] == {"corrupt_count": 0}
 
     @pytest.mark.asyncio
@@ -2560,6 +2578,23 @@ class TestIncidentReports:
         assert payload["status"] == "error"
         assert payload["error_code"] == "report_store_error"
         assert "could not read report store" in payload["error"]
+
+
+    @pytest.mark.asyncio
+    async def test_get_incident_report_returns_corrupt_error(self, handlers):
+        handlers.report_store.get = MagicMock(
+            side_effect=ReportStoreCorruptError("stored report metadata is corrupt")
+        )
+
+        result = await handlers.handle_tool_call(
+            "get_incident_report",
+            {"report_id": "rpt_0123456789abcdef0123456789abcdef"},
+        )
+
+        payload = json.loads(result[0]["text"])
+        assert payload["status"] == "error"
+        assert payload["error_code"] == "report_store_corrupt"
+        assert "stored report metadata is corrupt" in payload["error"]
 
     @pytest.mark.asyncio
     async def test_generate_incident_report_returns_persistence_error(self, handlers):
@@ -2710,6 +2745,43 @@ class TestDeliverReportHandler:
             "deliver_report",
             {
                 "report": {"report_id": generated["report_id"]},
+                "channels": ["email"],
+                "recipients": {"email_topic_ocid": "ocid1.onstopic.oc1..demo"},
+            },
+        )
+
+        payload = json.loads(response[0]["text"])
+        assert payload["status"] == "sent"
+        assert payload["title"] == "Parser Failure Surge"
+        assert delivery_titles == ["Parser Failure Surge"]
+
+    @pytest.mark.asyncio
+    async def test_deliver_report_uses_stored_title_when_report_title_is_blank(self, handlers, monkeypatch):
+        generated_result = await handlers.handle_tool_call(
+            "generate_incident_report",
+            {
+                "investigation": {"summary": "Parser failures increased"},
+                "title": "Parser Failure Surge",
+            },
+        )
+        generated = json.loads(generated_result[0]["text"])
+
+        delivery_titles = []
+
+        async def fake_deliver(**kwargs):
+            _, effective_title = handlers.report_delivery_service._validate_report(
+                kwargs["report"],
+                title=kwargs["title"],
+            )
+            delivery_titles.append(effective_title)
+            return {"status": "sent", "title": effective_title}
+
+        monkeypatch.setattr(handlers.report_delivery_service, "deliver", fake_deliver)
+
+        response = await handlers.handle_tool_call(
+            "deliver_report",
+            {
+                "report": {"report_id": generated["report_id"], "title": "   "},
                 "channels": ["email"],
                 "recipients": {"email_topic_ocid": "ocid1.onstopic.oc1..demo"},
             },

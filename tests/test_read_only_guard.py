@@ -27,6 +27,7 @@ def test_mutating_tools_contains_known_writers():
         "save_learned_query",
         "remember_preference",
         "record_investigation",
+        "generate_incident_report",
         "delete_playbook",
         "create_alert",
         "update_alert",
@@ -118,6 +119,13 @@ def test_raise_if_read_only_blocks_mutating_when_enabled():
     assert "read-only" in str(exc.value).lower()
 
 
+def test_raise_if_read_only_blocks_report_generation_when_enabled():
+    with pytest.raises(ReadOnlyError) as exc:
+        raise_if_read_only("generate_incident_report", read_only=True)
+    assert "generate_incident_report" in str(exc.value)
+    assert "read-only" in str(exc.value).lower()
+
+
 def test_read_only_error_is_exception_subclass():
     assert issubclass(ReadOnlyError, Exception)
 
@@ -184,7 +192,6 @@ def test_all_registered_tools_are_classified():
         "explain_query", "get_session_budget",
         "export_transcript",
         "list_playbooks", "get_playbook",
-        "generate_incident_report",
         "get_incident_report",
         "list_incident_reports",
     }

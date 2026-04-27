@@ -87,6 +87,7 @@ class ReportStore:
 
     def get(self, report_id: str) -> dict[str, Any]:
         report_id = self._validate_report_id(report_id)
+        self._ensure_existing_root_for_read(report_id)
         report_dir = self._existing_report_dir(report_id)
         metadata_path = report_dir / "metadata.json"
         markdown_path = report_dir / "report.md"
@@ -168,6 +169,7 @@ class ReportStore:
                     "generated_at": metadata.get("generated_at"),
                     "time_range": metadata.get("time_range"),
                     "summary_length": metadata.get("summary_length"),
+                    "word_count": metadata.get("word_count"),
                     "markdown_path": str(markdown_path),
                     "html_path": str(html_path) if html_path else None,
                     "metadata_path": str(metadata_path),
@@ -248,6 +250,14 @@ class ReportStore:
             raise ReportStoreError("Could not create report store root") from exc
         if self.root.is_symlink() or not self.root.is_dir():
             raise ReportStoreError("Report store root is unsafe")
+
+    def _ensure_existing_root_for_read(self, report_id: str) -> None:
+        if self.root.is_symlink():
+            raise ReportStoreCorruptError(f"Report store root is unsafe: {report_id}")
+        if not self.root.exists():
+            raise ReportNotFoundError(f"Report not found: {report_id}")
+        if not self.root.is_dir():
+            raise ReportStoreCorruptError(f"Report store root is unsafe: {report_id}")
 
     def _ensure_path_within_root(self, path: Path, error_type: type[ReportStoreError]) -> None:
         try:

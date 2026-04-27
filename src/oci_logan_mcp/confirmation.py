@@ -40,6 +40,7 @@ NON_DESTRUCTIVE_MUTATION_EXEMPTIONS: dict[str, str] = {
     "save_learned_query": "Additive learned-query state; overwrite paths require explicit force/rename behavior.",
     "remember_preference": "Additive preference signal with no deletion of managed resources.",
     "record_investigation": "Creates a fresh pb_<uuid> playbook record through PlaybookRecorder.",
+    "generate_incident_report": "Persists local report artifacts without deleting managed resources.",
     "setup_confirmation_secret": "Bootstraps confirmation secret and refuses overwrite through the tool handler.",
     "set_compartment": "Updates current session context only.",
     "set_namespace": "Updates current session context only.",

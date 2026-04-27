@@ -978,6 +978,8 @@ class MCPHandlers:
             return self._error_response("invalid_report_id", str(e))
         except ReportNotFoundError as e:
             return self._error_response("report_not_found", str(e))
+        except ReportStoreCorruptError as e:
+            return self._error_response("report_store_corrupt", str(e))
         except ReportStoreError as e:
             return self._error_response("report_store_error", str(e))
         return self._json_response(report)
@@ -1032,7 +1034,12 @@ class MCPHandlers:
         resolved["html_path"] = stored["html_path"]
         resolved["metadata_path"] = stored["metadata_path"]
         title = stored["metadata"].get("title")
-        if "title" not in resolved and isinstance(title, str) and title.strip():
+        current_title = resolved.get("title")
+        if (
+            (current_title is None or (isinstance(current_title, str) and not current_title.strip()))
+            and isinstance(title, str)
+            and title.strip()
+        ):
             resolved["title"] = title
         return resolved, None, None
 

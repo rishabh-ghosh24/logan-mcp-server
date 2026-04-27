@@ -23,6 +23,7 @@ def _report(report_id: str = "rpt_0123456789abcdef0123456789abcdef") -> dict:
             "generated_at": "2026-04-27T12:00:00Z",
             "time_range": "last_24_hours",
             "summary_length": "standard",
+            "word_count": 298,
         },
     }
 
@@ -177,6 +178,23 @@ def test_get_rejects_symlinked_report_dir_without_reading_outside_store(tmp_path
         store.get(report_id)
 
 
+def test_get_rejects_symlinked_store_root_without_reading_outside_store(tmp_path):
+    store = ReportStore(tmp_path)
+    report_id = "rpt_66666666666666666666666666666667"
+    outside_root = tmp_path / "outside_store"
+    outside_report_dir = outside_root / report_id
+    outside_report_dir.mkdir(parents=True)
+    (outside_report_dir / "report.md").write_text("# Outside\n", encoding="utf-8")
+    (outside_report_dir / "metadata.json").write_text(
+        '{"title": "Outside"}',
+        encoding="utf-8",
+    )
+    store.root.symlink_to(outside_root, target_is_directory=True)
+
+    with pytest.raises(ReportStoreCorruptError):
+        store.get(report_id)
+
+
 def test_list_counts_symlinked_report_dir_as_corrupt_without_loading_it(tmp_path):
     store = ReportStore(tmp_path)
     report_id = "rpt_77777777777777777777777777777777"
@@ -252,6 +270,7 @@ def test_list_returns_computed_paths_when_metadata_paths_are_tampered(tmp_path):
             "generated_at": "2026-04-27T12:00:00Z",
             "time_range": "last_24_hours",
             "summary_length": "standard",
+            "word_count": 298,
             "markdown_path": str(report_dir / "report.md"),
             "html_path": str(report_dir / "report.html"),
             "metadata_path": str(report_dir / "metadata.json"),
