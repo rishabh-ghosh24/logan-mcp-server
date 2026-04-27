@@ -176,6 +176,22 @@ def test_generate_incident_report_schema():
     assert "title" not in schema.get("required", [])
 
 
+def test_incident_report_read_tool_schemas():
+    tools = {t["name"]: t for t in get_tools()}
+
+    get_schema = tools["get_incident_report"]["inputSchema"]
+    assert get_schema["required"] == ["report_id"]
+    assert get_schema["properties"]["report_id"]["type"] == "string"
+
+    list_schema = tools["list_incident_reports"]["inputSchema"]
+    limit_schema = list_schema["properties"]["limit"]
+    assert "required" not in list_schema
+    assert limit_schema["type"] == "integer"
+    assert limit_schema["minimum"] == 1
+    assert limit_schema["maximum"] == 100
+    assert limit_schema["default"] == 20
+
+
 def test_deliver_report_schema_is_markdown_first():
     tools = {tool["name"]: tool for tool in get_tools()}
     schema = tools["deliver_report"]["inputSchema"]

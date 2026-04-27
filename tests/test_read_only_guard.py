@@ -52,6 +52,8 @@ def test_mutating_tools_excludes_readers():
         "export_results",
         "list_playbooks",
         "get_playbook",
+        "get_incident_report",
+        "list_incident_reports",
     }
     assert readers.isdisjoint(MUTATING_TOOLS)
 
@@ -139,6 +141,8 @@ def test_all_registered_tools_are_classified():
         "export_transcript",
         "list_playbooks", "get_playbook",
         "generate_incident_report",
+        "get_incident_report",
+        "list_incident_reports",
     }
 
     unclassified = registered - MUTATING_TOOLS - KNOWN_READERS

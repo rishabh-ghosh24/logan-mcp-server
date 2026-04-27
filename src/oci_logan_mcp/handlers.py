@@ -47,7 +47,12 @@ from .playbook_recorder import PlaybookRecorder
 from .playbook_store import PlaybookNotFoundError, PlaybookStore
 from .report_delivery import ReportDeliveryError, ReportDeliveryService
 from .report_generator import ReportGenerationError, ReportGenerator
-from .report_store import ReportStore, ReportStoreError
+from .report_store import (
+    InvalidReportIdError,
+    ReportNotFoundError,
+    ReportStore,
+    ReportStoreError,
+)
 
 if TYPE_CHECKING:
     from .catalog import CatalogEntry
@@ -202,6 +207,8 @@ class MCPHandlers:
             "parser_failure_triage": self._parser_failure_triage,
             "investigate_incident": self._investigate_incident,
             "generate_incident_report": self._generate_incident_report,
+            "get_incident_report": self._get_incident_report,
+            "list_incident_reports": self._list_incident_reports,
             "deliver_report": self._deliver_report,
             "why_did_this_fire": self._why_did_this_fire,
             "find_rare_events": self._find_rare_events,
@@ -961,6 +968,31 @@ class MCPHandlers:
         report["artifacts"] = stored["artifacts"]
         report["metadata"] = stored["metadata"]
         return self._json_response(report)
+
+    async def _get_incident_report(self, args: Dict) -> List[Dict]:
+        report_id = str(args.get("report_id", ""))
+        try:
+            report = self.report_store.get(report_id)
+        except InvalidReportIdError as e:
+            return self._error_response("invalid_report_id", str(e))
+        except ReportNotFoundError as e:
+            return self._error_response("report_not_found", str(e))
+        except ReportStoreError as e:
+            return self._error_response("report_store_error", str(e))
+        return self._json_response(report)
+
+    async def _list_incident_reports(self, args: Dict) -> List[Dict]:
+        limit = args.get("limit", 20)
+        if isinstance(limit, bool) or not isinstance(limit, int):
+            return self._error_response(
+                "invalid_limit",
+                "limit must be an integer; valid values are clamped to 1..100",
+            )
+        try:
+            reports = self.report_store.list(limit=limit)
+        except ReportStoreError as e:
+            return self._error_response("report_store_error", str(e))
+        return self._json_response(reports)
 
     async def _deliver_report(self, args: Dict) -> List[Dict]:
         report = args.get("report")

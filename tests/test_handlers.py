@@ -2404,6 +2404,137 @@ class TestIncidentReports:
         assert payload["metadata"]["title"] == "24-hour failures and issues report"
 
     @pytest.mark.asyncio
+    async def test_get_incident_report_returns_stored_report(self, handlers):
+        result = await handlers.handle_tool_call(
+            "generate_incident_report",
+            {
+                "investigation": {"summary": "Parser failures increased."},
+                "format": "html",
+                "title": "24-hour failures and issues report",
+            },
+        )
+        generated = json.loads(result[0]["text"])
+
+        result = await handlers.handle_tool_call(
+            "get_incident_report",
+            {"report_id": generated["report_id"]},
+        )
+        loaded = json.loads(result[0]["text"])
+
+        assert loaded["report_id"] == generated["report_id"]
+        assert loaded["markdown"].startswith("# 24-hour failures and issues report")
+        assert loaded["markdown_path"].endswith("/report.md")
+        assert loaded["html"].startswith("<!doctype html>")
+        assert loaded["html_path"].endswith("/report.html")
+        assert loaded["metadata"]["title"] == "24-hour failures and issues report"
+        assert loaded["metadata_path"].endswith("/metadata.json")
+
+    @pytest.mark.asyncio
+    async def test_list_incident_reports_returns_newest_first(self, handlers):
+        handlers.report_generator.generate = MagicMock(
+            side_effect=[
+                {
+                    "report_id": "rpt_11111111111111111111111111111111",
+                    "markdown": "# Older report\n",
+                    "html": None,
+                    "metadata": {
+                        "title": "Older report",
+                        "generated_at": "2026-04-27T10:00:00Z",
+                        "summary_length": "standard",
+                    },
+                    "artifacts": [],
+                },
+                {
+                    "report_id": "rpt_22222222222222222222222222222222",
+                    "markdown": "# Newer report\n",
+                    "html": None,
+                    "metadata": {
+                        "title": "Newer report",
+                        "generated_at": "2026-04-27T12:00:00Z",
+                        "summary_length": "standard",
+                    },
+                    "artifacts": [],
+                },
+            ]
+        )
+        await handlers.handle_tool_call(
+            "generate_incident_report",
+            {"investigation": {"summary": "older"}},
+        )
+        await handlers.handle_tool_call(
+            "generate_incident_report",
+            {"investigation": {"summary": "newer"}},
+        )
+
+        result = await handlers.handle_tool_call(
+            "list_incident_reports",
+            {"limit": 20},
+        )
+        listed = json.loads(result[0]["text"])
+
+        assert [entry["title"] for entry in listed["reports"]] == [
+            "Newer report",
+            "Older report",
+        ]
+        assert listed["reports"][0]["markdown_path"].endswith("/report.md")
+        assert listed["reports"][0]["metadata_path"].endswith("/metadata.json")
+        assert listed["warnings"] == {"corrupt_count": 0}
+
+    @pytest.mark.asyncio
+    @pytest.mark.parametrize("limit", ["abc", True])
+    async def test_list_incident_reports_rejects_malformed_limit(self, handlers, limit):
+        handlers.report_store.list = MagicMock(return_value={"reports": []})
+
+        result = await handlers.handle_tool_call(
+            "list_incident_reports",
+            {"limit": limit},
+        )
+
+        payload = json.loads(result[0]["text"])
+        assert payload["status"] == "error"
+        assert payload["error_code"] == "invalid_limit"
+        assert "limit must be an integer" in payload["error"]
+        handlers.report_store.list.assert_not_called()
+
+    @pytest.mark.asyncio
+    async def test_get_incident_report_returns_invalid_id_error(self, handlers):
+        result = await handlers.handle_tool_call(
+            "get_incident_report",
+            {"report_id": "not_a_report"},
+        )
+
+        payload = json.loads(result[0]["text"])
+        assert payload["status"] == "error"
+        assert payload["error_code"] == "invalid_report_id"
+
+    @pytest.mark.asyncio
+    async def test_get_incident_report_returns_missing_report_error(self, handlers):
+        result = await handlers.handle_tool_call(
+            "get_incident_report",
+            {"report_id": "rpt_99999999999999999999999999999999"},
+        )
+
+        payload = json.loads(result[0]["text"])
+        assert payload["status"] == "error"
+        assert payload["error_code"] == "report_not_found"
+
+    @pytest.mark.asyncio
+    async def test_get_incident_report_returns_store_error(self, handlers):
+        handlers.report_store.get = MagicMock(
+            side_effect=ReportStoreError("could not read report store")
+        )
+
+        result = await handlers.handle_tool_call(
+            "get_incident_report",
+            {"report_id": "rpt_0123456789abcdef0123456789abcdef"},
+        )
+
+        payload = json.loads(result[0]["text"])
+        assert payload["status"] == "error"
+        assert payload["error_code"] == "report_store_error"
+        assert "could not read report store" in payload["error"]
+
+    @pytest.mark.asyncio
     async def test_generate_incident_report_returns_persistence_error(self, handlers):
         handlers.report_store.save = MagicMock(
             side_effect=ReportStoreError("could not persist report")

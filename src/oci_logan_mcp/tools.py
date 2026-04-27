@@ -630,6 +630,36 @@ def get_tools() -> List[Dict[str, Any]]:
             },
         },
         {
+            "name": "get_incident_report",
+            "description": "Read a stored incident report by report_id, including markdown, paths, and metadata.",
+            "inputSchema": {
+                "type": "object",
+                "properties": {
+                    "report_id": {
+                        "type": "string",
+                        "description": "Stored report id such as rpt_0123456789abcdef0123456789abcdef.",
+                    },
+                },
+                "required": ["report_id"],
+            },
+        },
+        {
+            "name": "list_incident_reports",
+            "description": "List stored incident reports with local artifact paths.",
+            "inputSchema": {
+                "type": "object",
+                "properties": {
+                    "limit": {
+                        "type": "integer",
+                        "description": "Maximum reports to return, clamped to 100.",
+                        "minimum": 1,
+                        "maximum": 100,
+                        "default": 20,
+                    },
+                },
+            },
+        },
+        {
             "name": "deliver_report",
             "description": (
                 "Deliver a generated incident report via Telegram, Slack, or OCI "
