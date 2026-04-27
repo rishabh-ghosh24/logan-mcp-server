@@ -25,7 +25,7 @@ The approved behavior is:
 - Delivery PDFs remain directly under `settings.report_delivery.artifact_dir`.
 - Stored report IDs must match `^rpt_[0-9a-f]{32}$` before any path joins.
 - `ReportStore.save()` writes `report.md`, then optional `report.html`, then `metadata.json` last, each via temp-file plus rename.
-- `generate_incident_report` accepts optional `title`, persists by default, and returns artifact paths.
+- `generate_incident_report` accepts optional `title`, persists by default, and returns `artifacts` as the approved list-of-objects shape.
 - `get_incident_report` returns markdown plus local paths and metadata.
 - `list_incident_reports` returns newest reports plus `warnings.corrupt_count`.
 - `deliver_report` accepts either `report.markdown` or `report.report_id`; both together returns `conflicting_report_inputs`.
@@ -85,22 +85,26 @@ def test_save_writes_report_files_under_store(tmp_path):
     assert metadata["title"] == "24-hour failures and issues report"
     assert metadata["markdown_path"] == str(report_dir / "report.md")
     assert metadata["html_path"] == str(report_dir / "report.html")
+    assert saved["artifacts"] == [
+        {"name": "markdown", "type": "markdown", "path": str(report_dir / "report.md")},
+        {"name": "html", "type": "html", "path": str(report_dir / "report.html")},
+        {"name": "metadata", "type": "json", "path": str(report_dir / "metadata.json")},
+    ]
 
 
-def test_save_writes_metadata_last(tmp_path, monkeypatch):
+def test_incomplete_report_without_metadata_is_not_listed_or_loaded(tmp_path):
     store = ReportStore(tmp_path)
-    calls: list[str] = []
-    original = store._atomic_write_text
+    report_id = "rpt_44444444444444444444444444444444"
+    report_dir = tmp_path / "store" / report_id
+    report_dir.mkdir(parents=True)
+    (report_dir / "report.md").write_text("# Half-written report\n", encoding="utf-8")
 
-    def tracking_write(path, content):
-        calls.append(path.name)
-        original(path, content)
+    listed = store.list(limit=10)
 
-    monkeypatch.setattr(store, "_atomic_write_text", tracking_write)
-
-    store.save(_report())
-
-    assert calls == ["report.md", "report.html", "metadata.json"]
+    assert listed["reports"] == []
+    assert listed["warnings"] == {"corrupt_count": 1}
+    with pytest.raises(ReportNotFoundError):
+        store.get(report_id)
 
 
 def test_get_returns_markdown_html_paths_and_metadata(tmp_path):
@@ -201,7 +205,7 @@ Core behavior:
 
 - Constructor receives `artifact_dir: Path | str`.
 - Actual report root is `Path(artifact_dir).expanduser() / "store"`.
-- `save(report: dict) -> dict` validates the report id, creates the report directory, writes files atomically, and returns paths.
+- `save(report: dict) -> dict` validates the report id, creates the report directory, writes files atomically, and returns paths plus the response-ready `artifacts` list.
 - `get(report_id: str) -> dict` validates the ID, reads markdown/html/metadata, and raises typed exceptions.
 - `list(limit: int = 20) -> dict` returns newest-first metadata summaries and `warnings.corrupt_count`.
 - Validate IDs before computing `self.root / report_id`.
@@ -262,6 +266,13 @@ class ReportStore:
         metadata["html_path"] = str(html_path) if html_path else None
         metadata["metadata_path"] = str(metadata_path)
 
+        artifacts = [
+            {"name": "markdown", "type": "markdown", "path": str(markdown_path)},
+        ]
+        if html_path:
+            artifacts.append({"name": "html", "type": "html", "path": str(html_path)})
+        artifacts.append({"name": "metadata", "type": "json", "path": str(metadata_path)})
+
         self._atomic_write_text(markdown_path, markdown)
         if html_path:
             self._atomic_write_text(html_path, html)
@@ -273,6 +284,7 @@ class ReportStore:
             "html_path": str(html_path) if html_path else None,
             "metadata_path": str(metadata_path),
             "metadata": metadata,
+            "artifacts": artifacts,
         }
 
     def get(self, report_id: str) -> dict[str, Any]:
@@ -385,9 +397,19 @@ def test_generate_uses_custom_title_when_provided():
         "incident_id": "inc_123",
         "summary": "Parser failures increased",
         "time_range": "last_24_hours",
-        "findings": [],
-        "query_results": [],
-        "recommendations": [],
+        "cross_source_timeline": [],
+        "anomalous_sources": [
+            {"log_source": "Kubernetes Kubelet Logs", "count": 12400, "delta": 0.84},
+        ],
+        "parser_failures": [
+            {"log_source": "Kubernetes Kubelet Logs", "failure_count": 12400},
+        ],
+        "next_steps": ["Inspect recent kubelet failed-parse examples."],
+        "seed": {"time_range": "last_24_hours"},
+        "budget": {"used": 3, "limit": 8},
+        "partial": False,
+        "partial_reasons": [],
+        "ingestion_health": {"status": "healthy"},
     }
 
     report = generator.generate(investigation, title="24-hour failures and issues report")
@@ -413,10 +435,9 @@ Expected shape:
 ```python
 def generate(
     self,
-    investigation: Mapping[str, Any],
-    *,
-    format: str = "markdown",
-    include_sections: Sequence[str] | None = None,
+    investigation: Dict[str, Any],
+    output_format: str = "markdown",
+    include_sections: Optional[List[str]] = None,
     summary_length: str = "standard",
     title: str | None = None,
 ) -> dict[str, Any]:
@@ -471,25 +492,45 @@ Expected output: all tests pass.
 In `TestIncidentReports`, add or update the generation test so it proves:
 
 - The handler persists the generated report.
-- The response includes `artifacts` with `markdown_path`, optional `html_path`, and `metadata_path`.
+- The response includes `artifacts` as a list of `{name, type, path}` objects for markdown, optional html, and metadata.
 - The persisted `metadata.json` includes the custom title.
+- The existing route-to-generator test uses a valid `rpt_<32 hex>` ID in its mocked generator result and expects the new `title` argument.
 
-Use a temporary settings artifact directory if the existing handler fixture supports injected settings. If the fixture constructs `LoganHandlers` directly, create a temporary `Settings` object with `report_delivery.artifact_dir = tmp_path / "reports"`.
+Update the existing `settings` fixture in `tests/test_handlers.py` to keep report artifacts in the test temp directory:
+
+```python
+@pytest.fixture
+def settings(tmp_path):
+    s = Settings()
+    s.log_analytics.namespace = "testns"
+    s.log_analytics.default_compartment_id = "ocid1.compartment.default"
+    s.query.max_results = 1000
+    s.query.default_time_range = "last_1_hour"
+    s.report_delivery.artifact_dir = tmp_path / "reports"
+    return s
+```
 
 Expected test shape:
 
 ```python
-async def test_generate_incident_report_persists_report(tmp_path):
-    settings = Settings()
-    settings.report_delivery.artifact_dir = tmp_path / "reports"
-    handlers = LoganHandlers(settings=settings)
+async def test_generate_incident_report_persists_report(handlers):
     investigation = {
         "incident_id": "inc_123",
         "summary": "Parser failures increased",
         "time_range": "last_24_hours",
-        "findings": [],
-        "query_results": [],
-        "recommendations": [],
+        "cross_source_timeline": [],
+        "anomalous_sources": [
+            {"log_source": "Kubernetes Kubelet Logs", "count": 12400, "delta": 0.84},
+        ],
+        "parser_failures": [
+            {"log_source": "Kubernetes Kubelet Logs", "failure_count": 12400},
+        ],
+        "next_steps": ["Inspect recent kubelet failed-parse examples."],
+        "seed": {"time_range": "last_24_hours"},
+        "budget": {"used": 3, "limit": 8},
+        "partial": False,
+        "partial_reasons": [],
+        "ingestion_health": {"status": "healthy"},
     }
 
     response = await handlers.handle_tool_call(
@@ -499,53 +540,93 @@ async def test_generate_incident_report_persists_report(tmp_path):
             "title": "24-hour failures and issues report",
         },
     )
-    payload = _json(response)
+    payload = json.loads(response[0]["text"])
+    artifacts = {artifact["name"]: artifact for artifact in payload["artifacts"]}
 
     assert payload["report_id"].startswith("rpt_")
-    assert payload["artifacts"]["markdown_path"].endswith("/report.md")
-    assert payload["artifacts"]["metadata_path"].endswith("/metadata.json")
-    assert Path(payload["artifacts"]["markdown_path"]).exists()
-    assert Path(payload["artifacts"]["metadata_path"]).exists()
+    assert artifacts["markdown"]["path"].endswith("/report.md")
+    assert artifacts["metadata"]["path"].endswith("/metadata.json")
+    assert Path(artifacts["markdown"]["path"]).exists()
+    assert Path(artifacts["metadata"]["path"]).exists()
     assert payload["metadata"]["title"] == "24-hour failures and issues report"
 ```
 
-Use the local test helper already present in `tests/test_handlers.py` for converting MCP response content to JSON.
+Use the existing `json.loads(result[0]["text"])` pattern from `tests/test_handlers.py`.
+
+Also update the existing mock-based route test so its generated ID passes store validation:
+
+```python
+handlers.report_generator.generate = MagicMock(
+    return_value={
+        "report_id": "rpt_0123456789abcdef0123456789abcdef",
+        "markdown": "# Incident Report\n",
+        "html": None,
+        "metadata": {"source_type": "investigation"},
+        "artifacts": [],
+    }
+)
+...
+handlers.report_generator.generate.assert_called_once_with(
+    investigation={"summary": "x"},
+    output_format="markdown",
+    include_sections=["executive_summary"],
+    summary_length="short",
+    title=None,
+)
+```
 
 - [ ] Update `src/oci_logan_mcp/handlers.py`.
 
-Wire a `ReportStore` instance into `LoganHandlers`.
+Wire a `ReportStore` instance into `MCPHandlers`.
 
 Implementation points:
 
 - Import `ReportStore` and `ReportStoreError`.
+- Add small response helpers before the report handlers so new report methods do not repeat the inline JSON/error envelope:
+
+```python
+def _json_response(self, payload: Any) -> List[Dict]:
+    return [{"type": "text", "text": json.dumps(payload, indent=2, default=str)}]
+
+def _error_response(self, error_code: str, message: str, **extra: Any) -> List[Dict]:
+    payload = {"status": "error", "error_code": error_code, "error": message}
+    payload.update(extra)
+    return self._json_response(payload)
+```
+
 - In `__init__`, after settings are available:
 
 ```python
 self.report_store = ReportStore(self.settings.report_delivery.artifact_dir)
 ```
 
-- In `_generate_incident_report`, pass `title=args.get("title")` to the generator.
+- In `_generate_incident_report`, keep the existing `output_format=args.get("format", "markdown")` call-site parameter and add `title=args.get("title")`:
+
+```python
+report = self.report_generator.generate(
+    investigation=investigation,
+    output_format=args.get("format", "markdown"),
+    include_sections=args.get("include_sections"),
+    summary_length=args.get("summary_length", "standard"),
+    title=args.get("title"),
+)
+```
+
 - Immediately save the generated report:
 
 ```python
 try:
     stored = self.report_store.save(report)
 except ReportStoreError as exc:
-    return self._error("report_persistence_failed", str(exc))
+    return self._error_response("report_persistence_failed", str(exc))
 ```
 
 - Add artifact paths to the returned report:
 
 ```python
-report["artifacts"] = {
-    "markdown_path": stored["markdown_path"],
-    "html_path": stored["html_path"],
-    "metadata_path": stored["metadata_path"],
-}
+report["artifacts"] = stored["artifacts"]
 report["metadata"] = stored["metadata"]
 ```
-
-If the existing code represents `artifacts` as a list, change the tool behavior to a mapping with path names and update the existing tests accordingly. This is more useful for manual read/download and matches the approved spec.
 
 - [ ] Run focused handler generation tests.
 
@@ -604,7 +685,8 @@ Add handler tests that:
 Expected response checks:
 
 ```python
-loaded = _json(await handlers.handle_tool_call("get_incident_report", {"report_id": report_id}))
+result = await handlers.handle_tool_call("get_incident_report", {"report_id": report_id})
+loaded = json.loads(result[0]["text"])
 assert loaded["report_id"] == report_id
 assert loaded["markdown"].startswith("#")
 assert loaded["markdown_path"].endswith("/report.md")
@@ -612,7 +694,8 @@ assert loaded["metadata"]["title"] == "24-hour failures and issues report"
 ```
 
 ```python
-listed = _json(await handlers.handle_tool_call("list_incident_reports", {"limit": 20}))
+result = await handlers.handle_tool_call("list_incident_reports", {"limit": 20})
+listed = json.loads(result[0]["text"])
 assert listed["reports"][0]["title"] == "Newer report"
 assert listed["warnings"] == {"corrupt_count": 0}
 ```
@@ -669,26 +752,26 @@ Register both tool handlers in the same dispatch table as the existing report to
 Add handler methods:
 
 ```python
-async def _get_incident_report(self, args: dict[str, Any]) -> list[types.TextContent]:
+async def _get_incident_report(self, args: Dict) -> List[Dict]:
     report_id = str(args.get("report_id", ""))
     try:
         report = self.report_store.get(report_id)
     except InvalidReportIdError as exc:
-        return self._error("invalid_report_id", str(exc))
+        return self._error_response("invalid_report_id", str(exc))
     except ReportNotFoundError as exc:
-        return self._error("report_not_found", str(exc))
+        return self._error_response("report_not_found", str(exc))
     except ReportStoreError as exc:
-        return self._error("report_store_error", str(exc))
-    return self._json(report)
+        return self._error_response("report_store_error", str(exc))
+    return self._json_response(report)
 ```
 
 ```python
-async def _list_incident_reports(self, args: dict[str, Any]) -> list[types.TextContent]:
+async def _list_incident_reports(self, args: Dict) -> List[Dict]:
     limit = int(args.get("limit", 20))
-    return self._json(self.report_store.list(limit=limit))
+    return self._json_response(self.report_store.list(limit=limit))
 ```
 
-Use the existing handler JSON/error helper names rather than creating duplicate helpers. If the helpers have different names, keep the behavior and adapt the snippet to the local conventions.
+These use the `_json_response` / `_error_response` helpers added in Task 4 and preserve the existing payload convention: `{"status": "error", "error_code": "...", "error": "..."}`.
 
 - [ ] Confirm audit behavior.
 
@@ -734,14 +817,30 @@ In `TestDeliverReportHandler`, add tests for:
 async def test_deliver_report_resolves_stored_report_id(tmp_path, monkeypatch):
     settings = Settings()
     settings.report_delivery.artifact_dir = tmp_path / "reports"
-    handlers = LoganHandlers(settings=settings)
-    generated = _json(await handlers.handle_tool_call("generate_incident_report", {...}))
+    user_dir = tmp_path / "users" / "testuser"
+    user_dir.mkdir(parents=True)
+    handlers = MCPHandlers(
+        settings=settings,
+        oci_client=MagicMock(),
+        cache=MagicMock(),
+        query_logger=MagicMock(),
+        context_manager=MagicMock(),
+        user_store=UserStore(base_dir=tmp_path, user_id="testuser"),
+        preference_store=PreferenceStore(user_dir=user_dir),
+        secret_store=SecretStore(tmp_path / "secret.yaml"),
+        audit_logger=AuditLogger(tmp_path / "audit"),
+    )
+    generated_result = await handlers.handle_tool_call(
+        "generate_incident_report",
+        {"investigation": {"summary": "Parser failures increased"}},
+    )
+    generated = json.loads(generated_result[0]["text"])
 
     delivered_reports = []
 
     async def fake_deliver(**kwargs):
         delivered_reports.append(kwargs["report"])
-        return {"status": "sent", "channel": kwargs["channel"], "delivery_id": "test"}
+        return {"status": "sent", "channels": kwargs["channels"], "delivery_id": "test"}
 
     monkeypatch.setattr(handlers.report_delivery_service, "deliver", fake_deliver)
 
@@ -749,13 +848,14 @@ async def test_deliver_report_resolves_stored_report_id(tmp_path, monkeypatch):
         "deliver_report",
         {
             "report": {"report_id": generated["report_id"]},
-            "channel": "email",
-            "recipients": ["demo@example.com"],
+            "channels": ["email"],
+            "recipients": {"email_topic_ocid": "ocid1.onstopic.oc1..demo"},
         },
     )
 
-    payload = _json(response)
+    payload = json.loads(response[0]["text"])
     assert payload["status"] == "sent"
+    assert payload["channels"] == ["email"]
     assert delivered_reports[0]["markdown"].startswith("#")
     assert delivered_reports[0]["report_id"] == generated["report_id"]
 ```
@@ -767,22 +867,55 @@ response = await handlers.handle_tool_call(
     "deliver_report",
     {
         "report": {"report_id": report_id, "markdown": "# stale"},
-        "channel": "email",
-        "recipients": ["demo@example.com"],
+        "channels": ["email"],
+        "recipients": {"email_topic_ocid": "ocid1.onstopic.oc1..demo"},
     },
 )
-payload = _json(response)
-assert payload["error"] == "conflicting_report_inputs"
+payload = json.loads(response[0]["text"])
+assert payload["status"] == "error"
+assert payload["error_code"] == "conflicting_report_inputs"
 ```
 
 3. Rejecting neither inline markdown nor `report_id`:
 
 ```python
-payload = _json(await handlers.handle_tool_call("deliver_report", {"report": {}, ...}))
-assert payload["error"] == "missing_report"
+response = await handlers.handle_tool_call(
+    "deliver_report",
+    {
+        "report": {},
+        "channels": ["email"],
+        "recipients": {"email_topic_ocid": "ocid1.onstopic.oc1..demo"},
+    },
+)
+payload = json.loads(response[0]["text"])
+assert payload["status"] == "error"
+assert payload["error_code"] == "missing_report"
 ```
 
 4. Rejecting invalid or missing `report_id` with `invalid_report_id` / `report_not_found`.
+
+- [ ] Update `tests/test_tools.py`.
+
+Revise the existing `test_deliver_report_schema_is_markdown_first` test because markdown is no longer required inside `report`.
+
+Expected assertions:
+
+```python
+def test_deliver_report_schema_accepts_markdown_or_report_id():
+    tools = {tool["name"]: tool for tool in get_tools()}
+    schema = tools["deliver_report"]["inputSchema"]
+    props = schema["properties"]
+    report_schema = props["report"]
+
+    assert schema["required"] == ["report"]
+    assert "required" not in report_schema or "markdown" not in report_schema["required"]
+    assert "markdown" in report_schema["properties"]
+    assert "report_id" in report_schema["properties"]
+    assert props["channels"]["items"]["enum"] == ["telegram", "email", "slack"]
+    assert props["recipients"]["type"] == "object"
+    assert "email_topic_ocid" in props["recipients"]["properties"]
+    assert props["format"]["enum"] == ["pdf", "markdown", "both"]
+```
 
 - [ ] Update `src/oci_logan_mcp/report_delivery.py`.
 
@@ -790,7 +923,10 @@ If the existing `ReportDeliveryError` is plain, make it carry a stable code:
 
 ```python
 class ReportDeliveryError(Exception):
-    def __init__(self, code: str, message: str) -> None:
+    def __init__(self, code: str, message: str | None = None) -> None:
+        if message is None:
+            message = code
+            code = "invalid_delivery_options"
         super().__init__(message)
         self.code = code
         self.message = message
@@ -815,7 +951,7 @@ Keep `ReportDeliveryService` focused on transport delivery. It should still vali
 Add a helper to resolve delivery input before calling the service:
 
 ```python
-def _resolve_report_for_delivery(self, report: Mapping[str, Any]) -> tuple[dict[str, Any] | None, str | None, str | None]:
+def _resolve_report_for_delivery(self, report: Dict[str, Any]) -> tuple[dict[str, Any] | None, str | None, str | None]:
     has_markdown = bool(str(report.get("markdown") or "").strip())
     has_report_id = bool(str(report.get("report_id") or "").strip())
 
@@ -848,12 +984,31 @@ def _resolve_report_for_delivery(self, report: Mapping[str, Any]) -> tuple[dict[
 In `_deliver_report`:
 
 ```python
-report, error_code, message = self._resolve_report_for_delivery(args.get("report") or {})
+raw_report = args.get("report")
+if not isinstance(raw_report, dict):
+    return self._error_response("missing_report", "report must be an object")
+
+report, error_code, message = self._resolve_report_for_delivery(raw_report)
 if error_code:
-    return self._error(error_code, message)
+    return self._error_response(error_code, message or "")
 ```
 
-Then call `self.report_delivery_service.deliver(report=report, ...)`.
+Then call the existing delivery service with the current plural schema:
+
+```python
+try:
+    result = await self.report_delivery_service.deliver(
+        report=report,
+        channels=args.get("channels", ["telegram"]),
+        recipients=args.get("recipients") or {},
+        output_format=args.get("format", "pdf"),
+        title=args.get("title"),
+    )
+except ReportDeliveryError as exc:
+    return self._error_response(getattr(exc, "code", "invalid_delivery_options"), str(exc))
+
+return self._json_response(result)
+```
 
 - [ ] Update `src/oci_logan_mcp/tools.py`.
 
@@ -863,6 +1018,7 @@ Change `deliver_report` schema:
 - Add `report.report_id` optional.
 - Description says exactly one of `markdown` or `report_id` should be supplied.
 - Remove text saying report_id lookup is deferred.
+- Preserve the existing `channels` array and `recipients` object shape. Do not introduce singular `channel` or list-style recipients.
 
 Expected schema fragment:
 
@@ -906,13 +1062,26 @@ def test_delete_playbook_requires_confirmation():
     assert "delete_playbook" in GUARDED_TOOLS
 ```
 
-Keep the existing `setup_confirmation_secret` overwrite test. If it currently lives in handler tests, leave it there and add a second drift-oriented test near confirmation tests that calls the handler twice:
+Keep the existing `setup_confirmation_secret` overwrite test in `tests/test_handlers.py`. If it needs to be rewritten during this task, use the actual tool argument names:
 
 ```python
-async def test_setup_confirmation_secret_refuses_overwrite(tmp_path):
-    handlers = LoganHandlers(settings=_settings_with_secret_path(tmp_path))
-    first = _json(await handlers.handle_tool_call("setup_confirmation_secret", {"secret": "123456"}))
-    second = _json(await handlers.handle_tool_call("setup_confirmation_secret", {"secret": "654321"}))
+async def test_setup_confirmation_secret_refuses_overwrite(handlers):
+    first_result = await handlers.handle_tool_call(
+        "setup_confirmation_secret",
+        {
+            "confirmation_secret": "first-secret",
+            "confirmation_secret_confirm": "first-secret",
+        },
+    )
+    second_result = await handlers.handle_tool_call(
+        "setup_confirmation_secret",
+        {
+            "confirmation_secret": "second-secret",
+            "confirmation_secret_confirm": "second-secret",
+        },
+    )
+    first = json.loads(first_result[0]["text"])
+    second = json.loads(second_result[0]["text"])
 
     assert first["status"] == "configured"
     assert second["status"] == "already_configured"
@@ -1020,7 +1189,7 @@ Use:
 
 - `get_incident_report(report_id="rpt_...")` to read or download one report manually.
 - `list_incident_reports(limit=20)` to find recent stored reports.
-- `deliver_report(report={"report_id": "rpt_..."}, channel="email", recipients=[...])` only after the user explicitly asks to deliver the report.
+- `deliver_report(report={"report_id": "rpt_..."}, channels=["email"], recipients={"email_topic_ocid": "ocid1.onstopic..."})` only after the user explicitly asks to deliver the report.
 
 Delivery accepts either inline `report.markdown` or `report.report_id`, but not both.
 ```
@@ -1128,7 +1297,7 @@ Expected server behavior:
 
 - Assistant calls `investigate_incident`.
 - Assistant calls `generate_incident_report` with `title`.
-- Response includes `report_id`, markdown summary, and local `markdown_path` / `metadata_path`.
+- Response includes `report_id`, markdown summary, and `artifacts` entries for local markdown and metadata paths.
 - Assistant asks whether the user wants it delivered. It does not call `deliver_report` unless the user says yes.
 
 2. Read the stored report manually:
@@ -1156,12 +1325,12 @@ Expected server behavior:
 4. Deliver only after opt-in:
 
 ```text
-Yes, deliver that report to demo@example.com.
+Yes, deliver that report through the configured email notification topic.
 ```
 
 Expected server behavior:
 
-- Assistant calls `deliver_report(report={"report_id": "rpt_<id>"}, channel="email", recipients=["demo@example.com"])`.
+- Assistant calls `deliver_report(report={"report_id": "rpt_<id>"}, channels=["email"], recipients={"email_topic_ocid": "ocid1.onstopic..."})`.
 - Server resolves the stored markdown and sends via the configured ONS email path.
 
 5. Confirm destructive guard:
