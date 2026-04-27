@@ -663,9 +663,8 @@ def get_tools() -> List[Dict[str, Any]]:
             "name": "deliver_report",
             "description": (
                 "Deliver a generated incident report via Telegram, Slack, or OCI "
-                "Notifications email-topic delivery. P0 accepts inline markdown "
-                "report content only; report_id lookup is deferred until report "
-                "persistence exists."
+                "Notifications email-topic delivery. Provide exactly one of inline "
+                "markdown report content or a stored report_id."
             ),
             "inputSchema": {
                 "type": "object",
@@ -673,9 +672,22 @@ def get_tools() -> List[Dict[str, Any]]:
                 "properties": {
                     "report": {
                         "type": "object",
-                        "required": ["markdown"],
+                        "description": (
+                            "Report content to deliver. Provide exactly one of "
+                            "markdown or report_id."
+                        ),
                         "properties": {
-                            "markdown": {"type": "string"},
+                            "markdown": {
+                                "type": "string",
+                                "description": "Inline markdown report content.",
+                            },
+                            "report_id": {
+                                "type": "string",
+                                "description": (
+                                    "Stored report id returned by generate_incident_report."
+                                ),
+                            },
+                            "metadata": {"type": "object"},
                             "title": {"type": "string"},
                         },
                     },

@@ -51,6 +51,7 @@ from .report_store import (
     InvalidReportIdError,
     ReportNotFoundError,
     ReportStore,
+    ReportStoreCorruptError,
     ReportStoreError,
 )
 
@@ -994,14 +995,55 @@ class MCPHandlers:
             return self._error_response("report_store_error", str(e))
         return self._json_response(reports)
 
+    def _resolve_report_for_delivery(
+        self,
+        report: Dict[str, Any],
+    ) -> tuple[Dict[str, Any] | None, str | None, str | None]:
+        has_markdown = bool(str(report.get("markdown") or "").strip())
+        has_report_id = bool(str(report.get("report_id") or "").strip())
+
+        if has_markdown and has_report_id:
+            return None, "conflicting_report_inputs", (
+                "Use either report.markdown or report.report_id, not both."
+            )
+        if not has_markdown and not has_report_id:
+            return None, "missing_report", (
+                "report.markdown or report.report_id is required."
+            )
+        if has_markdown:
+            return dict(report), None, None
+
+        report_id = str(report.get("report_id"))
+        try:
+            stored = self.report_store.get(report_id)
+        except InvalidReportIdError as e:
+            return None, "invalid_report_id", str(e)
+        except ReportNotFoundError as e:
+            return None, "report_not_found", str(e)
+        except ReportStoreCorruptError as e:
+            return None, "report_store_corrupt", str(e)
+        except ReportStoreError as e:
+            return None, "report_store_error", str(e)
+
+        resolved = dict(report)
+        resolved["markdown"] = stored["markdown"]
+        resolved["metadata"] = stored["metadata"]
+        resolved["markdown_path"] = stored["markdown_path"]
+        resolved["html_path"] = stored["html_path"]
+        resolved["metadata_path"] = stored["metadata_path"]
+        title = stored["metadata"].get("title")
+        if "title" not in resolved and isinstance(title, str) and title.strip():
+            resolved["title"] = title
+        return resolved, None, None
+
     async def _deliver_report(self, args: Dict) -> List[Dict]:
-        report = args.get("report")
-        if not isinstance(report, dict) or not isinstance(report.get("markdown"), str):
-            return [{"type": "text", "text": json.dumps({
-                "status": "error",
-                "error_code": "missing_report_markdown",
-                "error": "report.markdown is required in P0; report_id lookup is deferred",
-            }, indent=2)}]
+        raw_report = args.get("report")
+        if not isinstance(raw_report, dict):
+            return self._error_response("missing_report", "report must be an object")
+
+        report, error_code, message = self._resolve_report_for_delivery(raw_report)
+        if error_code:
+            return self._error_response(error_code, message or "")
 
         try:
             result = await self.report_delivery_service.deliver(
@@ -1012,13 +1054,12 @@ class MCPHandlers:
                 title=args.get("title"),
             )
         except ReportDeliveryError as e:
-            return [{"type": "text", "text": json.dumps({
-                "status": "error",
-                "error_code": "invalid_delivery_options",
-                "error": str(e),
-            }, indent=2)}]
+            return self._error_response(
+                getattr(e, "code", "invalid_delivery_options"),
+                str(e),
+            )
 
-        return [{"type": "text", "text": json.dumps(result, indent=2, default=str)}]
+        return self._json_response(result)
 
     async def _why_did_this_fire(self, args: Dict) -> List[Dict]:
         """Run why_did_this_fire with structured validation and budget errors."""

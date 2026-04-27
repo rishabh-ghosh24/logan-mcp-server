@@ -192,14 +192,18 @@ def test_incident_report_read_tool_schemas():
     assert limit_schema["default"] == 20
 
 
-def test_deliver_report_schema_is_markdown_first():
+def test_deliver_report_schema_accepts_markdown_or_report_id():
     tools = {tool["name"]: tool for tool in get_tools()}
     schema = tools["deliver_report"]["inputSchema"]
     props = schema["properties"]
+    report_schema = props["report"]
 
     assert "report" in props
-    report_schema = props["report"]
-    assert report_schema["required"] == ["markdown"]
-    assert "report_id" not in report_schema["properties"]
+    assert schema["required"] == ["report"]
+    assert "required" not in report_schema or "markdown" not in report_schema["required"]
+    assert "markdown" in report_schema["properties"]
+    assert "report_id" in report_schema["properties"]
     assert props["channels"]["items"]["enum"] == ["telegram", "email", "slack"]
+    assert props["recipients"]["type"] == "object"
+    assert "email_topic_ocid" in props["recipients"]["properties"]
     assert props["format"]["enum"] == ["pdf", "markdown", "both"]
