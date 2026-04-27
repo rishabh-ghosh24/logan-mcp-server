@@ -41,14 +41,19 @@ Implement three small tracks.
 
 Add `ReportStore` as the persistence boundary for generated reports.
 
-Storage uses the existing settings-driven base path:
+Storage uses the existing settings-driven base path, but does not mix saved report
+records with delivery PDFs. Delivery PDFs stay as flat files in
+`settings.report_delivery.artifact_dir`; saved report records live under a
+dedicated `store/` namespace:
 
 ```text
 settings.report_delivery.artifact_dir/
-  rpt_<32 hex>/
-    report.md
-    report.html            # only when generated
-    metadata.json
+  report-20260427T145325Z-a1b2c3d4.pdf
+  store/
+    rpt_<32 hex>/
+      report.md
+      report.html          # only when generated
+      metadata.json
 ```
 
 `generate_incident_report` persists the report before returning. Its response keeps the existing fields and populates `artifacts` with file paths:
@@ -70,12 +75,12 @@ settings.report_delivery.artifact_dir/
     {
       "name": "markdown",
       "type": "markdown",
-      "path": "/home/opc/.oci-logan-mcp/reports/rpt_c37cade747674f64ba06eb94df2f1dab/report.md"
+      "path": "/home/opc/.oci-logan-mcp/reports/store/rpt_c37cade747674f64ba06eb94df2f1dab/report.md"
     },
     {
       "name": "metadata",
       "type": "json",
-      "path": "/home/opc/.oci-logan-mcp/reports/rpt_c37cade747674f64ba06eb94df2f1dab/metadata.json"
+      "path": "/home/opc/.oci-logan-mcp/reports/store/rpt_c37cade747674f64ba06eb94df2f1dab/metadata.json"
     }
   ]
 }
@@ -88,6 +93,11 @@ settings.report_delivery.artifact_dir/
 ```
 
 before any path construction. Invalid IDs return a structured validation error. This prevents path traversal and accidental lookup of unrelated files.
+
+Writes must be atomic. `ReportStore` writes `report.md`, optional `report.html`,
+and `metadata.json` through temporary files in the destination directory and
+renames them into place. `metadata.json` is written last; list operations only
+include entries with readable metadata.
 
 ### 2. Manual Read/Download And Delivery By ID
 
@@ -122,7 +132,10 @@ list_incident_reports(limit: int = 20) -> {
     word_count: int,
     markdown_path: str,
     html_path: str | None
-  }]
+  }],
+  warnings: {
+    corrupt_count: int
+  }
 }
 ```
 
@@ -141,7 +154,9 @@ Update `deliver_report` so the report input accepts either inline Markdown or a 
 
 Delivery remains explicit. The assistant/client must ask the user before calling `deliver_report`.
 
-If both `report.markdown` and `report.report_id` are present, inline Markdown wins. This preserves current behavior and lets callers override a stored report body intentionally.
+If both `report.markdown` and `report.report_id` are present, the call fails
+with `conflicting_report_inputs`. Silent precedence is unsafe because it can
+send stale inline content when the caller intended to deliver the stored report.
 
 ### 3. Destructive-Action 2FA Hardening
 
@@ -157,7 +172,7 @@ Add a named exemption map next to `GUARDED_TOOLS`, for example:
 NON_DESTRUCTIVE_MUTATION_EXEMPTIONS = {
     "save_learned_query": "Additive user learning state; overwrite requires force/rename collision flow.",
     "remember_preference": "Additive preference signal, not destructive deletion.",
-    "record_investigation": "Creates a new local playbook record.",
+    "record_investigation": "Creates a new local playbook record with a fresh pb_ UUID.",
     "setup_confirmation_secret": "Bootstraps the confirmation secret; protected by its own validation and no overwrite.",
     "set_compartment": "Changes current context only.",
     "set_namespace": "Changes current context only.",
@@ -173,22 +188,32 @@ The exact wording can be shorter in code, but every exemption should be reviewab
 Add drift tests:
 
 - every tool in `MUTATING_TOOLS` is either in `GUARDED_TOOLS` or in `NON_DESTRUCTIVE_MUTATION_EXEMPTIONS`
+- every registered tool in `handlers.py` whose name starts with `delete_` is in `MUTATING_TOOLS`
 - every registered `delete_*` tool is in `GUARDED_TOOLS`, unless explicitly exempted
 - `delete_playbook` returns `confirmation_required` on first call
 - a valid token + current secret executes `delete_playbook`
 - wrong secret, changed args, token reuse, and missing secret fail closed
+- `setup_confirmation_secret` returns `already_configured` when a valid secret already exists
 
 ## Tool Behavior
 
 ### `generate_incident_report`
 
-Input remains unchanged.
+Input gains one optional field:
+
+```python
+title: str | None = None
+```
+
+If omitted, `metadata.title` defaults to `"Incident Report"`. Callers should pass
+a useful title, such as `"24-hour failures and issues report"`, when the report
+will be listed or delivered later.
 
 Output changes:
 
 - `artifacts` is no longer always empty.
 - `metadata` gains path-friendly fields if useful, but existing metadata keys must remain stable.
-- `metadata.title` is set to `"Incident Report"` unless a future report-generation option provides a more specific title.
+- `metadata.title` is set from the optional `title` input, or `"Incident Report"` when not provided.
 - The returned Markdown still appears inline so the assistant can summarize it immediately.
 
 Error behavior:
@@ -235,6 +260,7 @@ Input schema changes from requiring `report.markdown` to requiring `report`, whe
 Errors:
 
 - neither provided -> `missing_report`
+- both provided -> `conflicting_report_inputs`
 - invalid report ID -> `invalid_report_id`
 - report ID not found -> `report_not_found`
 - delivery config errors stay in the existing delivery response shape
@@ -249,7 +275,7 @@ The tool should not infer ONS delivery from report generation.
 
 ## Retention Policy
 
-P0 keeps reports indefinitely in `settings.report_delivery.artifact_dir`. This matches the manual-read/download goal and avoids surprising data loss.
+P0 keeps reports indefinitely under `settings.report_delivery.artifact_dir / "store"`. This matches the manual-read/download goal and avoids surprising data loss.
 
 The persisted metadata must include `generated_at`, `report_id`, paths, and report size information so a future retention feature can safely prune old reports.
 
@@ -266,7 +292,7 @@ Deferred retention follow-up:
 - Never accept path input from the user for report lookup.
 - Write files with UTF-8 text encoding.
 - Avoid logging raw report Markdown in audit entries.
-- Audit `get_incident_report` and `list_incident_reports` as read operations if normal audit coverage exists.
+- Audit `get_incident_report` and `list_incident_reports` through the existing handler-level `invoked` audit entry. Do not add report Markdown to audit args.
 - Keep `deliver_report` recipient redaction as-is.
 - Keep confirmation secrets out of audit entries.
 
@@ -274,15 +300,20 @@ Deferred retention follow-up:
 
 - Existing clients using inline Markdown delivery continue to work.
 - Existing `generate_incident_report` callers still receive `report_id`, `markdown`, `html`, `metadata`, and `artifacts`.
-- The only behavior change is that `artifacts` now contains useful paths and persistence failures become visible.
+- `generate_incident_report` gains optional `title`; callers that omit it get `"Incident Report"`.
+- `artifacts` now contains useful paths and persistence failures become visible.
 - `deliver_report(report={"markdown": ...})` remains valid.
+- `deliver_report` with both `markdown` and `report_id` is rejected because ambiguous delivery content is unsafe.
 
 ## Acceptance Criteria
 
 - A generated incident report can be fetched later by `report_id`.
 - `get_incident_report` returns Markdown content and local paths.
+- `list_incident_reports` returns useful titles and a corruption warning count.
 - `deliver_report` can send a saved report through ONS/email with `channels=["email"]`.
+- `deliver_report` rejects calls that provide both inline Markdown and `report_id`.
 - `deliver_report` is never triggered automatically by report generation.
+- Report writes are atomic enough that list/read tools do not expose half-written reports.
 - `delete_playbook` requires confirmation token + secret before deleting.
 - All destructive registered `delete_*` tools are 2FA guarded or explicitly exempted.
 - All mutating tools are classified as guarded or exempted by a drift test.
@@ -290,12 +321,15 @@ Deferred retention follow-up:
 
 ## Test Strategy
 
-- Unit-test `ReportStore` path validation, save, load, list, corrupt-entry handling, and not-found errors.
-- Handler-test `generate_incident_report` persistence and artifact paths.
-- Handler-test `get_incident_report` and `list_incident_reports`.
+- Unit-test `ReportStore` path validation, atomic save, load, list, corrupt-entry handling, and not-found errors.
+- Handler-test `generate_incident_report` persistence, optional title, and artifact paths.
+- Handler-test `get_incident_report` and `list_incident_reports`, including `warnings.corrupt_count`.
 - Delivery-test `deliver_report` with `report_id` resolves stored Markdown and calls existing delivery code.
+- Delivery-test `deliver_report` rejects both `markdown` and `report_id` with `conflicting_report_inputs`.
 - Safety-test `delete_playbook` confirmation flow.
 - Drift-test `MUTATING_TOOLS` against `GUARDED_TOOLS` plus named exemptions.
+- Drift-test every registered `delete_*` tool is classified in `MUTATING_TOOLS`.
+- Regression-test `setup_confirmation_secret` refuses overwrite when a valid secret exists.
 - Regression-test inline Markdown delivery.
 
 ## Open Decisions For Implementation Plan
