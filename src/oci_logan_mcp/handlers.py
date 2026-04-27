@@ -418,6 +418,10 @@ class MCPHandlers:
             clean_args = dict(clean_args)
             if "recipients" in clean_args:
                 clean_args["recipients"] = "<redacted>"
+            report = clean_args.get("report")
+            if isinstance(report, dict) and "markdown" in report:
+                clean_args["report"] = dict(report)
+                clean_args["report"]["markdown"] = "<redacted>"
         elif tool_name == "create_log_source_from_sample":
             clean_args = dict(clean_args)
             if "sample_logs" in clean_args:

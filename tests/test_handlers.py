@@ -2919,11 +2919,12 @@ class TestDeliverReportHandler:
         handlers.report_delivery_service.deliver = AsyncMock(
             return_value={"status": "sent", "delivered": [], "pdf_path": None}
         )
+        markdown = "# Report\n\nCustomer account ocid1.compartment.oc1..sensitive"
 
         await handlers.handle_tool_call(
             "deliver_report",
             {
-                "report": {"markdown": "# Report"},
+                "report": {"markdown": markdown},
                 "channels": ["telegram"],
                 "recipients": {
                     "telegram_chat_id": "-100999",
@@ -2938,8 +2939,10 @@ class TestDeliverReportHandler:
         ][-1]
         assert invoked["tool"] == "deliver_report"
         assert invoked["args"]["recipients"] == "<redacted>"
+        assert invoked["args"]["report"]["markdown"] == "<redacted>"
         assert "-100999" not in str(invoked["args"])
         assert "secret" not in str(invoked["args"])
+        assert "sensitive" not in str(invoked["args"])
 
     @pytest.mark.asyncio
     async def test_non_delivery_invoked_audit_args_are_unchanged(self, handlers):
