@@ -147,7 +147,7 @@ class ReportGenerator:
             return ["No cross-source timeline events were included."]
         lines = []
         for row in timeline[:10]:
-            ts = _first_present(row, ["timestamp", "Time", "Datetime", "datetime"])
+            ts = _first_present(row, ["timestamp", "time", "Time", "Datetime", "datetime"])
             source = _first_present(row, ["source", "Log Source", "log_source"])
             message = _first_present(row, ["message", "Message", "Event", "Summary"])
             lines.append(
@@ -166,15 +166,25 @@ class ReportGenerator:
             pct_text = f" ({pct:+.1f}%)" if isinstance(pct, (int, float)) else ""
             lines.append(f"- **{source.get('source', 'unknown source')}**{pct_text}")
             for cluster in (source.get("top_error_clusters") or [])[:2]:
-                sample = _first_present(cluster, ["Cluster Sample", "sample", "message"])
+                sample = _first_present(cluster, ["Cluster Sample", "pattern", "sample", "message"])
                 count = _first_present(cluster, ["Count", "count"])
                 lines.append(
                     f"  - Cluster: {sample or cluster} "
                     f"({count or 'unknown'} events)"
                 )
             for entity in (source.get("top_entities") or [])[:2]:
-                field = entity.get("field") or entity.get("name") or "entity"
-                value = entity.get("value") or entity.get("entity") or "unknown"
+                field = (
+                    entity.get("field")
+                    or entity.get("name")
+                    or entity.get("entity_type")
+                    or "entity"
+                )
+                value = (
+                    entity.get("value")
+                    or entity.get("entity")
+                    or entity.get("entity_value")
+                    or "unknown"
+                )
                 count = entity.get("count", "unknown")
                 lines.append(f"  - Entity: {field}={value} ({count})")
             for error in (source.get("errors") or [])[:2]:

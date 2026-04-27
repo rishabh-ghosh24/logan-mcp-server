@@ -99,6 +99,39 @@ def test_generate_default_markdown_sections():
     assert report["artifacts"] == []
 
 
+def test_generate_renders_current_a1_timeline_clusters_and_entities():
+    investigation = _investigation()
+    investigation["cross_source_timeline"] = [
+        {
+            "time": "2026-04-27T03:53:15+00:00",
+            "source": "Kubernetes Kubelet Logs",
+            "message": "Error syncing pod, skipping: prometheus-server CrashLoopBackOff",
+        }
+    ]
+    investigation["anomalous_sources"][0]["top_error_clusters"] = [
+        {
+            "pattern": "Readiness probe failed for prometheus-server",
+            "count": 42,
+        }
+    ]
+    investigation["anomalous_sources"][0]["top_entities"] = [
+        {
+            "entity_type": "host",
+            "entity_value": "oke-cfqzhq4c4qa-ncpncm7ivua-ssyzrpi2qxa-2",
+            "count": 368,
+        }
+    ]
+
+    report = ReportGenerator().generate(investigation)
+
+    markdown = report["markdown"]
+    assert "`2026-04-27T03:53:15+00:00` **Kubernetes Kubelet Logs**" in markdown
+    assert "Readiness probe failed for prometheus-server (42 events)" in markdown
+    assert "host=oke-cfqzhq4c4qa-ncpncm7ivua-ssyzrpi2qxa-2 (368)" in markdown
+    assert "unknown time" not in markdown
+    assert "entity=unknown" not in markdown
+
+
 def test_include_sections_filters_output():
     report = ReportGenerator().generate(
         _investigation(),
