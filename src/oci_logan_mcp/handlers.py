@@ -47,6 +47,7 @@ from .playbook_recorder import PlaybookRecorder
 from .playbook_store import PlaybookNotFoundError, PlaybookStore
 from .report_delivery import ReportDeliveryError, ReportDeliveryService
 from .report_generator import ReportGenerationError, ReportGenerator
+from .report_store import ReportStore, ReportStoreError
 
 if TYPE_CHECKING:
     from .catalog import CatalogEntry
@@ -132,6 +133,7 @@ class MCPHandlers:
         )
         self.find_rare_events_tool = RareEventsTool(self.query_engine)
         self.report_generator = ReportGenerator()
+        self.report_store = ReportStore(self.settings.report_delivery.artifact_dir)
         self.trace_request_id_tool = TraceRequestIdTool(self.pivot_tool)
         self.log_source_builder_tool = LogSourceFromSampleTool(
             oci_client=oci_client,
@@ -393,6 +395,14 @@ class MCPHandlers:
                     outcome="execution_failed", error=str(e),
                 )
             return [{"type": "text", "text": f"Error executing {name}: {str(e)}"}]
+
+    def _json_response(self, payload: Any) -> List[Dict]:
+        return [{"type": "text", "text": json.dumps(payload, indent=2, default=str)}]
+
+    def _error_response(self, error_code: str, message: str, **extra: Any) -> List[Dict]:
+        payload = {"status": "error", "error_code": error_code, "error": message}
+        payload.update(extra)
+        return self._json_response(payload)
 
     def _clean_args_for_audit(self, tool_name: str, arguments: Dict[str, Any]) -> Dict[str, Any]:
         clean_args = self._strip_confirmation_args(arguments)
@@ -927,26 +937,30 @@ class MCPHandlers:
     async def _generate_incident_report(self, args: Dict) -> List[Dict]:
         investigation = args.get("investigation")
         if not isinstance(investigation, dict):
-            return [{"type": "text", "text": json.dumps({
-                "status": "error",
-                "error_code": "missing_investigation",
-                "error": "investigation is required and must be an object",
-            }, indent=2)}]
+            return self._error_response(
+                "missing_investigation",
+                "investigation is required and must be an object",
+            )
 
         try:
-            result = self.report_generator.generate(
+            report = self.report_generator.generate(
                 investigation=investigation,
                 output_format=args.get("format", "markdown"),
                 include_sections=args.get("include_sections"),
                 summary_length=args.get("summary_length", "standard"),
+                title=args.get("title"),
             )
         except ReportGenerationError as e:
-            return [{"type": "text", "text": json.dumps({
-                "status": "error",
-                "error_code": "invalid_report_options",
-                "error": str(e),
-            }, indent=2)}]
-        return [{"type": "text", "text": json.dumps(result, indent=2, default=str)}]
+            return self._error_response("invalid_report_options", str(e))
+
+        try:
+            stored = self.report_store.save(report)
+        except ReportStoreError as e:
+            return self._error_response("report_persistence_failed", str(e))
+
+        report["artifacts"] = stored["artifacts"]
+        report["metadata"] = stored["metadata"]
+        return self._json_response(report)
 
     async def _deliver_report(self, args: Dict) -> List[Dict]:
         report = args.get("report")

@@ -99,6 +99,16 @@ def test_generate_default_markdown_sections():
     assert report["artifacts"] == []
 
 
+def test_generate_uses_custom_title_when_provided():
+    report = ReportGenerator().generate(
+        _investigation(),
+        title="24-hour failures and issues report",
+    )
+
+    assert report["metadata"]["title"] == "24-hour failures and issues report"
+    assert report["markdown"].startswith("# 24-hour failures and issues report")
+
+
 def test_generate_renders_current_a1_timeline_clusters_and_entities():
     investigation = _investigation()
     investigation["cross_source_timeline"] = [
@@ -156,6 +166,17 @@ def test_html_format_returns_escaped_html_document():
     assert "<critical>" not in report["html"]
 
 
+def test_html_format_uses_custom_title():
+    report = ReportGenerator().generate(
+        _investigation(),
+        output_format="html",
+        title="24-hour failures and issues report",
+    )
+
+    assert "<title>24-hour failures and issues report</title>" in report["html"]
+    assert "<h1>24-hour failures and issues report</h1>" in report["html"]
+
+
 def test_empty_investigation_produces_no_findings_report():
     report = ReportGenerator().generate({})
 
@@ -175,6 +196,14 @@ def test_short_summary_caps_sentences():
     assert "Two." in summary
     assert "Three." in summary
     assert "Four." not in summary
+
+
+@pytest.mark.parametrize("title", [123, ["Incident Report"], False])
+def test_invalid_title_type_raises_report_generation_error(title):
+    with pytest.raises(ReportGenerationError) as exc:
+        ReportGenerator().generate(_investigation(), title=title)
+
+    assert "title must be a string" in str(exc.value)
 
 
 @pytest.mark.parametrize(

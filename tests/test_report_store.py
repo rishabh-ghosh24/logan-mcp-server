@@ -222,7 +222,7 @@ def test_atomic_write_removes_temp_file_when_replace_fails(tmp_path, monkeypatch
 
     monkeypatch.setattr("oci_logan_mcp.report_store.os.replace", fail_replace)
 
-    with pytest.raises(OSError, match="replace failed"):
+    with pytest.raises(ReportStoreError, match="replace failed"):
         store.save(_report(report_id))
 
     report_dir = tmp_path / "store" / report_id

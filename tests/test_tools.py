@@ -172,6 +172,8 @@ def test_generate_incident_report_schema():
     assert props["format"]["enum"] == ["markdown", "html"]
     assert props["summary_length"]["enum"] == ["short", "standard", "detailed"]
     assert "include_sections" in props
+    assert props["title"]["type"] == "string"
+    assert "title" not in schema.get("required", [])
 
 
 def test_deliver_report_schema_is_markdown_first():

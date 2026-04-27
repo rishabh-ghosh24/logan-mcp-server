@@ -621,6 +621,10 @@ def get_tools() -> List[Dict[str, Any]]:
                         "description": "Executive summary sentence cap. Default: standard.",
                         "default": "standard",
                     },
+                    "title": {
+                        "type": "string",
+                        "description": "Optional display title for the stored incident report.",
+                    },
                 },
                 "required": ["investigation"],
             },

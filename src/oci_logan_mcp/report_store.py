@@ -61,12 +61,20 @@ class ReportStore:
             artifacts.append({"name": "html", "type": "html", "path": str(html_path)})
         artifacts.append({"name": "metadata", "type": "json", "path": str(metadata_path)})
 
-        self._atomic_write_text(markdown_path, markdown)
-        if html_path:
-            self._atomic_write_text(html_path, html)
-        else:
-            self._remove_stale_html(report_dir / "report.html")
-        self._atomic_write_text(metadata_path, json.dumps(metadata, indent=2, sort_keys=True) + "\n")
+        try:
+            self._atomic_write_text(markdown_path, markdown)
+            if html_path:
+                self._atomic_write_text(html_path, html)
+            else:
+                self._remove_stale_html(report_dir / "report.html")
+            self._atomic_write_text(
+                metadata_path,
+                json.dumps(metadata, indent=2, sort_keys=True) + "\n",
+            )
+        except ReportStoreError:
+            raise
+        except OSError as exc:
+            raise ReportStoreError(f"Could not persist report: {exc}") from exc
 
         return {
             "report_id": report_id,

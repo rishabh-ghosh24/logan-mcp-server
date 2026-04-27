@@ -3,6 +3,7 @@
 import hashlib
 import json
 import pytest
+from pathlib import Path
 from unittest.mock import MagicMock, AsyncMock, patch
 
 from oci_logan_mcp.handlers import MCPHandlers
@@ -12,6 +13,7 @@ from oci_logan_mcp.preferences import PreferenceStore
 from oci_logan_mcp.secret_store import SecretStore
 from oci_logan_mcp.audit import AuditLogger
 from oci_logan_mcp.report_delivery import ReportDeliveryError
+from oci_logan_mcp.report_store import ReportStoreError
 
 
 # ---------------------------------------------------------------------------
@@ -19,13 +21,14 @@ from oci_logan_mcp.report_delivery import ReportDeliveryError
 # ---------------------------------------------------------------------------
 
 @pytest.fixture
-def settings():
+def settings(tmp_path):
     """Create test Settings."""
     s = Settings()
     s.log_analytics.namespace = "testns"
     s.log_analytics.default_compartment_id = "ocid1.compartment.default"
     s.query.max_results = 1000
     s.query.default_time_range = "last_1_hour"
+    s.report_delivery.artifact_dir = tmp_path / "reports"
     return s
 
 
@@ -2352,7 +2355,7 @@ class TestIncidentReports:
     async def test_generate_incident_report_routes_to_generator(self, handlers):
         handlers.report_generator.generate = MagicMock(
             return_value={
-                "report_id": "rpt_1",
+                "report_id": "rpt_0123456789abcdef0123456789abcdef",
                 "markdown": "# Incident Report\n",
                 "html": None,
                 "metadata": {"source_type": "investigation"},
@@ -2371,13 +2374,66 @@ class TestIncidentReports:
         )
 
         payload = json.loads(result[0]["text"])
-        assert payload["report_id"] == "rpt_1"
+        assert payload["report_id"] == "rpt_0123456789abcdef0123456789abcdef"
         handlers.report_generator.generate.assert_called_once_with(
             investigation={"summary": "x"},
             output_format="markdown",
             include_sections=["executive_summary"],
             summary_length="short",
+            title=None,
         )
+
+    @pytest.mark.asyncio
+    async def test_generate_incident_report_persists_report(self, handlers):
+        result = await handlers.handle_tool_call(
+            "generate_incident_report",
+            {
+                "investigation": {"summary": "Parser failures increased."},
+                "title": "24-hour failures and issues report",
+            },
+        )
+
+        payload = json.loads(result[0]["text"])
+        artifacts = {artifact["name"]: artifact for artifact in payload["artifacts"]}
+
+        assert payload["report_id"].startswith("rpt_")
+        assert artifacts["markdown"]["path"].endswith("/report.md")
+        assert artifacts["metadata"]["path"].endswith("/metadata.json")
+        assert Path(artifacts["markdown"]["path"]).exists()
+        assert Path(artifacts["metadata"]["path"]).exists()
+        assert payload["metadata"]["title"] == "24-hour failures and issues report"
+
+    @pytest.mark.asyncio
+    async def test_generate_incident_report_returns_persistence_error(self, handlers):
+        handlers.report_store.save = MagicMock(
+            side_effect=ReportStoreError("could not persist report")
+        )
+
+        result = await handlers.handle_tool_call(
+            "generate_incident_report",
+            {"investigation": {"summary": "Parser failures increased."}},
+        )
+
+        payload = json.loads(result[0]["text"])
+        assert payload["status"] == "error"
+        assert payload["error_code"] == "report_persistence_failed"
+        assert "could not persist report" in payload["error"]
+
+    @pytest.mark.asyncio
+    async def test_generate_incident_report_returns_persistence_error_for_raw_write_failure(self, handlers):
+        handlers.report_store._atomic_write_text = MagicMock(
+            side_effect=OSError("disk full")
+        )
+
+        result = await handlers.handle_tool_call(
+            "generate_incident_report",
+            {"investigation": {"summary": "Parser failures increased."}},
+        )
+
+        payload = json.loads(result[0]["text"])
+        assert payload["status"] == "error"
+        assert payload["error_code"] == "report_persistence_failed"
+        assert "disk full" in payload["error"]
 
     @pytest.mark.asyncio
     async def test_generate_incident_report_requires_investigation_dict(self, handlers):
@@ -2398,6 +2454,18 @@ class TestIncidentReports:
         assert payload["status"] == "error"
         assert payload["error_code"] == "invalid_report_options"
         assert "format must be one of" in payload["error"]
+
+    @pytest.mark.asyncio
+    async def test_generate_incident_report_returns_validation_error_for_invalid_title(self, handlers):
+        result = await handlers.handle_tool_call(
+            "generate_incident_report",
+            {"investigation": {}, "title": ["Incident Report"]},
+        )
+
+        payload = json.loads(result[0]["text"])
+        assert payload["status"] == "error"
+        assert payload["error_code"] == "invalid_report_options"
+        assert "title must be a string" in payload["error"]
 
 
 class TestDeliverReportHandler:
