@@ -1571,14 +1571,27 @@ def get_tools() -> List[Dict[str, Any]]:
         },
         {
             "name": "delete_playbook",
-            "description": "Delete one recorded investigation playbook for the current user.",
+            "destructive": True,
+            "description": (
+                "Delete one recorded investigation playbook for the current user. "
+                "TWO-FACTOR CONFIRMATION REQUIRED: First call returns a confirmation token and summary. "
+                "To execute, re-invoke with confirmation_token and your confirmation secret."
+            ),
             "inputSchema": {
                 "type": "object",
                 "properties": {
                     "playbook_id": {
                         "type": "string",
                         "description": "Playbook id to delete.",
-                    }
+                    },
+                    "confirmation_token": {
+                        "type": "string",
+                        "description": "Server-generated token from the confirmation step. Omit on first call.",
+                    },
+                    "confirmation_secret": {
+                        "type": "string",
+                        "description": "Your confirmation secret. Required with token to execute. You MUST ask the user for this value each time — NEVER reuse a previously provided secret.",
+                    },
                 },
                 "required": ["playbook_id"],
             },

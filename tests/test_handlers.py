@@ -928,17 +928,27 @@ class TestConfirmationFlow:
         assert "at least 8 characters" in text["error"]
 
     @pytest.mark.asyncio
-    async def test_setup_confirmation_secret_refuses_overwrite(self, handlers_with_secret):
+    async def test_setup_confirmation_secret_refuses_overwrite(self, handlers):
         """In-band setup is initial-creation only."""
-        result = await handlers_with_secret.handle_tool_call(
+        first_result = await handlers.handle_tool_call(
             "setup_confirmation_secret",
             {
-                "confirmation_secret": "new-secret",
-                "confirmation_secret_confirm": "new-secret",
+                "confirmation_secret": "first-secret",
+                "confirmation_secret_confirm": "first-secret",
             },
         )
-        text = json.loads(result[0]["text"])
-        assert text["status"] == "already_configured"
+        second_result = await handlers.handle_tool_call(
+            "setup_confirmation_secret",
+            {
+                "confirmation_secret": "second-secret",
+                "confirmation_secret_confirm": "second-secret",
+            },
+        )
+        first = json.loads(first_result[0]["text"])
+        second = json.loads(second_result[0]["text"])
+
+        assert first["status"] == "configured"
+        assert second["status"] == "already_configured"
 
     @pytest.mark.asyncio
     async def test_guarded_tool_uses_normal_confirmation_after_setup(self, handlers):
@@ -2282,7 +2292,7 @@ class TestRelatedDashboardsAndSearches:
         )
 
 
-class TestInvestigationPlaybooks:
+class TestPlaybooks:
     @pytest.mark.asyncio
     async def test_record_investigation_routes_to_recorder(self, handlers):
         handlers.playbook_recorder.record = MagicMock(
@@ -2341,13 +2351,30 @@ class TestInvestigationPlaybooks:
     async def test_delete_playbook_returns_deleted_flag(self, handlers):
         handlers.playbook_store.delete = MagicMock(return_value=True)
 
+        await handlers.handle_tool_call(
+            "setup_confirmation_secret",
+            {
+                "confirmation_secret": "playbook-secret",
+                "confirmation_secret_confirm": "playbook-secret",
+            },
+        )
+        args = {"playbook_id": "pb_1"}
+        result = await handlers.handle_tool_call("delete_playbook", args)
+        confirmation = json.loads(result[0]["text"])
+        assert confirmation["status"] == "confirmation_required"
+        handlers.playbook_store.delete.assert_not_called()
+
         result = await handlers.handle_tool_call(
             "delete_playbook",
-            {"playbook_id": "pb_1"},
+            {
+                **args,
+                "confirmation_token": confirmation["confirmation_token"],
+                "confirmation_secret": "playbook-secret",
+            },
         )
-
         payload = json.loads(result[0]["text"])
         assert payload == {"deleted": True, "playbook_id": "pb_1"}
+        handlers.playbook_store.delete.assert_called_once_with("pb_1")
 
 
 class TestIncidentReports:

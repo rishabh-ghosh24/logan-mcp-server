@@ -22,6 +22,7 @@ GUARDED_TOOLS = frozenset({
     "delete_alert",
     "delete_saved_search",
     "delete_dashboard",
+    "delete_playbook",
     "update_alert",
     "update_saved_search",
     "add_dashboard_tile",
@@ -35,10 +36,24 @@ GUARDED_TOOLS = frozenset({
     "create_log_source_from_sample",
 })
 
+NON_DESTRUCTIVE_MUTATION_EXEMPTIONS: dict[str, str] = {
+    "save_learned_query": "Additive learned-query state; overwrite paths require explicit force/rename behavior.",
+    "remember_preference": "Additive preference signal with no deletion of managed resources.",
+    "record_investigation": "Creates a fresh pb_<uuid> playbook record through PlaybookRecorder.",
+    "setup_confirmation_secret": "Bootstraps confirmation secret and refuses overwrite through the tool handler.",
+    "set_compartment": "Updates current session context only.",
+    "set_namespace": "Updates current session context only.",
+    "update_tenancy_context": "Updates local tenancy metadata; no deletion of managed resources.",
+    "deliver_report": "Outbound delivery is explicitly requested and does not mutate OCI/local persisted state destructively.",
+    "send_to_slack": "Outbound notification only.",
+    "send_to_telegram": "Outbound notification only.",
+}
+
 _SUMMARY_KEYS: Dict[str, list] = {
     "delete_alert": ["alert_id"],
     "delete_saved_search": ["saved_search_id"],
     "delete_dashboard": ["dashboard_id"],
+    "delete_playbook": ["playbook_id"],
     "update_alert": ["alert_id", "display_name", "severity", "query"],
     "update_saved_search": ["saved_search_id", "display_name", "query"],
     "add_dashboard_tile": ["dashboard_id", "title", "query", "visualization_type"],
