@@ -335,7 +335,8 @@ Convert an `investigate_incident` response into a deterministic Markdown inciden
     "anomalous_sources": []
   },
   "format": "html",
-  "summary_length": "standard"
+  "summary_length": "standard",
+  "title": "Apache error investigation"
 }
 ```
 
@@ -344,9 +345,15 @@ Returns `{report_id, markdown, html, metadata, artifacts}`. Markdown is always r
 P0 behavior:
 - Template-first and deterministic; no internal LLM provider is called.
 - Source is an A1 `InvestigationReport` object only.
-- `report_id` is returned for correlation only; reports are not persisted in P0.
+- Each report is persisted under `report_delivery.artifact_dir/store/rpt_<id>/` and `artifacts` contains local paths for manual read/download.
 - Supported sections are `executive_summary`, `timeline`, `top_findings`, `evidence`, `recommended_next_steps`, and `appendix`.
-- Playbook-run reports and session-id reports are deferred. To deliver a report, pass the returned `markdown` to `deliver_report`; do not pass `report_id` in P0.
+- Playbook-run reports and session-id reports are deferred.
+
+Stored report helpers:
+
+- `get_incident_report(report_id="rpt_...")` returns the stored Markdown, paths, and metadata.
+- `list_incident_reports(limit=20)` lists recent stored reports and includes `warnings.corrupt_count`.
+- `deliver_report(report={"report_id": "rpt_..."}, channels=["email"], recipients={"email_topic_ocid": "ocid1.onstopic..."})` sends a stored report after the user explicitly asks for delivery.
 
 ### `deliver_report` — PDF + Telegram / ONS / Slack delivery
 
@@ -371,7 +378,7 @@ Deliver generated report Markdown to the channels users already monitor. Telegra
 Returns `{status, delivered, pdf_path}`. `status` is `sent`, `partial`, or `failed` depending on per-channel results. `delivered[]` contains one row per requested channel with `{channel, status, message_id, artifact, recipient, error?}`.
 
 P0 behavior:
-- Input is inline report Markdown only: `report.markdown` is required. `report_id` lookup is deferred until reports are persisted.
+- Input accepts exactly one of inline `report.markdown` or stored `report.report_id`.
 - `format="pdf"` generates a local PDF and sends it to Telegram as a document. Email and Slack receive the inline summary.
 - `format="markdown"` skips PDF generation and sends inline summaries/messages only.
 - `format="both"` sends the PDF to Telegram and inline summaries to email/Slack.
@@ -418,7 +425,7 @@ End-to-end incident flow:
 ```
 
 ```json
-{"tool": "deliver_report", "report": {"markdown": "<report markdown>", "title": "Apache incident"}, "channels": ["telegram", "email"], "format": "both"}
+{"tool": "deliver_report", "report": {"report_id": "rpt_<id from generate_incident_report>"}, "channels": ["telegram", "email"], "format": "both"}
 ```
 
 ### `record_investigation` — save a playbook from the audit trail

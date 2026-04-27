@@ -68,12 +68,12 @@ Source: [reports-and-playbooks.md](specs/reports-and-playbooks.md)
 - `N3-F1` — Internal LLM prose synthesis for executive summaries and findings narratives, with provider config, prompt management, cost controls, and fallback behavior.
 - `N3-F2` — `source.playbook_run` report generation once N1 replay exists.
 - `N3-F3` — `source.session_id` report generation once N6 has true per-investigation session boundaries.
-- `N3-F4` — Report persistence / `report_id` lookup so later delivery workflows can fetch a generated report by id instead of requiring the client to resend the report body.
+- `N3-F4` — Done in `feat/report-persistence-delivery-safety`: reports persist under `report_delivery.artifact_dir/store`, with `get_incident_report` and `list_incident_reports` for manual retrieval.
 
 #### Report Delivery
 Source: [reports-and-playbooks.md](specs/reports-and-playbooks.md) and [2026-04-24-report-delivery.md](plans/2026-04-24-report-delivery.md)
 
-- `RD-F1` — `deliver_report` support for `{report_id}` once N3-F4 report persistence / lookup exists.
+- `RD-F1` — Done in `feat/report-persistence-delivery-safety`: `deliver_report` accepts stored `{report_id}` after explicit user opt-in.
 - `RD-F2` — Object Storage bucket + PAR URL for full PDF access from email notifications.
 - `RD-F3` — Branding, custom CSS, and custom PDF templates.
 - `RD-F4` — Full PDF delivery to Slack via Slack Web API file upload. P0 Slack delivery uses the existing webhook and sends an inline summary only.

@@ -115,12 +115,13 @@ generate_incident_report(
   format: "markdown" | "html" = "markdown",
   include_sections: list[str] | None = None,  # default: all
   summary_length: "short" | "standard" | "detailed" = "standard",
+  title: str | None = None,
 ) -> {
   report_id: str,
   markdown: str,
   html: str | None,
-  metadata: {generated_at, source_type, summary_length, included_sections, word_count},
-  artifacts: list[{name, type, inline_data_or_path}],
+  metadata: {generated_at, title, source_type, summary_length, included_sections, word_count},
+  artifacts: list[{name, type, path}],
 }
 ```
 
@@ -128,9 +129,14 @@ generate_incident_report(
 
 ### Deferred to P1
 - Internal LLM prose synthesis for executive summaries and findings narratives.
-- Report persistence / `report_id` lookup. In P0, `report_id` is a returned correlation id only; clients must store the report body if they need it later.
 - `source.playbook_run` — requires N1 replay.
 - `source.session_id` — requires a true per-investigation session boundary, not the process-scoped grouping N6 provides in P0.
+
+### Stored reports
+- Reports are persisted under `report_delivery.artifact_dir / "store" / rpt_<32 hex>`.
+- Delivery PDFs remain flat under `report_delivery.artifact_dir`; stored Markdown/HTML/metadata live under the `store/` namespace.
+- `get_incident_report(report_id)` returns Markdown, optional HTML, metadata, and local artifact paths.
+- `list_incident_reports(limit=20)` lists recent reports and includes `warnings.corrupt_count`.
 
 ### Report sections (default)
 1. **Executive summary** (3–5 sentences).
@@ -170,7 +176,7 @@ Ship the generated report to where the user already is. Telegram PDF attachment,
 ### Tool interface
 ```
 deliver_report(
-  report: {markdown: str, title: str | None},
+  report: {markdown: str | None, report_id: str | None, title: str | None},
   channels: list["telegram" | "email" | "slack"] = ["telegram"],
   recipients: {
     telegram_chat_id: str | None,     # default: from config
@@ -185,9 +191,11 @@ deliver_report(
 }
 ```
 
-> P0 intentionally does not accept `report_id`. N3 P0 returns `report_id` as a
-> correlation id only; report persistence / lookup is tracked as `N3-F4`.
-> `deliver_report(report_id=...)` should land with that persistence feature.
+`deliver_report` accepts exactly one of inline `report.markdown` or stored
+`report.report_id`. If both are supplied the call fails with
+`conflicting_report_inputs`; if neither is supplied it fails with `missing_report`.
+Delivery remains explicit: the MCP server does not automatically chain report
+generation into notification delivery.
 
 ### Acceptance contract (PDF)
 - Produces a valid PDF for any Markdown report N3 emits.
