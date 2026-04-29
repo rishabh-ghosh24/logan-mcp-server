@@ -3,7 +3,13 @@ from datetime import datetime, timedelta, timezone
 
 import pytest
 
-from oci_logan_mcp.investigate import _extract_seed_filter, _compose_source_scoped_query, _compute_windows, _templated_summary
+from oci_logan_mcp.investigate import (
+    _compute_windows,
+    _compose_source_scoped_query,
+    _extract_seed_filter,
+    _parse_cluster_response,
+    _templated_summary,
+)
 
 
 class TestExtractSeedFilter:
@@ -353,6 +359,30 @@ class TestTemplatedSummary:
         assert "500" in s and ("parse" in s.lower() or "parser" in s.lower())
 
 
+class TestParseClusterResponse:
+    def test_preserves_logan_string_problem_priority(self):
+        response = {
+            "data": {
+                "columns": [
+                    {"name": "Cluster Sample"},
+                    {"name": "Count"},
+                    {"name": "Problem Priority"},
+                ],
+                "rows": [["failed checkout", 12, "Medium"]],
+            }
+        }
+
+        clusters = _parse_cluster_response(response)
+
+        assert clusters == [
+            {
+                "pattern": "failed checkout",
+                "count": 12,
+                "problem_priority": "Medium",
+            }
+        ]
+
+
 from unittest.mock import AsyncMock, MagicMock
 
 from oci_logan_mcp.investigate import InvestigateIncidentTool
@@ -669,7 +699,7 @@ class TestPhase5And6DrillDown:
             if "| cluster" in q:
                 return {"data": {"columns": [
                     {"name": "Cluster Sample"}, {"name": "Count"}, {"name": "Problem Priority"},
-                ], "rows": [["sample1", 42, 2]]}}
+                ], "rows": [["sample1", 42, "Medium"]]}}
             if "'Host Name (Server)'" in q:
                 return {"data": {"columns": [{"name": "Host Name (Server)"}, {"name": "n"}],
                                  "rows": [["web-01", 20]]}}
@@ -708,6 +738,9 @@ class TestPhase5And6DrillDown:
         assert len(src["top_error_clusters"]) == 1
         assert src["top_error_clusters"][0]["pattern"] == "sample1"
         assert src["top_error_clusters"][0]["count"] == 42
+        assert src["top_error_clusters"][0]["problem_priority"] == "Medium"
+        assert report["partial"] is False
+        assert "source_errors" not in report["partial_reasons"]
         entity_values = {e["entity_value"] for e in src["top_entities"]}
         assert {"web-01", "alice", "req-123"} <= entity_values
         assert src["timeline"] is not None

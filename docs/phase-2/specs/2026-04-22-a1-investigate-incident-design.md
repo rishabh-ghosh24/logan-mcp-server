@@ -77,7 +77,7 @@ Full pipeline-aware scoping is a P1 expansion and would require wiring a real Lo
       "comparison_count": int,
       "pct_change": float,
       "top_error_clusters": [                      # up to 3 per source
-        {"pattern": str, "count": int, "problem_priority": int | None},
+        {"pattern": str, "count": int, "problem_priority": str | int | None},
       ],
       "top_entities": [                            # "loudest," not "changed"
         {"entity_type": "host"|"user"|"request_id",  # "ip" deferred to P1

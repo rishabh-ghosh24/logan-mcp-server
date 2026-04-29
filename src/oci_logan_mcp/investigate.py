@@ -279,10 +279,13 @@ def _parse_cluster_response(response: Dict[str, Any]) -> List[Dict[str, Any]]:
             continue
         cnt = row[count_idx]
         prio = row[prio_idx] if prio_idx is not None else None
+        problem_priority = None
+        if prio is not None:
+            problem_priority = int(prio) if isinstance(prio, (int, float)) else str(prio)
         out.append({
             "pattern": str(row[sample_idx]) if row[sample_idx] is not None else "",
             "count": int(cnt) if cnt is not None else 0,
-            "problem_priority": int(prio) if prio is not None else None,
+            "problem_priority": problem_priority,
         })
     return out
 

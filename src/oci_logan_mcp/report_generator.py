@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import html
+import json
 import re
 import uuid
 from datetime import datetime, timezone
@@ -169,7 +170,7 @@ class ReportGenerator:
                 sample = _first_present(cluster, ["Cluster Sample", "pattern", "sample", "message"])
                 count = _first_present(cluster, ["Count", "count"])
                 lines.append(
-                    f"  - Cluster: {sample or cluster} "
+                    f"  - Cluster: {_clean_cluster_sample(sample or cluster)} "
                     f"({count or 'unknown'} events)"
                 )
             for entity in (source.get("top_entities") or [])[:2]:
@@ -296,3 +297,23 @@ def _first_present(row: Dict[str, Any], keys: Iterable[str]) -> Any:
         if value not in (None, ""):
             return value
     return None
+
+
+def _clean_cluster_sample(sample: Any, max_len: int = 120) -> str:
+    text = str(sample or "")
+    text = re.sub(r"<#v[^>]*>", "", text)
+    text = text.replace("</#v>", "")
+    text = " ".join(text.split())
+
+    try:
+        obj = json.loads(text)
+    except (TypeError, ValueError):
+        obj = None
+    if isinstance(obj, dict):
+        metadata = obj.get("metadata")
+        if isinstance(metadata, dict) and metadata.get("name"):
+            return f"Kubernetes object metadata: {metadata['name']}"
+
+    if len(text) > max_len:
+        return text[:max_len].rstrip() + "..."
+    return text

@@ -132,6 +132,31 @@ def test_generate_renders_current_a1_timeline_clusters_and_entities():
     assert "entity=unknown" not in markdown
 
 
+def test_generate_sanitizes_cluster_template_markup_and_long_samples():
+    investigation = _investigation()
+    investigation["anomalous_sources"][0]["top_error_clusters"] = [
+        {
+            "pattern": (
+                '{"metadata":{"name":"prometheus-'
+                '<#v t="v" id="1:0">7d7bc46676-xdmtm</#v>",'
+                '"managedFields":[{"manager":"kube-controller-manager",'
+                '"fieldsV1":{"f:metadata":{"f:labels":{"f:app.kubernetes.io/name":{}}}}}]}}'
+            ),
+            "count": 15384,
+        }
+    ]
+
+    report = ReportGenerator().generate(investigation)
+
+    markdown = report["markdown"]
+    assert "<#v" not in markdown
+    assert "</#v>" not in markdown
+    assert "prometheus-7d7bc46676-xdmtm" in markdown
+    assert "managedFields" not in markdown
+    cluster_line = next(line for line in markdown.splitlines() if "Cluster:" in line)
+    assert len(cluster_line) < 180
+
+
 def test_include_sections_filters_output():
     report = ReportGenerator().generate(
         _investigation(),
