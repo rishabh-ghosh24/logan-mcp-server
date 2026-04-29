@@ -5,7 +5,7 @@ import json
 import pytest
 from unittest.mock import MagicMock, AsyncMock, patch
 
-from oci_logan_mcp.handlers import MCPHandlers
+from oci_logan_mcp.handlers import MCPHandlers, REPORT_EMAIL_TOPIC_PREFERENCE_KEY
 from oci_logan_mcp.config import Settings
 from oci_logan_mcp.user_store import UserStore
 from oci_logan_mcp.preferences import PreferenceStore
@@ -2372,11 +2372,61 @@ class TestIncidentReports:
 
         payload = json.loads(result[0]["text"])
         assert payload["report_id"] == "rpt_1"
+        assert payload["delivery_options"]["email"]["requires_user_confirmation"] is True
         handlers.report_generator.generate.assert_called_once_with(
             investigation={"summary": "x"},
             output_format="markdown",
             include_sections=["executive_summary"],
             summary_length="short",
+        )
+
+    @pytest.mark.asyncio
+    async def test_investigate_and_generate_report_runs_a1_then_generator(self, handlers):
+        investigation = {
+            "summary": "top source errors",
+            "seed": {"query": "*", "time_range": "last_24_hours"},
+            "anomalous_sources": [],
+            "partial": False,
+            "partial_reasons": [],
+        }
+        handlers.investigate_tool.run = AsyncMock(return_value=investigation)
+        handlers.report_generator.generate = MagicMock(
+            return_value={
+                "report_id": "rpt_2",
+                "markdown": "# Incident Report\n",
+                "html": None,
+                "metadata": {"source_type": "investigation"},
+                "artifacts": [],
+            }
+        )
+
+        result = await handlers.handle_tool_call(
+            "investigate_and_generate_report",
+            {
+                "query": "*",
+                "time_range": "last_24_hours",
+                "top_k": 3,
+                "format": "markdown",
+                "summary_length": "standard",
+            },
+        )
+
+        payload = json.loads(result[0]["text"])
+        assert payload["status"] == "report_generated"
+        assert payload["investigation"]["summary"] == "top source errors"
+        assert payload["report"]["report_id"] == "rpt_2"
+        assert payload["delivery_options"]["email"]["requires_user_confirmation"] is True
+        handlers.investigate_tool.run.assert_awaited_once_with(
+            query="*",
+            time_range="last_24_hours",
+            top_k=3,
+            compartment_id=None,
+        )
+        handlers.report_generator.generate.assert_called_once_with(
+            investigation=investigation,
+            output_format="markdown",
+            include_sections=None,
+            summary_length="standard",
         )
 
     @pytest.mark.asyncio
@@ -2402,6 +2452,54 @@ class TestIncidentReports:
 
 class TestDeliverReportHandler:
     @pytest.mark.asyncio
+    async def test_get_report_delivery_options_returns_saved_email_topic(self, handlers):
+        handlers.preference_store.remember(
+            REPORT_EMAIL_TOPIC_PREFERENCE_KEY,
+            json.dumps({
+                "topic_id": "ocid1.onstopic.oc1..saved",
+                "name": "Ops Email",
+                "compartment_id": "ocid1.compartment.ops",
+            }),
+        )
+        handlers.settings.notifications.ons.default_topic_ocid = "ocid1.onstopic.oc1..configured"
+
+        result = await handlers.handle_tool_call("get_report_delivery_options", {})
+
+        payload = json.loads(result[0]["text"])
+        assert payload["email"]["saved_topic"]["topic_id"] == "ocid1.onstopic.oc1..saved"
+        assert payload["email"]["saved_topic"]["name"] == "Ops Email"
+        assert payload["email"]["configured_default"]["topic_id"] == "ocid1.onstopic.oc1..configured"
+        assert payload["email"]["requires_user_confirmation"] is True
+
+    @pytest.mark.asyncio
+    async def test_list_notification_topics_routes_to_client(self, handlers):
+        handlers.oci_client.list_notification_topics = AsyncMock(return_value=[{
+            "topic_id": "ocid1.onstopic.oc1..abc",
+            "name": "Incident Email",
+            "compartment_id": "ocid1.compartment.default",
+            "lifecycle_state": "ACTIVE",
+        }])
+
+        result = await handlers.handle_tool_call(
+            "list_notification_topics",
+            {
+                "compartment_id": "ocid1.compartment.default",
+                "include_subcompartments": False,
+                "lifecycle_state": "ACTIVE",
+            },
+        )
+
+        payload = json.loads(result[0]["text"])
+        assert payload["status"] == "ok"
+        assert payload["count"] == 1
+        assert payload["topics"][0]["name"] == "Incident Email"
+        handlers.oci_client.list_notification_topics.assert_awaited_once_with(
+            compartment_id="ocid1.compartment.default",
+            include_subcompartments=False,
+            lifecycle_state="ACTIVE",
+        )
+
+    @pytest.mark.asyncio
     async def test_deliver_report_routes_to_service(self, handlers):
         handlers.report_delivery_service.deliver = AsyncMock(
             return_value={"status": "sent", "delivered": [], "pdf_path": "/tmp/r.pdf"}
@@ -2425,6 +2523,73 @@ class TestDeliverReportHandler:
             output_format="pdf",
             title=None,
         )
+
+    @pytest.mark.asyncio
+    async def test_deliver_report_reuses_saved_email_topic_when_not_explicit(self, handlers):
+        handlers.preference_store.remember(
+            REPORT_EMAIL_TOPIC_PREFERENCE_KEY,
+            json.dumps({
+                "topic_id": "ocid1.onstopic.oc1..saved",
+                "name": "Ops Email",
+                "compartment_id": "ocid1.compartment.ops",
+            }),
+        )
+        handlers.report_delivery_service.deliver = AsyncMock(
+            return_value={
+                "status": "sent",
+                "delivered": [{"channel": "email", "status": "sent"}],
+                "pdf_path": None,
+            }
+        )
+
+        result = await handlers.handle_tool_call(
+            "deliver_report",
+            {
+                "report": {"markdown": "# Report"},
+                "channels": ["email"],
+            },
+        )
+
+        payload = json.loads(result[0]["text"])
+        assert payload["delivery_preferences"]["email_topic"]["source"] == "user_preference"
+        handlers.report_delivery_service.deliver.assert_awaited_once_with(
+            report={"markdown": "# Report"},
+            channels=["email"],
+            recipients={"email_topic_ocid": "ocid1.onstopic.oc1..saved"},
+            output_format="pdf",
+            title=None,
+        )
+
+    @pytest.mark.asyncio
+    async def test_deliver_report_saves_successful_explicit_email_topic(self, handlers):
+        handlers.oci_client.get_topic = AsyncMock(return_value={
+            "id": "ocid1.onstopic.oc1..explicit",
+            "name": "Incident Email",
+            "compartment_id": "ocid1.compartment.ops",
+            "lifecycle_state": "ACTIVE",
+        })
+        handlers.report_delivery_service.deliver = AsyncMock(
+            return_value={
+                "status": "sent",
+                "delivered": [{"channel": "email", "status": "sent"}],
+                "pdf_path": None,
+            }
+        )
+
+        await handlers.handle_tool_call(
+            "deliver_report",
+            {
+                "report": {"markdown": "# Report"},
+                "channels": ["email"],
+                "recipients": {"email_topic_ocid": "ocid1.onstopic.oc1..explicit"},
+            },
+        )
+
+        saved = handlers.preference_store.get(REPORT_EMAIL_TOPIC_PREFERENCE_KEY)
+        saved_value = json.loads(saved["resolved_value"])
+        assert saved_value["topic_id"] == "ocid1.onstopic.oc1..explicit"
+        assert saved_value["name"] == "Incident Email"
+        assert saved_value["compartment_id"] == "ocid1.compartment.ops"
 
     @pytest.mark.asyncio
     async def test_deliver_report_rejects_missing_markdown(self, handlers):

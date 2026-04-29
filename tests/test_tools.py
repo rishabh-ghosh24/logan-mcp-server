@@ -174,6 +174,57 @@ def test_generate_incident_report_schema():
     assert "include_sections" in props
 
 
+def test_investigation_intent_tooling_guides_full_workflow():
+    tools = {t["name"]: t for t in get_tools()}
+    investigate = tools["investigate_incident"]
+    desc = investigate["description"].lower()
+
+    for phrase in (
+        "investigate",
+        "investigation mode",
+        "investigator mode",
+        "root cause",
+        "what happened",
+        "likely story",
+        "triage this incident",
+        "troubleshoot",
+        "find the issue",
+        "what is wrong",
+    ):
+        assert phrase in desc
+
+    assert "generate_incident_report" in desc
+    assert "deliver_report" in desc
+    assert "oci notifications" in desc
+
+
+def test_investigate_and_generate_report_schema():
+    tools = {t["name"]: t for t in get_tools()}
+    spec = tools["investigate_and_generate_report"]
+    schema = spec["inputSchema"]
+    props = schema["properties"]
+
+    assert schema["required"] == ["query"]
+    assert props["format"]["enum"] == ["markdown", "html"]
+    assert props["summary_length"]["enum"] == ["short", "standard", "detailed"]
+    assert "top_k" in props
+    assert "include_sections" in props
+
+
+def test_report_delivery_option_schemas():
+    tools = {t["name"]: t for t in get_tools()}
+
+    defaults = tools["get_report_delivery_options"]
+    assert "OCI Notifications email" in defaults["description"]
+    assert defaults["inputSchema"]["properties"] == {}
+
+    topics = tools["list_notification_topics"]
+    props = topics["inputSchema"]["properties"]
+    assert "compartment_id" in props
+    assert "include_subcompartments" in props
+    assert "lifecycle_state" in props
+
+
 def test_deliver_report_schema_is_markdown_first():
     tools = {tool["name"]: tool for tool in get_tools()}
     schema = tools["deliver_report"]["inputSchema"]

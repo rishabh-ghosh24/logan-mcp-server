@@ -126,6 +126,7 @@ def test_all_registered_tools_are_classified():
         "ingestion_health",
         "parser_failure_triage",
         "investigate_incident",
+        "investigate_and_generate_report",
         "why_did_this_fire",
         "find_rare_events",
         "trace_request_id",
@@ -139,6 +140,8 @@ def test_all_registered_tools_are_classified():
         "export_transcript",
         "list_playbooks", "get_playbook",
         "generate_incident_report",
+        "get_report_delivery_options",
+        "list_notification_topics",
     }
 
     unclassified = registered - MUTATING_TOOLS - KNOWN_READERS

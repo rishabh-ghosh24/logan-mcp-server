@@ -27,6 +27,22 @@ def _get_items(response_data):
         return response_data
     return response_data.items
 
+
+def _topic_summary_to_dict(topic: Any) -> Dict[str, Any]:
+    """Normalize an OCI Notifications TopicSummary-like object."""
+    created = getattr(topic, "time_created", "")
+    if hasattr(created, "isoformat"):
+        created = created.isoformat()
+    return {
+        "topic_id": getattr(topic, "topic_id", None) or getattr(topic, "id", ""),
+        "name": getattr(topic, "name", ""),
+        "compartment_id": getattr(topic, "compartment_id", ""),
+        "lifecycle_state": getattr(topic, "lifecycle_state", ""),
+        "description": getattr(topic, "description", ""),
+        "time_created": created,
+    }
+
+
 # Debug file logging (writes to ~/.oci-logan-mcp/debug.log)
 DEBUG_LOG_PATH = Path.home() / ".oci-logan-mcp" / "debug.log"
 
@@ -1010,13 +1026,80 @@ class OCILogAnalyticsClient:
             response = self.ons_client.get_topic(topic_id=topic_id)
             self._rate_limiter.reset()
             data = response.data
-            return {"id": data.topic_id, "name": getattr(data, "name", ""),
-                    "lifecycle_state": getattr(data, "lifecycle_state", "")}
+            return {
+                "id": data.topic_id,
+                "topic_id": data.topic_id,
+                "name": getattr(data, "name", ""),
+                "compartment_id": getattr(data, "compartment_id", ""),
+                "lifecycle_state": getattr(data, "lifecycle_state", ""),
+            }
         except oci.exceptions.ServiceError as e:
             if e.status == 429:
                 await self._rate_limiter.handle_rate_limit()
                 return await self.get_topic(topic_id)
             raise
+
+    async def list_notification_topics(
+        self,
+        compartment_id: Optional[str] = None,
+        include_subcompartments: bool = True,
+        lifecycle_state: Optional[str] = None,
+    ) -> List[Dict[str, Any]]:
+        """List OCI Notifications topics available for report delivery."""
+        base_compartment = compartment_id or self._compartment_id or self.tenancy_id
+        if not base_compartment:
+            return []
+
+        compartment_ids = [base_compartment]
+        if include_subcompartments:
+            try:
+                for comp in await self.list_compartments():
+                    comp_id = comp.get("id")
+                    if comp_id and comp_id not in compartment_ids:
+                        compartment_ids.append(comp_id)
+            except Exception as e:
+                logger.warning("Could not enumerate compartments for ONS topics: %s", e)
+
+        topics: List[Dict[str, Any]] = []
+        for cid in compartment_ids:
+            topics.extend(await self._list_notification_topics_in_compartment(cid))
+
+        if lifecycle_state:
+            wanted = lifecycle_state.upper()
+            topics = [
+                topic for topic in topics
+                if str(topic.get("lifecycle_state", "")).upper() == wanted
+            ]
+
+        seen: set[str] = set()
+        deduped: List[Dict[str, Any]] = []
+        for topic in topics:
+            topic_id = topic.get("topic_id")
+            if topic_id in seen:
+                continue
+            if topic_id:
+                seen.add(topic_id)
+            deduped.append(topic)
+        return deduped
+
+    async def _list_notification_topics_in_compartment(
+        self,
+        compartment_id: str,
+    ) -> List[Dict[str, Any]]:
+        await self._rate_limiter.acquire()
+        try:
+            response = list_call_get_all_results(
+                self.ons_client.list_topics,
+                compartment_id=compartment_id,
+            )
+            self._rate_limiter.reset()
+            return [_topic_summary_to_dict(topic) for topic in _get_items(response.data)]
+        except oci.exceptions.ServiceError as e:
+            if e.status == 429:
+                await self._rate_limiter.handle_rate_limit()
+                return await self._list_notification_topics_in_compartment(compartment_id)
+            logger.warning("Could not list ONS topics in compartment %s: %s", compartment_id, e)
+            return []
 
     async def publish_notification(
         self,

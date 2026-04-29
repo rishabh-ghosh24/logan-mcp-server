@@ -126,9 +126,9 @@ Click **Save**, then start a new Codex session to connect.
 | Capability | Tools | Examples |
 |---|---|---|
 | **Query logs** | `run_query`, `run_batch_queries`, `run_saved_search` | Search logs, run multiple queries in parallel, execute saved searches |
-| **Triage diffs** | `diff_time_windows`, `pivot_on_entity`, `ingestion_health`, `parser_failure_triage`, `investigate_incident`, `why_did_this_fire`, `find_rare_events`, `trace_request_id`, `related_dashboards_and_searches` | Compare a query across two time windows; pull all events for an entity across sources; probe per-source ingestion freshness; surface top parser failures; one-call first-cut investigation orchestrator; replay a Logan-managed alarm's historical fire window; surface low-frequency field values for a source; search common request-id / trace-id fields across sources; find existing dashboards and saved searches related to a source, entity, or field |
+| **Triage diffs** | `diff_time_windows`, `pivot_on_entity`, `ingestion_health`, `parser_failure_triage`, `investigate_incident`, `investigate_and_generate_report`, `why_did_this_fire`, `find_rare_events`, `trace_request_id`, `related_dashboards_and_searches` | Compare a query across two time windows; pull all events for an entity across sources; probe per-source ingestion freshness; surface top parser failures; one-call first-cut investigation orchestrator; run investigation plus report generation; replay a Logan-managed alarm's historical fire window; surface low-frequency field values for a source; search common request-id / trace-id fields across sources; find existing dashboards and saved searches related to a source, entity, or field |
 | **Investigation playbooks** | `record_investigation`, `list_playbooks`, `get_playbook`, `delete_playbook` | Save the current session's audited tool calls as a named playbook, then list, fetch, or delete recorded playbooks |
-| **Reports** | `generate_incident_report`, `deliver_report` | Convert an investigation result into deterministic Markdown/HTML, then generate a PDF and deliver it through Telegram, ONS email-topic summary, or optional Slack summary |
+| **Reports** | `generate_incident_report`, `get_report_delivery_options`, `list_notification_topics`, `deliver_report` | Convert an investigation result into deterministic Markdown/HTML, then generate a PDF and deliver it through Telegram, ONS email-topic summary, or optional Slack summary |
 | **Explore schema** | `list_log_sources`, `list_fields`, `list_entities`, `list_parsers`, `list_labels` | Discover what log data is available |
 | **Onboard sources** | `create_log_source_from_sample` | Generate a JSON/NDJSON, CSV, or regex-text parser and source from sample logs, upload the sample workload, and verify parse failures |
 | **Visualize** | `visualize` | Generate pie, bar, line, area, table, tile, treemap, heatmap, histogram charts |
@@ -225,6 +225,12 @@ The flagship. Given a seed Logan query + time range, returns a structured invest
 
 Returns `{summary, seed, ingestion_health, parser_failures, anomalous_sources: [{source, pct_change, top_error_clusters, top_entities, timeline, errors}], cross_source_timeline, next_steps, budget, partial, partial_reasons, elapsed_seconds}`.
 
+Investigation intent routing:
+- User wording such as "investigate", "investigation mode", "investigator mode", "root cause", "what happened", "likely story", "triage this incident", "troubleshoot", "find the issue(s)", "what is wrong", "diagnose", "what went wrong", "why did this happen", "RCA", and "postmortem" should start with `investigate_incident`.
+- Supporting subagents or manual `run_query` calls can deepen evidence, but they do not replace `investigate_incident`.
+- If the user expects a written artifact, call `generate_incident_report` after `investigate_incident`, or use `investigate_and_generate_report` to run both steps in one tool call.
+- Email delivery is a separate confirmed action: ask whether the user wants OCI Notifications email delivery, resolve/reuse a topic, ask final confirmation, then call `deliver_report`.
+
 **P0 limitations** (documented honestly, not magic):
 - Only the seed's pre-pipe search clause is used for drill-down scoping. A seed like `'Event' = 'error' | where Severity = 'critical'` investigates **all** `'Event' = 'error'` rows — the `where` narrowing is dropped for drill-down. Fix: put all scoping in the pre-pipe filter.
 - `top_k` is clamped to `[1, 3]` — matches the ~21-query budget and ≤20s latency guarantee.
@@ -238,6 +244,22 @@ Returns `{summary, seed, ingestion_health, parser_failures, anomalous_sources: [
 - `"source_errors"` — a non-budget, non-field-variance infrastructure failure occurred somewhere in a per-source branch (cluster query 5xx, unexpected ServiceError in entity discovery, transport timeout, or a whole-branch-level exception). Unlike `timeline_omitted`, this also covers failures in the cluster/entity sub-phases even if the rest of the branch completed — the sub-phase's empty result is accompanied by an `errors` entry naming the failure.
 
 Each condition is accompanied by `anomalous_sources[*].errors` entries describing exactly what went wrong per source.
+
+### `investigate_and_generate_report` — investigation plus report
+
+For investigation-mode requests where the user expects a report, this convenience workflow runs `investigate_incident` first, then feeds that result to `generate_incident_report`:
+
+```json
+{
+  "tool": "investigate_and_generate_report",
+  "query": "'Event' = 'error'",
+  "time_range": "last_24_hours",
+  "top_k": 3,
+  "format": "markdown"
+}
+```
+
+Returns `{status: "report_generated", investigation, report, delivery_options}`. It does not send email. Use the returned `delivery_options` to ask whether the user wants OCI Notifications delivery and whether to reuse a saved topic.
 
 ### `why_did_this_fire` — replay a Logan alarm fire window
 
@@ -345,8 +367,22 @@ P0 behavior:
 - Template-first and deterministic; no internal LLM provider is called.
 - Source is an A1 `InvestigationReport` object only.
 - `report_id` is returned for correlation only; reports are not persisted in P0.
+- The response includes `delivery_options.email` with the OCI Notifications email workflow, any saved per-user topic, and any server-configured default topic.
 - Supported sections are `executive_summary`, `timeline`, `top_findings`, `evidence`, `recommended_next_steps`, and `appendix`.
 - Playbook-run reports and session-id reports are deferred. To deliver a report, pass the returned `markdown` to `deliver_report`; do not pass `report_id` in P0.
+
+### `get_report_delivery_options` and `list_notification_topics`
+
+After report generation, ask:
+
+> Do you want this report delivered by OCI Notifications email?
+
+If the user says yes, use `get_report_delivery_options` or the report's returned `delivery_options`:
+- If `saved_topic` exists, ask whether to reuse it.
+- If no saved topic should be reused, call `list_notification_topics` to show available topics.
+- Ask final confirmation before sending: `Send report <title> to OCI Notifications topic <topic name>?`
+
+`list_notification_topics` defaults to the current compartment and accessible subcompartments, and can be scoped with `compartment_id`, `include_subcompartments`, and `lifecycle_state`.
 
 ### `deliver_report` — PDF + Telegram / ONS / Slack delivery
 
@@ -377,6 +413,8 @@ P0 behavior:
 - `format="both"` sends the PDF to Telegram and inline summaries to email/Slack.
 - Telegram uploads are rejected before send if the PDF exceeds the 50 MB Bot API document limit.
 - ONS email delivery publishes an inline Markdown/plaintext summary to an OCI Notifications topic. ONS does not attach the PDF and no Object Storage/PAR link is generated in P0.
+- If email is requested and `recipients.email_topic_ocid` is omitted, `deliver_report` reuses the current user's saved report topic, then the server-configured `notifications.ons.default_topic_ocid`. Successful email delivery saves the effective topic as the user's future default.
+- The assistant/client must still ask for explicit final confirmation before calling `deliver_report`; topic reuse only removes repeated topic selection.
 - Slack is optional and summary-only via the existing webhook integration. This is suitable for testing with a private/free Slack registration before later Oracle Slack workspace rollout.
 
 Configure defaults in `~/.oci-logan-mcp/config.yaml`:
@@ -415,6 +453,14 @@ End-to-end incident flow:
 
 ```json
 {"tool": "generate_incident_report", "investigation": "<A1 response>", "format": "markdown"}
+```
+
+```json
+{"tool": "get_report_delivery_options"}
+```
+
+```json
+{"tool": "list_notification_topics", "include_subcompartments": true, "lifecycle_state": "ACTIVE"}
 ```
 
 ```json

@@ -3,6 +3,7 @@
 import hashlib
 import json
 import logging
+from datetime import datetime, timezone
 from typing import TYPE_CHECKING, Any, Dict, List, Optional
 
 from .query_engine import QueryEngine
@@ -52,6 +53,8 @@ if TYPE_CHECKING:
     from .catalog import CatalogEntry
 
 logger = logging.getLogger(__name__)
+
+REPORT_EMAIL_TOPIC_PREFERENCE_KEY = "report.email_topic"
 
 
 class MCPHandlers:
@@ -199,7 +202,10 @@ class MCPHandlers:
             "ingestion_health": self._ingestion_health,
             "parser_failure_triage": self._parser_failure_triage,
             "investigate_incident": self._investigate_incident,
+            "investigate_and_generate_report": self._investigate_and_generate_report,
             "generate_incident_report": self._generate_incident_report,
+            "get_report_delivery_options": self._get_report_delivery_options,
+            "list_notification_topics": self._list_notification_topics,
             "deliver_report": self._deliver_report,
             "why_did_this_fire": self._why_did_this_fire,
             "find_rare_events": self._find_rare_events,
@@ -894,23 +900,24 @@ class MCPHandlers:
         """Route to InvestigateIncidentTool. Partial reports forward verbatim;
         the orchestrator catches BudgetExceededError internally, so the handler
         does NOT wrap in the generic {status: "budget_exceeded"} shape."""
+        report, error = await self._run_investigation(args)
+        if error is not None:
+            return [{"type": "text", "text": json.dumps(error, indent=2)}]
+        return [{"type": "text", "text": json.dumps(report, indent=2, default=str)}]
+
+    async def _run_investigation(self, args: Dict) -> tuple[Optional[Dict[str, Any]], Optional[Dict[str, Any]]]:
         query = args.get("query")
         if not query or not isinstance(query, str):
-            return [{"type": "text", "text": json.dumps(
-                {"status": "error", "error": "query is required and must be a string"},
-                indent=2,
-            )}]
+            return None, {"status": "error", "error": "query is required and must be a string"}
         try:
             top_k = int(args.get("top_k", 3))
         except (TypeError, ValueError):
-            return [{"type": "text", "text": json.dumps(
-                {"status": "error", "error": "top_k must be an integer"}, indent=2,
-            )}]
+            return None, {"status": "error", "error": "top_k must be an integer"}
         if top_k < 1 or top_k > 3:
-            return [{"type": "text", "text": json.dumps(
-                {"status": "error", "error": "top_k must be between 1 and 3 (P0)"},
-                indent=2,
-            )}]
+            return None, {
+                "status": "error",
+                "error": "top_k must be between 1 and 3 (P0)",
+            }
         try:
             report = await self.investigate_tool.run(
                 query=query,
@@ -919,10 +926,35 @@ class MCPHandlers:
                 compartment_id=args.get("compartment_id"),
             )
         except Exception as e:
-            return [{"type": "text", "text": json.dumps(
-                {"status": "error", "error": str(e)}, indent=2,
-            )}]
-        return [{"type": "text", "text": json.dumps(report, indent=2, default=str)}]
+            return None, {"status": "error", "error": str(e)}
+        return report, None
+
+    async def _investigate_and_generate_report(self, args: Dict) -> List[Dict]:
+        investigation, error = await self._run_investigation(args)
+        if error is not None:
+            return [{"type": "text", "text": json.dumps(error, indent=2)}]
+
+        try:
+            report = self.report_generator.generate(
+                investigation=investigation or {},
+                output_format=args.get("format", "markdown"),
+                include_sections=args.get("include_sections"),
+                summary_length=args.get("summary_length", "standard"),
+            )
+        except ReportGenerationError as e:
+            return [{"type": "text", "text": json.dumps({
+                "status": "error",
+                "error_code": "invalid_report_options",
+                "error": str(e),
+            }, indent=2)}]
+
+        payload = {
+            "status": "report_generated",
+            "investigation": investigation,
+            "report": report,
+            "delivery_options": self._report_delivery_options_payload(),
+        }
+        return [{"type": "text", "text": json.dumps(payload, indent=2, default=str)}]
 
     async def _generate_incident_report(self, args: Dict) -> List[Dict]:
         investigation = args.get("investigation")
@@ -946,7 +978,32 @@ class MCPHandlers:
                 "error_code": "invalid_report_options",
                 "error": str(e),
             }, indent=2)}]
-        return [{"type": "text", "text": json.dumps(result, indent=2, default=str)}]
+        payload = dict(result)
+        payload["delivery_options"] = self._report_delivery_options_payload()
+        return [{"type": "text", "text": json.dumps(payload, indent=2, default=str)}]
+
+    async def _get_report_delivery_options(self, args: Dict) -> List[Dict]:
+        payload = {"status": "ok", **self._report_delivery_options_payload()}
+        return [{"type": "text", "text": json.dumps(payload, indent=2, default=str)}]
+
+    async def _list_notification_topics(self, args: Dict) -> List[Dict]:
+        try:
+            topics = await self.oci_client.list_notification_topics(
+                compartment_id=args.get("compartment_id"),
+                include_subcompartments=args.get("include_subcompartments", True),
+                lifecycle_state=args.get("lifecycle_state"),
+            )
+        except Exception as e:
+            return [{"type": "text", "text": json.dumps({
+                "status": "error",
+                "error": str(e),
+            }, indent=2)}]
+
+        return [{"type": "text", "text": json.dumps({
+            "status": "ok",
+            "count": len(topics),
+            "topics": topics,
+        }, indent=2, default=str)}]
 
     async def _deliver_report(self, args: Dict) -> List[Dict]:
         report = args.get("report")
@@ -957,11 +1014,13 @@ class MCPHandlers:
                 "error": "report.markdown is required in P0; report_id lookup is deferred",
             }, indent=2)}]
 
+        channels = args.get("channels", ["telegram"])
+        recipients, email_topic = self._report_email_recipients(channels, args.get("recipients"))
         try:
             result = await self.report_delivery_service.deliver(
                 report=report,
-                channels=args.get("channels", ["telegram"]),
-                recipients=args.get("recipients") or {},
+                channels=channels,
+                recipients=recipients,
                 output_format=args.get("format", "pdf"),
                 title=args.get("title"),
             )
@@ -972,7 +1031,161 @@ class MCPHandlers:
                 "error": str(e),
             }, indent=2)}]
 
+        saved_topic = await self._remember_report_email_topic_after_success(result, email_topic)
+        if email_topic or saved_topic:
+            result = dict(result)
+            result["delivery_preferences"] = {
+                "email_topic": saved_topic or email_topic,
+            }
+
         return [{"type": "text", "text": json.dumps(result, indent=2, default=str)}]
+
+    def _report_delivery_options_payload(self) -> Dict[str, Any]:
+        return {
+            "email": {
+                "provider": "oci_notifications",
+                "channel": "email",
+                "requires_user_confirmation": True,
+                "saved_topic": self._saved_report_email_topic(),
+                "configured_default": self._configured_report_email_topic(),
+                "workflow": [
+                    "Ask the user whether to deliver the report by OCI Notifications email.",
+                    "If a saved topic exists, ask whether to reuse it.",
+                    "If the user wants a different topic, call list_notification_topics and ask which topic to use.",
+                    "Before sending, ask: Send report <title> to OCI Notifications topic <topic name>?",
+                    "Only after confirmation, call deliver_report with channel email.",
+                ],
+            }
+        }
+
+    def _saved_report_email_topic(self) -> Optional[Dict[str, Any]]:
+        if not self.preference_store:
+            return None
+        pref = self.preference_store.get(REPORT_EMAIL_TOPIC_PREFERENCE_KEY)
+        if not pref:
+            return None
+        raw = pref.get("resolved_value")
+        data: Dict[str, Any]
+        try:
+            loaded = json.loads(raw) if isinstance(raw, str) else raw
+        except (TypeError, ValueError):
+            loaded = raw
+        if isinstance(loaded, dict):
+            data = dict(loaded)
+        elif isinstance(loaded, str) and loaded:
+            data = {"topic_id": loaded}
+        else:
+            return None
+        topic = self._normalize_report_email_topic(data, source="user_preference")
+        if topic:
+            topic["last_used"] = pref.get("last_used")
+        return topic
+
+    def _configured_report_email_topic(self) -> Optional[Dict[str, Any]]:
+        topic_id = self.settings.notifications.ons.default_topic_ocid
+        if not topic_id:
+            return None
+        return {
+            "topic_id": topic_id,
+            "name": "",
+            "compartment_id": "",
+            "lifecycle_state": "",
+            "source": "server_config",
+        }
+
+    def _report_email_recipients(
+        self,
+        channels: Any,
+        recipients: Optional[Dict[str, str]],
+    ) -> tuple[Dict[str, str], Optional[Dict[str, Any]]]:
+        effective_recipients = dict(recipients or {})
+        if not self._email_channel_requested(channels):
+            return effective_recipients, None
+
+        explicit_topic = effective_recipients.get("email_topic_ocid")
+        if explicit_topic:
+            return effective_recipients, {
+                "topic_id": explicit_topic,
+                "name": effective_recipients.get("email_topic_name", ""),
+                "compartment_id": effective_recipients.get("email_topic_compartment_id", ""),
+                "lifecycle_state": "",
+                "source": "explicit",
+            }
+
+        saved = self._saved_report_email_topic()
+        if saved:
+            effective_recipients["email_topic_ocid"] = saved["topic_id"]
+            return effective_recipients, saved
+
+        configured = self._configured_report_email_topic()
+        if configured:
+            effective_recipients["email_topic_ocid"] = configured["topic_id"]
+            return effective_recipients, configured
+
+        return effective_recipients, None
+
+    def _email_channel_requested(self, channels: Any) -> bool:
+        if channels is None:
+            channels = ["telegram"]
+        return isinstance(channels, list) and "email" in channels
+
+    async def _remember_report_email_topic_after_success(
+        self,
+        result: Dict[str, Any],
+        topic: Optional[Dict[str, Any]],
+    ) -> Optional[Dict[str, Any]]:
+        if not topic or not self.preference_store or not self._email_delivery_sent(result):
+            return None
+        topic_id = topic.get("topic_id")
+        if not topic_id:
+            return None
+
+        details = dict(topic)
+        get_topic = getattr(self.oci_client, "get_topic", None)
+        if get_topic is not None:
+            try:
+                fetched = await get_topic(topic_id)
+                if isinstance(fetched, dict):
+                    details.update(fetched)
+            except Exception as e:
+                logger.debug("Could not fetch ONS topic details for preference: %s", e)
+
+        details["last_success_at"] = datetime.now(timezone.utc).isoformat()
+        normalized = self._normalize_report_email_topic(
+            details,
+            source=topic.get("source", "delivery_success"),
+        )
+        if not normalized:
+            return None
+        normalized["last_success_at"] = details["last_success_at"]
+        self.preference_store.remember(
+            REPORT_EMAIL_TOPIC_PREFERENCE_KEY,
+            json.dumps(normalized, sort_keys=True),
+        )
+        return normalized
+
+    def _email_delivery_sent(self, result: Dict[str, Any]) -> bool:
+        for row in result.get("delivered", []):
+            if row.get("channel") == "email" and row.get("status") == "sent":
+                return True
+        return False
+
+    def _normalize_report_email_topic(
+        self,
+        data: Dict[str, Any],
+        *,
+        source: str,
+    ) -> Optional[Dict[str, Any]]:
+        topic_id = data.get("topic_id") or data.get("id") or data.get("topic_ocid")
+        if not topic_id:
+            return None
+        return {
+            "topic_id": topic_id,
+            "name": data.get("name", ""),
+            "compartment_id": data.get("compartment_id", ""),
+            "lifecycle_state": data.get("lifecycle_state", ""),
+            "source": source,
+        }
 
     async def _why_did_this_fire(self, args: Dict) -> List[Dict]:
         """Run why_did_this_fire with structured validation and budget errors."""
