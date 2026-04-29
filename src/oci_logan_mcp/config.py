@@ -103,6 +103,15 @@ class ReportDeliveryConfig:
         default_factory=lambda: Path.home() / ".oci-logan-mcp" / "reports"
     )
     max_email_body_chars: int = 8000
+    object_storage: "ReportObjectStorageConfig" = field(
+        default_factory=lambda: ReportObjectStorageConfig()
+    )
+
+
+@dataclass
+class ReportObjectStorageConfig:
+    par_expiry_days: int = 7
+    par_expiry_days_cap: int = 30
 
 
 @dataclass
@@ -204,6 +213,12 @@ class Settings:
             "report_delivery": {
                 "artifact_dir": str(self.report_delivery.artifact_dir),
                 "max_email_body_chars": self.report_delivery.max_email_body_chars,
+                "object_storage": {
+                    "par_expiry_days": self.report_delivery.object_storage.par_expiry_days,
+                    "par_expiry_days_cap": (
+                        self.report_delivery.object_storage.par_expiry_days_cap
+                    ),
+                },
             },
             "cost": {
                 "cost_per_gb_usd": self.cost.cost_per_gb_usd,
@@ -382,6 +397,7 @@ def _parse_config(data: Dict[str, Any]) -> Settings:
             )
 
     if rd_data := data.get("report_delivery"):
+        object_storage_data = rd_data.get("object_storage") or {}
         settings.report_delivery = ReportDeliveryConfig(
             artifact_dir=Path(
                 rd_data.get("artifact_dir", settings.report_delivery.artifact_dir)
@@ -389,6 +405,22 @@ def _parse_config(data: Dict[str, Any]) -> Settings:
             max_email_body_chars=rd_data.get(
                 "max_email_body_chars",
                 settings.report_delivery.max_email_body_chars,
+            ),
+            object_storage=ReportObjectStorageConfig(
+                par_expiry_days=min(
+                    int(object_storage_data.get(
+                        "par_expiry_days",
+                        settings.report_delivery.object_storage.par_expiry_days,
+                    )),
+                    int(object_storage_data.get(
+                        "par_expiry_days_cap",
+                        settings.report_delivery.object_storage.par_expiry_days_cap,
+                    )),
+                ),
+                par_expiry_days_cap=int(object_storage_data.get(
+                    "par_expiry_days_cap",
+                    settings.report_delivery.object_storage.par_expiry_days_cap,
+                )),
             ),
         )
 
@@ -436,6 +468,9 @@ def _apply_env_overrides(settings: Settings) -> Settings:
         settings.report_delivery.artifact_dir = Path(v)
     if v := os.environ.get("OCI_LOGAN_REPORT_MAX_EMAIL_CHARS"):
         settings.report_delivery.max_email_body_chars = int(v)
+    if v := os.environ.get("OCI_LOGAN_REPORT_PAR_EXPIRY_DAYS"):
+        cap = settings.report_delivery.object_storage.par_expiry_days_cap
+        settings.report_delivery.object_storage.par_expiry_days = min(int(v), cap)
 
     if (raw := os.environ.get("OCI_LOGAN_MCP_READ_ONLY")) is not None and raw != "":
         normalized = raw.strip().lower()

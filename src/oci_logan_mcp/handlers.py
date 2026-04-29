@@ -3,7 +3,7 @@
 import hashlib
 import json
 import logging
-from datetime import datetime, timezone
+from datetime import datetime, timedelta, timezone
 from typing import TYPE_CHECKING, Any, Dict, List, Optional
 
 from .query_engine import QueryEngine
@@ -48,6 +48,7 @@ from .playbook_recorder import PlaybookRecorder
 from .playbook_store import PlaybookNotFoundError, PlaybookStore
 from .report_delivery import ReportDeliveryError, ReportDeliveryService
 from .report_generator import ReportGenerationError, ReportGenerator
+from .report_store import ReportStore, ReportStoreError
 
 if TYPE_CHECKING:
     from .catalog import CatalogEntry
@@ -55,6 +56,35 @@ if TYPE_CHECKING:
 logger = logging.getLogger(__name__)
 
 REPORT_EMAIL_TOPIC_PREFERENCE_KEY = "report.email_topic"
+REPORT_ARTIFACT_BUCKET_PREFERENCE_KEY = "report.artifact_bucket"
+REPORT_OBJECT_STORAGE_POLICY = (
+    "Allow dynamic-group logan-mcp-dg to manage object-family in compartment "
+    "<reports-compartment>"
+)
+
+
+class ReportArtifactLinkError(Exception):
+    def __init__(
+        self,
+        *,
+        error_code: str,
+        error: str,
+        required_policy: Optional[str] = None,
+    ) -> None:
+        super().__init__(error)
+        self.error_code = error_code
+        self.error = error
+        self.required_policy = required_policy
+
+    def to_payload(self) -> Dict[str, Any]:
+        payload = {
+            "status": "error",
+            "error_code": self.error_code,
+            "error": self.error,
+        }
+        if self.required_policy:
+            payload["required_policy"] = self.required_policy
+        return payload
 
 
 class MCPHandlers:
@@ -135,6 +165,7 @@ class MCPHandlers:
         )
         self.find_rare_events_tool = RareEventsTool(self.query_engine)
         self.report_generator = ReportGenerator()
+        self.report_store = ReportStore(settings.report_delivery.artifact_dir / "store")
         self.trace_request_id_tool = TraceRequestIdTool(self.pivot_tool)
         self.log_source_builder_tool = LogSourceFromSampleTool(
             oci_client=oci_client,
@@ -204,7 +235,12 @@ class MCPHandlers:
             "investigate_incident": self._investigate_incident,
             "investigate_and_generate_report": self._investigate_and_generate_report,
             "generate_incident_report": self._generate_incident_report,
+            "get_incident_report": self._get_incident_report,
+            "list_incident_reports": self._list_incident_reports,
             "get_report_delivery_options": self._get_report_delivery_options,
+            "get_report_storage_options": self._get_report_storage_options,
+            "list_report_buckets": self._list_report_buckets,
+            "create_report_bucket": self._create_report_bucket,
             "list_notification_topics": self._list_notification_topics,
             "deliver_report": self._deliver_report,
             "why_did_this_fire": self._why_did_this_fire,
@@ -924,6 +960,8 @@ class MCPHandlers:
                 time_range=args.get("time_range", "last_1_hour"),
                 top_k=top_k,
                 compartment_id=args.get("compartment_id"),
+                budget_override=bool(args.get("budget_override", False)),
+                dry_run=bool(args.get("dry_run", False)),
             )
         except Exception as e:
             return None, {"status": "error", "error": str(e)}
@@ -951,7 +989,7 @@ class MCPHandlers:
         payload = {
             "status": "report_generated",
             "investigation": investigation,
-            "report": report,
+            "report": self._persist_generated_report(report),
             "delivery_options": self._report_delivery_options_payload(),
         }
         return [{"type": "text", "text": json.dumps(payload, indent=2, default=str)}]
@@ -978,13 +1016,97 @@ class MCPHandlers:
                 "error_code": "invalid_report_options",
                 "error": str(e),
             }, indent=2)}]
-        payload = dict(result)
+        payload = dict(self._persist_generated_report(result))
         payload["delivery_options"] = self._report_delivery_options_payload()
         return [{"type": "text", "text": json.dumps(payload, indent=2, default=str)}]
+
+    def _persist_generated_report(self, report: Dict[str, Any]) -> Dict[str, Any]:
+        return self.report_store.save(report)
+
+    async def _get_incident_report(self, args: Dict) -> List[Dict]:
+        report_id = args.get("report_id")
+        try:
+            report = self.report_store.get(str(report_id or ""))
+        except ReportStoreError as e:
+            return [{"type": "text", "text": json.dumps({
+                "status": "error",
+                "error_code": "report_not_found",
+                "error": str(e),
+            }, indent=2)}]
+        return [{"type": "text", "text": json.dumps(report, indent=2, default=str)}]
+
+    async def _list_incident_reports(self, args: Dict) -> List[Dict]:
+        try:
+            limit = int(args.get("limit", 20))
+        except (TypeError, ValueError):
+            return [{"type": "text", "text": json.dumps({
+                "status": "error",
+                "error": "limit must be an integer",
+            }, indent=2)}]
+        reports = self.report_store.list(limit=limit)
+        return [{"type": "text", "text": json.dumps({
+            "status": "ok",
+            "count": len(reports),
+            "reports": reports,
+        }, indent=2, default=str)}]
 
     async def _get_report_delivery_options(self, args: Dict) -> List[Dict]:
         payload = {"status": "ok", **self._report_delivery_options_payload()}
         return [{"type": "text", "text": json.dumps(payload, indent=2, default=str)}]
+
+    async def _get_report_storage_options(self, args: Dict) -> List[Dict]:
+        payload = {"status": "ok", "object_storage": self._report_storage_options_payload()}
+        return [{"type": "text", "text": json.dumps(payload, indent=2, default=str)}]
+
+    async def _list_report_buckets(self, args: Dict) -> List[Dict]:
+        try:
+            buckets = await self.oci_client.list_report_buckets(
+                compartment_id=args.get("compartment_id"),
+                include_subcompartments=args.get("include_subcompartments", True),
+            )
+        except Exception as e:
+            return [{"type": "text", "text": json.dumps({
+                "status": "error",
+                "error": str(e),
+            }, indent=2)}]
+        return [{"type": "text", "text": json.dumps({
+            "status": "ok",
+            "count": len(buckets),
+            "buckets": buckets,
+        }, indent=2, default=str)}]
+
+    async def _create_report_bucket(self, args: Dict) -> List[Dict]:
+        compartment_id = args.get("compartment_id")
+        bucket = args.get("bucket")
+        if not compartment_id or not bucket:
+            return [{"type": "text", "text": json.dumps({
+                "status": "error",
+                "error": "compartment_id and bucket are required",
+            }, indent=2)}]
+        try:
+            result = await self.oci_client.create_report_bucket(
+                compartment_id=compartment_id,
+                bucket=bucket,
+                namespace=args.get("namespace"),
+            )
+        except Exception as e:
+            return [{"type": "text", "text": json.dumps({
+                "status": "error",
+                "error": str(e),
+            }, indent=2)}]
+        if self.preference_store:
+            self.preference_store.remember(
+                REPORT_ARTIFACT_BUCKET_PREFERENCE_KEY,
+                json.dumps({
+                    "namespace": result.get("namespace"),
+                    "bucket": result.get("bucket") or result.get("name"),
+                    "compartment_id": result.get("compartment_id"),
+                }, sort_keys=True),
+            )
+        return [{"type": "text", "text": json.dumps({
+            "status": "created",
+            "bucket": result,
+        }, indent=2, default=str)}]
 
     async def _list_notification_topics(self, args: Dict) -> List[Dict]:
         try:
@@ -1007,15 +1129,42 @@ class MCPHandlers:
 
     async def _deliver_report(self, args: Dict) -> List[Dict]:
         report = args.get("report")
-        if not isinstance(report, dict) or not isinstance(report.get("markdown"), str):
+        if not isinstance(report, dict):
             return [{"type": "text", "text": json.dumps({
                 "status": "error",
                 "error_code": "missing_report_markdown",
-                "error": "report.markdown is required in P0; report_id lookup is deferred",
+                "error": "report.markdown or report.report_id is required",
+            }, indent=2)}]
+        has_markdown = isinstance(report.get("markdown"), str)
+        has_report_id = isinstance(report.get("report_id"), str)
+        if has_markdown and has_report_id:
+            return [{"type": "text", "text": json.dumps({
+                "status": "error",
+                "error_code": "ambiguous_report_payload",
+                "error": "Provide either report.markdown or report.report_id, not both.",
+            }, indent=2)}]
+        if has_report_id:
+            try:
+                report = self.report_store.get(report["report_id"])
+            except ReportStoreError as e:
+                return [{"type": "text", "text": json.dumps({
+                    "status": "error",
+                    "error_code": "report_not_found",
+                    "error": str(e),
+                }, indent=2)}]
+        elif not has_markdown:
+            return [{"type": "text", "text": json.dumps({
+                "status": "error",
+                "error_code": "missing_report_markdown",
+                "error": "report.markdown or report.report_id is required",
             }, indent=2)}]
 
         channels = args.get("channels", ["telegram"])
         recipients, email_topic = self._report_email_recipients(channels, args.get("recipients"))
+        try:
+            report = await self._attach_report_artifact_links(report, channels)
+        except ReportArtifactLinkError as e:
+            return [{"type": "text", "text": json.dumps(e.to_payload(), indent=2)}]
         try:
             result = await self.report_delivery_service.deliver(
                 report=report,
@@ -1057,6 +1206,159 @@ class MCPHandlers:
                 ],
             }
         }
+
+    def _report_storage_options_payload(self) -> Dict[str, Any]:
+        cfg = self.settings.report_delivery.object_storage
+        return {
+            "provider": "oci_object_storage",
+            "saved_bucket": self._saved_report_artifact_bucket(),
+            "par_expiry_days": cfg.par_expiry_days,
+            "par_expiry_days_cap": cfg.par_expiry_days_cap,
+            "preference_key": REPORT_ARTIFACT_BUCKET_PREFERENCE_KEY,
+            "workflow": [
+                "Call list_report_buckets and ask the user which bucket to use.",
+                "Save the chosen bucket with remember_preference.",
+                "deliver_report uploads stored report.md/report.html and creates fresh PAR links.",
+            ],
+        }
+
+    def _saved_report_artifact_bucket(self) -> Optional[Dict[str, Any]]:
+        if not self.preference_store:
+            return None
+        pref = self.preference_store.get(REPORT_ARTIFACT_BUCKET_PREFERENCE_KEY)
+        if not pref:
+            return None
+        raw = pref.get("resolved_value")
+        try:
+            data = json.loads(raw) if isinstance(raw, str) else raw
+        except (TypeError, ValueError):
+            return None
+        if not isinstance(data, dict):
+            return None
+        namespace = data.get("namespace")
+        bucket = data.get("bucket") or data.get("bucket_name")
+        if not namespace or not bucket:
+            return None
+        return {
+            "namespace": namespace,
+            "bucket": bucket,
+            "compartment_id": data.get("compartment_id", ""),
+            "source": "user_preference",
+        }
+
+    async def _attach_report_artifact_links(
+        self,
+        report: Dict[str, Any],
+        channels: Any,
+    ) -> Dict[str, Any]:
+        if not self._email_channel_requested(channels):
+            return report
+        bucket = self._saved_report_artifact_bucket()
+        if not bucket:
+            return report
+        report_id = report.get("report_id")
+        if not report_id:
+            return report
+
+        artifacts = [
+            artifact for artifact in (report.get("artifacts") or [])
+            if artifact.get("name") in {"report.md", "report.html"} and artifact.get("path")
+        ]
+        if not artifacts:
+            return report
+
+        cfg = self.settings.report_delivery.object_storage
+        days = min(cfg.par_expiry_days, cfg.par_expiry_days_cap)
+        expires_at = datetime.now(timezone.utc) + timedelta(days=days)
+        links = []
+        for artifact in artifacts:
+            object_name = f"{report_id}/{artifact['name']}"
+            try:
+                await self.oci_client.upload_report_artifact(
+                    namespace=bucket["namespace"],
+                    bucket=bucket["bucket"],
+                    object_name=object_name,
+                    file_path=artifact["path"],
+                )
+                link = await self.oci_client.create_report_par(
+                    namespace=bucket["namespace"],
+                    bucket=bucket["bucket"],
+                    object_name=object_name,
+                    expires_at=expires_at,
+                )
+            except Exception as e:
+                raise self._report_artifact_link_error(e) from e
+            self._audit_report_par(
+                bucket=bucket,
+                object_name=object_name,
+                expires_at=expires_at,
+                link=link or {},
+            )
+            links.append({
+                "name": artifact["name"],
+                "object_name": object_name,
+                **(link or {}),
+            })
+
+        enriched = dict(report)
+        enriched["object_storage_links"] = links
+        source_compartment = ((report.get("metadata") or {}).get("compartment_id") or "")
+        bucket_compartment = bucket.get("compartment_id") or ""
+        if source_compartment and bucket_compartment and source_compartment != bucket_compartment:
+            enriched["object_storage_warning"] = {
+                "code": "bucket_compartment_differs",
+                "message": (
+                    "Report artifact bucket is in a different compartment than "
+                    "the investigated source data."
+                ),
+                "source_compartment_id": source_compartment,
+                "bucket_compartment_id": bucket_compartment,
+            }
+        return enriched
+
+    def _report_artifact_link_error(self, exc: Exception) -> ReportArtifactLinkError:
+        status = getattr(exc, "status", None)
+        if status in {401, 403, 404}:
+            return ReportArtifactLinkError(
+                error_code="object_storage_iam_missing",
+                error=(
+                    "Object Storage report delivery is configured, but the "
+                    "server cannot upload the report artifact or create the "
+                    "pre-authenticated request. Verify IAM for the report "
+                    "artifact bucket."
+                ),
+                required_policy=REPORT_OBJECT_STORAGE_POLICY,
+            )
+        return ReportArtifactLinkError(
+            error_code="object_storage_delivery_failed",
+            error=str(exc),
+        )
+
+    def _audit_report_par(
+        self,
+        *,
+        bucket: Dict[str, Any],
+        object_name: str,
+        expires_at: datetime,
+        link: Dict[str, Any],
+    ) -> None:
+        if not self.audit_logger:
+            return
+        try:
+            self.audit_logger.log(
+                user=self.user_store.user_id,
+                tool="create_report_par",
+                args={
+                    "namespace": bucket.get("namespace"),
+                    "bucket": bucket.get("bucket"),
+                    "object_name": object_name,
+                    "expires_at": expires_at.isoformat(),
+                    "par_id": link.get("par_id"),
+                },
+                outcome="created",
+            )
+        except Exception as e:
+            logger.warning("create_report_par audit entry failed: %s", e)
 
     def _saved_report_email_topic(self) -> Optional[Dict[str, Any]]:
         if not self.preference_store:

@@ -75,6 +75,16 @@ def test_run_query_schema_carries_budget_override_fields():
     assert "confirmation_secret" in props
 
 
+def test_investigation_schemas_carry_budget_control_fields():
+    tools = {t["name"]: t for t in get_tools()}
+    for name in ("investigate_incident", "investigate_and_generate_report"):
+        props = tools[name]["inputSchema"]["properties"]
+        assert "dry_run" in props
+        assert "budget_override" in props
+        assert "confirmation_token" in props
+        assert "confirmation_secret" in props
+
+
 def test_related_dashboards_and_searches_schema():
     tools = {t["name"]: t for t in get_tools()}
     spec = tools["related_dashboards_and_searches"]
@@ -224,15 +234,35 @@ def test_report_delivery_option_schemas():
     assert "include_subcompartments" in props
     assert "lifecycle_state" in props
 
+    storage = tools["get_report_storage_options"]
+    assert "Object Storage" in storage["description"]
+    assert storage["inputSchema"]["properties"] == {}
+
+    buckets = tools["list_report_buckets"]
+    bucket_props = buckets["inputSchema"]["properties"]
+    assert "compartment_id" in bucket_props
+    assert "include_subcompartments" in bucket_props
+
+
+def test_incident_report_lookup_schemas():
+    tools = {tool["name"]: tool for tool in get_tools()}
+
+    assert tools["get_incident_report"]["inputSchema"]["required"] == ["report_id"]
+    assert "report_id" in tools["get_incident_report"]["inputSchema"]["properties"]
+    assert "limit" in tools["list_incident_reports"]["inputSchema"]["properties"]
+
 
 def test_deliver_report_schema_is_markdown_first():
     tools = {tool["name"]: tool for tool in get_tools()}
     schema = tools["deliver_report"]["inputSchema"]
     props = schema["properties"]
+    description = tools["deliver_report"]["description"]
 
     assert "report" in props
     report_schema = props["report"]
-    assert report_schema["required"] == ["markdown"]
-    assert "report_id" not in report_schema["properties"]
+    assert "markdown" in report_schema["properties"]
+    assert "report_id" in report_schema["properties"]
+    assert "report_id lookup is deferred" not in description
+    assert "inline markdown report content only" not in description.lower()
     assert props["channels"]["items"]["enum"] == ["telegram", "email", "slack"]
     assert props["format"]["enum"] == ["pdf", "markdown", "both"]

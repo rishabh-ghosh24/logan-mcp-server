@@ -121,6 +121,7 @@ class IngestionHealthTool:
         compartment_id: Optional[str] = None,
         sources: Optional[List[str]] = None,
         severity_filter: str = "warn",
+        budget_override: bool = False,
     ) -> Dict[str, Any]:
         ih_cfg = self._settings.ingestion_health
         checked_at = _utcnow()
@@ -159,6 +160,7 @@ class IngestionHealthTool:
             query=query,
             time_range=ih_cfg.freshness_probe_window,
             compartment_id=compartment_id,
+            budget_override=budget_override,
         )
         last_seen = _extract_last_seen_map(response)
 

@@ -27,6 +27,20 @@ Query: `* | stats count`
 """,
 }
 
+PARTIAL_TABLE_REPORT = {
+    "title": "Top 3 Log Source Investigation",
+    "metadata": {"partial": True},
+    "markdown": """# Top 3 Log Source Investigation
+
+## Findings
+
+| Source | Finding | Severity |
+|---|---|---|
+| OCI VCN Flow Unified Schema Logs | 3,831,683 rejects | High |
+| Kubernetes Core DNS Logs | custom/*.server warning | Low |
+""",
+}
+
 
 def make_service(tmp_path, notification_service=None, audit_logger=None):
     settings = Settings()
@@ -109,10 +123,68 @@ async def test_email_and_slack_receive_inline_summary(tmp_path):
     notifications.send_to_ons_email.assert_awaited_once()
     email_kwargs = notifications.send_to_ons_email.await_args.kwargs
     assert email_kwargs["topic_id"] == "ocid1.onstopic.oc1..override"
-    assert "Executive Summary" in email_kwargs["body"]
-    assert "Top Findings" in email_kwargs["body"]
+    assert "EXECUTIVE SUMMARY" in email_kwargs["body"]
+    assert "TOP FINDINGS" in email_kwargs["body"]
     assert "Object Storage" not in email_kwargs["body"]
     notifications.send_to_slack.assert_awaited_once()
+
+
+@pytest.mark.asyncio
+async def test_ons_email_uses_plaintext_ascii_tables_and_partial_subject(tmp_path):
+    svc, notifications = make_service(tmp_path)
+
+    await svc.deliver(
+        report=PARTIAL_TABLE_REPORT,
+        channels=["email"],
+        recipients={},
+        output_format="markdown",
+        title=None,
+    )
+
+    kwargs = notifications.send_to_ons_email.await_args.kwargs
+    assert kwargs["title"].startswith("[PARTIAL]")
+    body = kwargs["body"]
+    assert "|---|" not in body
+    assert "Markdown" not in body
+    assert "PARTIAL INVESTIGATION" in body
+    assert "1. OCI VCN Flow Unified Schema Logs" in body
+    assert all(len(line) <= 80 for line in body.splitlines())
+
+
+def test_summary_extraction_fuzzy_matches_findings_heading(tmp_path):
+    svc, _ = make_service(tmp_path)
+
+    summary = svc._summary_markdown(PARTIAL_TABLE_REPORT["markdown"])
+
+    assert "## Findings" in summary
+    assert "OCI VCN Flow" in summary
+
+
+@pytest.mark.asyncio
+async def test_email_body_includes_object_storage_links(tmp_path):
+    svc, notifications = make_service(tmp_path)
+    report = {
+        **REPORT,
+        "object_storage_links": [
+            {
+                "name": "report.html",
+                "url": "https://objectstorage.example/p/report-html",
+                "expires_at": "2026-05-06T00:00:00+00:00",
+            }
+        ],
+    }
+
+    await svc.deliver(
+        report=report,
+        channels=["email"],
+        recipients={},
+        output_format="markdown",
+    )
+
+    body = notifications.send_to_ons_email.await_args.kwargs["body"]
+    assert "Full Report Links" in body
+    assert "report.html" in body
+    assert "https://objectstorage.example/p/report-html" in body
 
 
 @pytest.mark.asyncio

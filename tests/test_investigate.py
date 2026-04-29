@@ -339,6 +339,8 @@ class TestTemplatedSummary:
         assert "partial" in s.lower()
         assert "budget_exceeded" in s
         assert "timeline_omitted" in s
+        assert s.startswith("Partial investigation")
+        assert "No anomalous sources detected." not in s
 
     def test_stopped_and_parser_failures_mentioned(self):
         acc = {
@@ -394,6 +396,19 @@ def _make_budget():
         session_id="test",
         limits=BudgetLimits(enabled=False, max_queries_per_session=100,
                             max_bytes_per_session=0, max_cost_usd_per_session=0),
+    )
+
+
+def _make_enabled_budget(max_queries=100, max_bytes=10 * 1024**3, max_cost=5.0):
+    from oci_logan_mcp.budget_tracker import BudgetTracker, BudgetLimits
+    return BudgetTracker(
+        session_id="test",
+        limits=BudgetLimits(
+            enabled=True,
+            max_queries_per_session=max_queries,
+            max_bytes_per_session=max_bytes,
+            max_cost_usd_per_session=max_cost,
+        ),
     )
 
 
@@ -503,6 +518,90 @@ class TestInvestigateSkeleton:
         report = await tool.run(query="'x' = 'y'", time_range="last_1_hour", top_k=3)
         assert report["partial"] is True
         assert "budget_exceeded" in report["partial_reasons"]
+
+    @pytest.mark.asyncio
+    async def test_preflight_returns_budget_decision_before_seed_query(self):
+        engine = _make_engine()
+        schema, ih, j2, diff = _make_deps()
+        tool = InvestigateIncidentTool(
+            query_engine=engine, schema_manager=schema,
+            ingestion_health_tool=ih, parser_triage_tool=j2, diff_tool=diff,
+            settings=_make_settings(), budget_tracker=_make_enabled_budget(max_queries=4),
+        )
+
+        report = await tool.run(query="'Event' = 'error'", time_range="last_24_hours", top_k=3)
+
+        assert report["status"] == "needs_budget_decision"
+        assert report["requested_scope"]["time_range"] == "last_24_hours"
+        assert report["requested_scope"]["top_k"] == 3
+        assert report["estimated_plan"]["queries"] > report["remaining_budget"]["queries"]
+        assert {option["id"] for option in report["options"]} == {
+            "narrow_time",
+            "narrow_topk",
+            "override",
+        }
+        engine.execute.assert_not_awaited()
+        ih.run.assert_not_awaited()
+        j2.run.assert_not_awaited()
+        diff.run.assert_not_awaited()
+
+    @pytest.mark.asyncio
+    async def test_preflight_uses_estimated_bytes_before_seed_query(self):
+        class FakeEstimate:
+            estimated_bytes = 500
+            estimated_cost_usd = 0.25
+
+        class FakeEstimator:
+            async def estimate(self, **kwargs):
+                return FakeEstimate()
+
+            @staticmethod
+            def _extract_sources(query):
+                return ["Apache"]
+
+        engine = _make_engine()
+        engine.estimator = FakeEstimator()
+        schema, ih, j2, diff = _make_deps()
+        tool = InvestigateIncidentTool(
+            query_engine=engine, schema_manager=schema,
+            ingestion_health_tool=ih, parser_triage_tool=j2, diff_tool=diff,
+            settings=_make_settings(),
+            budget_tracker=_make_enabled_budget(max_queries=100, max_bytes=100),
+        )
+
+        report = await tool.run(
+            query="'Log Source' = 'Apache'",
+            time_range="last_24_hours",
+            top_k=1,
+        )
+
+        assert report["status"] == "needs_budget_decision"
+        assert report["estimated_plan"]["bytes"] > report["remaining_budget"]["bytes"]
+        engine.execute.assert_not_awaited()
+
+    @pytest.mark.asyncio
+    async def test_budget_override_runs_and_threads_override_to_engine_queries(self):
+        engine = _make_engine()
+        schema, ih, j2, diff = _make_deps()
+        tool = InvestigateIncidentTool(
+            query_engine=engine, schema_manager=schema,
+            ingestion_health_tool=ih, parser_triage_tool=j2, diff_tool=diff,
+            settings=_make_settings(), budget_tracker=_make_enabled_budget(max_queries=1),
+        )
+
+        report = await tool.run(
+            query="'Event' = 'error'",
+            time_range="last_1_hour",
+            top_k=3,
+            budget_override=True,
+        )
+
+        assert report["partial"] is False
+        assert engine.execute.await_count >= 1
+        assert all(
+            call.kwargs.get("budget_override") is True
+            for call in engine.execute.await_args_list
+        )
 
 
 class TestPhase1SeedExecution:
@@ -712,6 +811,64 @@ class TestPhase5And6DrillDown:
         assert {"web-01", "alice", "req-123"} <= entity_values
         assert src["timeline"] is not None
         assert len(src["timeline"]) == 1
+
+    @pytest.mark.asyncio
+    async def test_recipe_probe_validates_fields_and_records_skips(self):
+        diff_result = {
+            "current": {}, "comparison": {}, "summary": "",
+            "delta": [{
+                "dimension": "OCI VCN Flow Unified Schema Logs",
+                "current": 100,
+                "comparison": 10,
+                "pct_change": 900.0,
+            }],
+        }
+
+        async def execute_router(**kwargs):
+            q = kwargs.get("query", "")
+            assert "Destination Port" not in q
+            if "| cluster" in q:
+                return {"data": {"columns": [
+                    {"name": "Cluster Sample"}, {"name": "Count"},
+                ], "rows": []}}
+            if "| fields Time" in q:
+                return {"data": {"columns": [
+                    {"name": "Time"}, {"name": "Original Log Content"},
+                ], "rows": []}}
+            return {"data": {
+                "columns": [{"name": "Action"}, {"name": "n"}],
+                "rows": [["REJECT", 5]],
+            }}
+
+        engine = MagicMock()
+        engine.execute = AsyncMock(side_effect=execute_router)
+        schema, ih, j2, diff = _make_deps()
+        schema.get_fields = AsyncMock(return_value=[
+            type("Field", (), {"name": "Action"})(),
+            type("Field", (), {"name": "Time"})(),
+            type("Field", (), {"name": "Original Log Content"})(),
+        ])
+        diff.run = AsyncMock(return_value=diff_result)
+        tool = InvestigateIncidentTool(
+            query_engine=engine, schema_manager=schema,
+            ingestion_health_tool=ih, parser_triage_tool=j2, diff_tool=diff,
+            settings=_make_settings(), budget_tracker=_make_budget(),
+        )
+
+        report = await tool.run(query="*", time_range="last_1_hour", top_k=1)
+
+        assert report["recipes_used"] == [{
+            "source": "OCI VCN Flow Unified Schema Logs",
+            "recipe_id": "oci_vcn_flow_unified",
+        }]
+        assert any(
+            skip["probe"] == "top_reject_destination_ports"
+            and skip["reason"] == "field_unavailable: Destination Port"
+            for skip in report["skipped_probes"]
+        )
+        source = report["anomalous_sources"][0]
+        assert source["recipe_id"] == "oci_vcn_flow_unified"
+        assert source["recipe_evidence"][0]["probe"] == "action_breakdown"
 
     @pytest.mark.asyncio
     async def test_invalid_entity_field_partial_not_fatal(self):

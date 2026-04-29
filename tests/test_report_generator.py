@@ -74,7 +74,7 @@ def test_generate_default_markdown_sections():
     report = ReportGenerator().generate(_investigation())
 
     assert re.match(r"^rpt_[0-9a-f]{32}$", report["report_id"])
-    assert report["html"] is None
+    assert report["html"].startswith("<!doctype html>")
     markdown = report["markdown"]
     assert markdown.startswith("# Incident Report")
     assert "## Executive Summary" in markdown
@@ -156,6 +156,13 @@ def test_html_format_returns_escaped_html_document():
     assert "<critical>" not in report["html"]
 
 
+def test_markdown_format_still_returns_default_html_artifact_content():
+    report = ReportGenerator().generate(_investigation(), output_format="markdown")
+
+    assert report["markdown"].startswith("# Incident Report")
+    assert report["html"].startswith("<!doctype html>")
+
+
 def test_empty_investigation_produces_no_findings_report():
     report = ReportGenerator().generate({})
 
@@ -167,6 +174,8 @@ def test_empty_investigation_produces_no_findings_report():
 def test_short_summary_caps_sentences():
     investigation = _investigation()
     investigation["summary"] = "One. Two. Three. Four."
+    investigation["partial"] = False
+    investigation["partial_reasons"] = []
 
     report = ReportGenerator().generate(investigation, summary_length="short")
     summary = report["markdown"].split("## Timeline", 1)[0]
@@ -175,6 +184,19 @@ def test_short_summary_caps_sentences():
     assert "Two." in summary
     assert "Three." in summary
     assert "Four." not in summary
+
+
+def test_partial_banner_survives_short_summary_truncation():
+    investigation = _investigation()
+    investigation["summary"] = "One. Two. Three."
+    investigation["partial"] = True
+    investigation["partial_reasons"] = ["budget_exceeded"]
+
+    report = ReportGenerator().generate(investigation, summary_length="short")
+    summary = report["markdown"].split("## Timeline", 1)[0]
+
+    assert summary.index("Partial investigation: budget_exceeded.") < summary.index("One.")
+    assert "Three." not in summary
 
 
 @pytest.mark.parametrize(

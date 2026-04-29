@@ -124,6 +124,15 @@ class OCILogAnalyticsClient:
         return self._ons_data_client
 
     @property
+    def object_storage_client(self):
+        """Lazy accessor for OCI Object Storage client."""
+        if not hasattr(self, "_object_storage_client") or self._object_storage_client is None:
+            self._object_storage_client = oci.object_storage.ObjectStorageClient(
+                config=self._config, signer=self._signer
+            )
+        return self._object_storage_client
+
+    @property
     def namespace(self) -> str:
         """Get current Log Analytics namespace."""
         return self._namespace
@@ -1127,6 +1136,196 @@ class OCILogAnalyticsClient:
             if e.status == 429:
                 await self._rate_limiter.handle_rate_limit()
                 return await self.publish_notification(topic_id, title, body)
+            raise
+
+    async def get_object_storage_namespace(self) -> str:
+        await self._rate_limiter.acquire()
+        try:
+            response = await asyncio.to_thread(self.object_storage_client.get_namespace)
+            self._rate_limiter.reset()
+            return str(response.data)
+        except oci.exceptions.ServiceError as e:
+            if e.status == 429:
+                await self._rate_limiter.handle_rate_limit()
+                return await self.get_object_storage_namespace()
+            raise
+
+    async def list_report_buckets(
+        self,
+        compartment_id: Optional[str] = None,
+        include_subcompartments: bool = True,
+    ) -> List[Dict[str, Any]]:
+        namespace = await self.get_object_storage_namespace()
+        base_compartment = compartment_id or self._compartment_id or self.tenancy_id
+        if not base_compartment:
+            return []
+        compartment_ids = [base_compartment]
+        if include_subcompartments:
+            try:
+                for comp in await self.list_compartments():
+                    comp_id = comp.get("id")
+                    if comp_id and comp_id not in compartment_ids:
+                        compartment_ids.append(comp_id)
+            except Exception as e:
+                logger.warning("Could not enumerate compartments for buckets: %s", e)
+
+        buckets: List[Dict[str, Any]] = []
+        for cid in compartment_ids:
+            buckets.extend(await self._list_report_buckets_in_compartment(namespace, cid))
+        return buckets
+
+    async def _list_report_buckets_in_compartment(
+        self,
+        namespace: str,
+        compartment_id: str,
+    ) -> List[Dict[str, Any]]:
+        await self._rate_limiter.acquire()
+        try:
+            response = list_call_get_all_results(
+                self.object_storage_client.list_buckets,
+                namespace_name=namespace,
+                compartment_id=compartment_id,
+            )
+            self._rate_limiter.reset()
+            return [
+                {
+                    "namespace": namespace,
+                    "bucket": getattr(bucket, "name", ""),
+                    "name": getattr(bucket, "name", ""),
+                    "compartment_id": getattr(bucket, "compartment_id", compartment_id),
+                    "created_by": getattr(bucket, "created_by", ""),
+                    "time_created": (
+                        getattr(bucket, "time_created", "").isoformat()
+                        if hasattr(getattr(bucket, "time_created", ""), "isoformat")
+                        else getattr(bucket, "time_created", "")
+                    ),
+                }
+                for bucket in _get_items(response.data)
+            ]
+        except oci.exceptions.ServiceError as e:
+            if e.status == 429:
+                await self._rate_limiter.handle_rate_limit()
+                return await self._list_report_buckets_in_compartment(namespace, compartment_id)
+            logger.warning("Could not list buckets in compartment %s: %s", compartment_id, e)
+            return []
+
+    async def upload_report_artifact(
+        self,
+        *,
+        namespace: str,
+        bucket: str,
+        object_name: str,
+        file_path: str,
+    ) -> Dict[str, Any]:
+        body = Path(file_path).read_bytes()
+        await self._rate_limiter.acquire()
+        try:
+            response = await asyncio.to_thread(
+                self.object_storage_client.put_object,
+                namespace_name=namespace,
+                bucket_name=bucket,
+                object_name=object_name,
+                put_object_body=body,
+            )
+            self._rate_limiter.reset()
+            return {
+                "etag": getattr(response, "headers", {}).get("etag"),
+                "object_name": object_name,
+            }
+        except oci.exceptions.ServiceError as e:
+            if e.status == 429:
+                await self._rate_limiter.handle_rate_limit()
+                return await self.upload_report_artifact(
+                    namespace=namespace,
+                    bucket=bucket,
+                    object_name=object_name,
+                    file_path=file_path,
+                )
+            raise
+
+    async def create_report_bucket(
+        self,
+        *,
+        compartment_id: str,
+        bucket: str,
+        namespace: Optional[str] = None,
+    ) -> Dict[str, Any]:
+        namespace_name = namespace or await self.get_object_storage_namespace()
+        await self._rate_limiter.acquire()
+        try:
+            details = oci.object_storage.models.CreateBucketDetails(
+                compartment_id=compartment_id,
+                name=bucket,
+            )
+            response = await asyncio.to_thread(
+                self.object_storage_client.create_bucket,
+                namespace_name=namespace_name,
+                create_bucket_details=details,
+            )
+            self._rate_limiter.reset()
+            data = response.data
+            return {
+                "namespace": namespace_name,
+                "bucket": getattr(data, "name", bucket),
+                "name": getattr(data, "name", bucket),
+                "compartment_id": getattr(data, "compartment_id", compartment_id),
+            }
+        except oci.exceptions.ServiceError as e:
+            if e.status == 429:
+                await self._rate_limiter.handle_rate_limit()
+                return await self.create_report_bucket(
+                    compartment_id=compartment_id,
+                    bucket=bucket,
+                    namespace=namespace,
+                )
+            raise
+
+    async def create_report_par(
+        self,
+        *,
+        namespace: str,
+        bucket: str,
+        object_name: str,
+        expires_at: datetime,
+    ) -> Dict[str, Any]:
+        await self._rate_limiter.acquire()
+        try:
+            details = oci.object_storage.models.CreatePreauthenticatedRequestDetails(
+                name=f"logan-report-{object_name.replace('/', '-')}",
+                object_name=object_name,
+                access_type="ObjectRead",
+                time_expires=expires_at,
+            )
+            response = await asyncio.to_thread(
+                self.object_storage_client.create_preauthenticated_request,
+                namespace_name=namespace,
+                bucket_name=bucket,
+                create_preauthenticated_request_details=details,
+            )
+            self._rate_limiter.reset()
+            data = response.data
+            access_uri = getattr(data, "access_uri", "")
+            region = self._config.get("region", "")
+            url = access_uri
+            if access_uri.startswith("/") and region:
+                url = f"https://objectstorage.{region}.oraclecloud.com{access_uri}"
+            return {
+                "par_id": getattr(data, "id", ""),
+                "name": object_name.rsplit("/", 1)[-1],
+                "object_name": object_name,
+                "access_uri": access_uri,
+                "url": url,
+                "expires_at": expires_at.isoformat(),
+            }
+        except oci.exceptions.ServiceError as e:
+            if e.status == 429:
+                await self._rate_limiter.handle_rate_limit()
+                return await self.create_report_par(
+                    namespace=namespace,
+                    bucket=bucket,
+                    object_name=object_name,
+                    expires_at=expires_at,
+                )
             raise
 
     # ── Management Saved Search methods ───────────────────────────────────

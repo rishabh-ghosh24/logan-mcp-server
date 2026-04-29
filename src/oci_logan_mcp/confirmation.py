@@ -33,6 +33,7 @@ GUARDED_TOOLS = frozenset({
     "create_saved_search",
     "create_dashboard",
     "create_log_source_from_sample",
+    "create_report_bucket",
 })
 
 _SUMMARY_KEYS: Dict[str, list] = {
@@ -58,9 +59,22 @@ _SUMMARY_KEYS: Dict[str, list] = {
         "acknowledge_data_review", "verification_time_range", "poll_attempts",
         "sample_line_count", "data_warning",
     ],
+    "create_report_bucket": [
+        "compartment_id", "bucket", "namespace",
+    ],
     "run_query": [
         "query", "time_range", "time_start", "time_end",
         "estimated_bytes", "estimated_cost_usd", "estimate_confidence",
+    ],
+    "investigate_incident": [
+        "query", "time_range", "top_k", "compartment_id",
+        "budget_override", "estimated_queries", "estimated_bytes",
+        "estimated_cost_usd",
+    ],
+    "investigate_and_generate_report": [
+        "query", "time_range", "top_k", "compartment_id",
+        "budget_override", "estimated_queries", "estimated_bytes",
+        "estimated_cost_usd",
     ],
 }
 
@@ -85,7 +99,11 @@ class ConfirmationManager:
 
     def is_guarded_call(self, tool_name: str, arguments: dict) -> bool:
         """Context-aware guard check. For run_query, checks budget_override flag."""
-        if tool_name == "run_query":
+        if tool_name in {
+            "run_query",
+            "investigate_incident",
+            "investigate_and_generate_report",
+        }:
             return bool(arguments.get("budget_override"))
         return tool_name in GUARDED_TOOLS
 

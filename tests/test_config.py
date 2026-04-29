@@ -103,6 +103,8 @@ class TestNotificationsConfig:
         assert s.notifications.ons.default_topic_ocid == ""
         assert s.report_delivery.max_email_body_chars == 8000
         assert s.report_delivery.artifact_dir == Path.home() / ".oci-logan-mcp" / "reports"
+        assert s.report_delivery.object_storage.par_expiry_days == 7
+        assert s.report_delivery.object_storage.par_expiry_days_cap == 30
 
     def test_parse_config_slack(self):
         data = {"notifications": {"slack": {"webhook_url": "https://hooks.slack.com/test"}}}
@@ -125,11 +127,13 @@ class TestNotificationsConfig:
             "report_delivery": {
                 "artifact_dir": "/tmp/logan-reports",
                 "max_email_body_chars": 1200,
+                "object_storage": {"par_expiry_days": 14},
             }
         }
         s = _parse_config(data)
         assert s.report_delivery.artifact_dir == Path("/tmp/logan-reports")
         assert s.report_delivery.max_email_body_chars == 1200
+        assert s.report_delivery.object_storage.par_expiry_days == 14
 
     def test_env_override_slack(self, monkeypatch):
         monkeypatch.setenv("SLACK_WEBHOOK_URL", "https://hooks.slack.com/env")

@@ -139,10 +139,14 @@ def test_all_registered_tools_are_classified():
         "explain_query", "get_session_budget",
         "export_transcript",
         "list_playbooks", "get_playbook",
-        "generate_incident_report",
-        "get_report_delivery_options",
-        "list_notification_topics",
-    }
+            "generate_incident_report",
+            "get_incident_report",
+            "list_incident_reports",
+            "get_report_delivery_options",
+            "get_report_storage_options",
+            "list_notification_topics",
+            "list_report_buckets",
+        }
 
     unclassified = registered - MUTATING_TOOLS - KNOWN_READERS
     assert not unclassified, (

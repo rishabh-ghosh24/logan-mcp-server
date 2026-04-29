@@ -128,7 +128,7 @@ Click **Save**, then start a new Codex session to connect.
 | **Query logs** | `run_query`, `run_batch_queries`, `run_saved_search` | Search logs, run multiple queries in parallel, execute saved searches |
 | **Triage diffs** | `diff_time_windows`, `pivot_on_entity`, `ingestion_health`, `parser_failure_triage`, `investigate_incident`, `investigate_and_generate_report`, `why_did_this_fire`, `find_rare_events`, `trace_request_id`, `related_dashboards_and_searches` | Compare a query across two time windows; pull all events for an entity across sources; probe per-source ingestion freshness; surface top parser failures; one-call first-cut investigation orchestrator; run investigation plus report generation; replay a Logan-managed alarm's historical fire window; surface low-frequency field values for a source; search common request-id / trace-id fields across sources; find existing dashboards and saved searches related to a source, entity, or field |
 | **Investigation playbooks** | `record_investigation`, `list_playbooks`, `get_playbook`, `delete_playbook` | Save the current session's audited tool calls as a named playbook, then list, fetch, or delete recorded playbooks |
-| **Reports** | `generate_incident_report`, `get_report_delivery_options`, `list_notification_topics`, `deliver_report` | Convert an investigation result into deterministic Markdown/HTML, then generate a PDF and deliver it through Telegram, ONS email-topic summary, or optional Slack summary |
+| **Reports** | `generate_incident_report`, `get_incident_report`, `list_incident_reports`, `get_report_delivery_options`, `get_report_storage_options`, `list_report_buckets`, `deliver_report` | Convert an investigation result into persisted Markdown/HTML, then deliver summaries and optional full-report Object Storage links through Telegram, ONS email, or Slack |
 | **Explore schema** | `list_log_sources`, `list_fields`, `list_entities`, `list_parsers`, `list_labels` | Discover what log data is available |
 | **Onboard sources** | `create_log_source_from_sample` | Generate a JSON/NDJSON, CSV, or regex-text parser and source from sample logs, upload the sample workload, and verify parse failures |
 | **Visualize** | `visualize` | Generate pie, bar, line, area, table, tile, treemap, heatmap, histogram charts |
@@ -347,7 +347,7 @@ P0 behavior:
 
 ### `generate_incident_report` — deterministic incident report
 
-Convert an `investigate_incident` response into a deterministic Markdown incident report, with optional HTML rendering:
+Convert an `investigate_incident` response into a deterministic incident report:
 
 ```json
 {
@@ -361,17 +361,17 @@ Convert an `investigate_incident` response into a deterministic Markdown inciden
 }
 ```
 
-Returns `{report_id, markdown, html, metadata, artifacts}`. Markdown is always returned. `html` is populated only when `format="html"`.
+Returns `{report_id, markdown, html, metadata, artifacts}`. Markdown and HTML are generated and persisted by default under `~/.oci-logan-mcp/reports/store/rpt_<id>/` as `report.md`, `report.html`, and `metadata.json`.
 
-P0 behavior:
+Behavior:
 - Template-first and deterministic; no internal LLM provider is called.
 - Source is an A1 `InvestigationReport` object only.
-- `report_id` is returned for correlation only; reports are not persisted in P0.
+- `report_id` can be passed to `get_incident_report`, `list_incident_reports`, and `deliver_report`.
 - The response includes `delivery_options.email` with the OCI Notifications email workflow, any saved per-user topic, and any server-configured default topic.
 - Supported sections are `executive_summary`, `timeline`, `top_findings`, `evidence`, `recommended_next_steps`, and `appendix`.
-- Playbook-run reports and session-id reports are deferred. To deliver a report, pass the returned `markdown` to `deliver_report`; do not pass `report_id` in P0.
+- PDF is generated on demand for delivery formats that need it.
 
-### `get_report_delivery_options` and `list_notification_topics`
+### `get_report_delivery_options`, `get_report_storage_options`, and discovery
 
 After report generation, ask:
 
@@ -384,6 +384,8 @@ If the user says yes, use `get_report_delivery_options` or the report's returned
 
 `list_notification_topics` defaults to the current compartment and accessible subcompartments, and can be scoped with `compartment_id`, `include_subcompartments`, and `lifecycle_state`.
 
+For full-report links in ONS email, use `get_report_storage_options` and `list_report_buckets`. Save the chosen bucket with `remember_preference` using key `report.artifact_bucket` and value `{"namespace":"<ns>","bucket":"<bucket>","compartment_id":"<compartment>"}`. Bucket creation is available through `create_report_bucket` and requires confirmation.
+
 ### `deliver_report` — PDF + Telegram / ONS / Slack delivery
 
 Deliver generated report Markdown to the channels users already monitor. Telegram is the default IM path and receives the full PDF when `format` is `pdf` or `both`.
@@ -393,7 +395,7 @@ Deliver generated report Markdown to the channels users already monitor. Telegra
   "tool": "deliver_report",
   "report": {
     "title": "Apache error investigation",
-    "markdown": "# Incident Report\n\n## Executive Summary\nApache errors spiked..."
+    "report_id": "rpt_0123456789abcdef0123456789abcdef"
   },
   "channels": ["telegram", "email"],
   "format": "both",
@@ -406,13 +408,14 @@ Deliver generated report Markdown to the channels users already monitor. Telegra
 
 Returns `{status, delivered, pdf_path}`. `status` is `sent`, `partial`, or `failed` depending on per-channel results. `delivered[]` contains one row per requested channel with `{channel, status, message_id, artifact, recipient, error?}`.
 
-P0 behavior:
-- Input is inline report Markdown only: `report.markdown` is required. `report_id` lookup is deferred until reports are persisted.
+Behavior:
+- Input accepts either inline `report.markdown` or a persisted `report.report_id`; providing both is rejected.
 - `format="pdf"` generates a local PDF and sends it to Telegram as a document. Email and Slack receive the inline summary.
 - `format="markdown"` skips PDF generation and sends inline summaries/messages only.
 - `format="both"` sends the PDF to Telegram and inline summaries to email/Slack.
 - Telegram uploads are rejected before send if the PDF exceeds the 50 MB Bot API document limit.
-- ONS email delivery publishes an inline Markdown/plaintext summary to an OCI Notifications topic. ONS does not attach the PDF and no Object Storage/PAR link is generated in P0.
+- ONS email delivery publishes a plaintext-readable summary to an OCI Notifications topic. If `report.artifact_bucket` is configured, `deliver_report` uploads stored `report.md` and `report.html`, then creates fresh object-scoped PAR links for that delivery.
+- PAR expiry defaults to 7 days and is capped at 30 days via `report_delivery.object_storage.par_expiry_days`.
 - If email is requested and `recipients.email_topic_ocid` is omitted, `deliver_report` reuses the current user's saved report topic, then the server-configured `notifications.ons.default_topic_ocid`. Successful email delivery saves the effective topic as the user's future default.
 - The assistant/client must still ask for explicit final confirmation before calling `deliver_report`; topic reuse only removes repeated topic selection.
 - Slack is optional and summary-only via the existing webhook integration. This is suitable for testing with a private/free Slack registration before later Oracle Slack workspace rollout.
@@ -432,6 +435,8 @@ notifications:
 report_delivery:
   artifact_dir: "/home/opc/.oci-logan-mcp/reports"
   max_email_body_chars: 8000
+  object_storage:
+    par_expiry_days: 7
 ```
 
 Environment overrides:
@@ -605,6 +610,7 @@ Allow dynamic-group logan-mcp-dg to read compartments in tenancy
 Allow dynamic-group logan-mcp-dg to manage alarms in tenancy
 Allow dynamic-group logan-mcp-dg to read metrics in tenancy
 Allow dynamic-group logan-mcp-dg to manage ons-topics in tenancy
+Allow dynamic-group logan-mcp-dg to manage object-family in compartment <reports-compartment>
 Allow dynamic-group logan-mcp-dg to use streams in tenancy
 ```
 
@@ -674,7 +680,7 @@ of executing:
 - `create_alert`, `update_alert`, `delete_alert`
 - `create_saved_search`, `update_saved_search`, `delete_saved_search`
 - `create_dashboard`, `add_dashboard_tile`, `delete_dashboard`
-- `create_log_source_from_sample`
+- `create_log_source_from_sample`, `create_report_bucket`
 - `send_to_slack`, `send_to_telegram`, `deliver_report`
 - `set_compartment`, `set_namespace`, `update_tenancy_context`
 - `save_learned_query`, `remember_preference`, `setup_confirmation_secret`

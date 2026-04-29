@@ -46,6 +46,7 @@ class DiffTool:
         current_window: Dict[str, str],
         comparison_window: Dict[str, str],
         dimensions: Optional[List[str]] = None,
+        budget_override: bool = False,
     ) -> Dict[str, Any]:
         reused_breakout = False
         if dimensions is None:
@@ -57,8 +58,16 @@ class DiffTool:
         # the query already aggregates. Otherwise compose the stats pipe.
         composed = query if reused_breakout else self._compose_query(query, effective_dims)
 
-        current_task = self._engine.execute(query=composed, **current_window)
-        comparison_task = self._engine.execute(query=composed, **comparison_window)
+        current_task = self._engine.execute(
+            query=composed,
+            budget_override=budget_override,
+            **current_window,
+        )
+        comparison_task = self._engine.execute(
+            query=composed,
+            budget_override=budget_override,
+            **comparison_window,
+        )
         current_res, comparison_res = await asyncio.gather(current_task, comparison_task)
 
         current_rows = self._extract_rows(current_res, effective_dims)

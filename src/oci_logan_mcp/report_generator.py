@@ -64,9 +64,7 @@ class ReportGenerator:
             parts.append("")
         markdown = "\n".join(parts).strip() + "\n"
 
-        html_output = None
-        if output_format == "html":
-            html_output = self._render_html(markdown)
+        html_output = self._render_html(markdown)
 
         return {
             "report_id": report_id,
@@ -78,6 +76,9 @@ class ReportGenerator:
                 "summary_length": summary_length,
                 "included_sections": sections,
                 "word_count": len(re.findall(r"\b\w+\b", markdown)),
+                "partial": bool(investigation.get("partial", False)),
+                "partial_reasons": investigation.get("partial_reasons") or [],
+                "completeness": investigation.get("completeness"),
             },
             "artifacts": [],
         }
@@ -122,7 +123,7 @@ class ReportGenerator:
 
         if investigation.get("partial"):
             reasons = ", ".join(investigation.get("partial_reasons") or ["unknown"])
-            sentences.append(f"Partial investigation: {reasons}.")
+            sentences.insert(0, f"Partial investigation: {reasons}.")
 
         anomalous = investigation.get("anomalous_sources") or []
         if anomalous:

@@ -13,6 +13,7 @@ from typing import Any, Dict, List, Optional, Set, Tuple
 from .budget_tracker import BudgetExceededError
 from .time_parser import TIME_RANGES
 from . import next_steps as _next_steps
+from .investigation_recipes import InvestigationProbe, select_recipe
 
 
 def _extract_seed_filter(query: str) -> str:
@@ -224,6 +225,16 @@ def _utcnow() -> datetime:
 TOP_K_MIN = 1
 TOP_K_MAX = 3
 TIMELINE_CAP = 50
+BASE_PHASE_QUERY_COUNT = 6  # seed + J1 + J2 stats/samples + A2 current/comparison
+PER_SOURCE_QUERY_COUNT = 5  # cluster + 3 entity probes + timeline
+PHASE_ORDER = [
+    "seed",
+    "ingestion_health",
+    "parser_failures",
+    "diff",
+    "per_source_drilldown",
+    "next_steps",
+]
 
 # Entity discovery uses the same field names as pivot_tool's ENTITY_FIELD_MAP,
 # but A1 P0 uses only three (ip deferred to P1 to bound per-source query count).
@@ -318,12 +329,129 @@ def _parse_timeline_response(response: Dict[str, Any]) -> List[Dict[str, Any]]:
     return out
 
 
-async def _drill_down_one_source(
+def _parse_recipe_probe_response(
+    probe: InvestigationProbe,
+    response: Dict[str, Any],
+) -> Dict[str, Any]:
+    data = response.get("data", {}) or {}
+    columns = [c.get("name") for c in data.get("columns", []) or []]
+    rows = data.get("rows", []) or []
+    return {
+        "probe": probe.name,
+        "columns": columns,
+        "rows": rows[:10],
+    }
+
+
+async def _get_source_field_names(
+    schema_manager,
+    source: str,
+    field_cache: Optional[Dict[str, Optional[Set[str]]]],
+) -> Optional[Set[str]]:
+    if schema_manager is None:
+        return None
+    if field_cache is not None and source in field_cache:
+        return field_cache[source]
+    try:
+        fields = await schema_manager.get_fields(source_name=source)
+    except Exception:
+        names = None
+    else:
+        names = set()
+        for field in fields or []:
+            if isinstance(field, dict):
+                name = field.get("name")
+            else:
+                name = getattr(field, "name", None)
+            if name:
+                names.add(str(name))
+    if field_cache is not None:
+        field_cache[source] = names
+    return names
+
+
+async def _run_recipe_probes(
+    *,
     engine,
+    schema_manager,
     source: str,
     seed_filter: str,
     time_range: str,
     compartment_id: Optional[str],
+    budget_override: bool,
+    field_cache: Optional[Dict[str, Optional[Set[str]]]],
+) -> Dict[str, Any]:
+    recipe = select_recipe(source)
+    result = {
+        "recipe_id": None,
+        "recipe_evidence": [],
+        "skipped_probes": [],
+        "errors": [],
+        "infra_error": False,
+    }
+    if recipe is None:
+        return result
+
+    result["recipe_id"] = recipe.recipe_id
+    field_names = await _get_source_field_names(schema_manager, source, field_cache)
+
+    for probe in recipe.probes:
+        if field_names is None and probe.required_fields:
+            result["skipped_probes"].append({
+                "source": source,
+                "recipe_id": recipe.recipe_id,
+                "probe": probe.name,
+                "reason": "field_validation_unavailable",
+            })
+            continue
+
+        missing = [
+            field for field in probe.required_fields
+            if field_names is not None and field not in field_names
+        ]
+        if missing:
+            result["skipped_probes"].append({
+                "source": source,
+                "recipe_id": recipe.recipe_id,
+                "probe": probe.name,
+                "reason": f"field_unavailable: {missing[0]}",
+            })
+            continue
+
+        probe_query = _compose_source_scoped_query(
+            seed_filter, source, probe.query_tail,
+        )
+        try:
+            probe_resp = await engine.execute(
+                query=probe_query,
+                time_range=time_range,
+                compartment_id=compartment_id,
+                budget_override=budget_override,
+            )
+        except BudgetExceededError:
+            raise
+        except Exception as e:
+            result["errors"].append(
+                f"recipe[{probe.name}]: {type(e).__name__}: {e}"
+            )
+            result["infra_error"] = True
+            continue
+
+        result["recipe_evidence"].append(
+            _parse_recipe_probe_response(probe, probe_resp)
+        )
+    return result
+
+
+async def _drill_down_one_source(
+    engine,
+    schema_manager,
+    source: str,
+    seed_filter: str,
+    time_range: str,
+    compartment_id: Optional[str],
+    budget_override: bool = False,
+    field_cache: Optional[Dict[str, Optional[Set[str]]]] = None,
 ) -> Dict[str, Any]:
     """Run cluster + entity discovery + timeline for a single source, sequentially.
 
@@ -350,7 +478,27 @@ async def _drill_down_one_source(
         "entity_discovery_partial": False,
         "timeline_omitted": False,
         "infra_error": False,
+        "recipe_id": None,
+        "recipe_evidence": [],
+        "skipped_probes": [],
     }
+
+    recipe_result = await _run_recipe_probes(
+        engine=engine,
+        schema_manager=schema_manager,
+        source=source,
+        seed_filter=seed_filter,
+        time_range=time_range,
+        compartment_id=compartment_id,
+        budget_override=budget_override,
+        field_cache=field_cache,
+    )
+    result["recipe_id"] = recipe_result["recipe_id"]
+    result["recipe_evidence"] = recipe_result["recipe_evidence"]
+    result["skipped_probes"] = recipe_result["skipped_probes"]
+    result["errors"].extend(recipe_result["errors"])
+    if recipe_result["infra_error"]:
+        result["infra_error"] = True
 
     # Cluster — any non-Budget failure is infrastructure. Record it but
     # don't abort the branch; entity/timeline may still succeed.
@@ -359,7 +507,10 @@ async def _drill_down_one_source(
     )
     try:
         cluster_resp = await engine.execute(
-            query=cluster_query, time_range=time_range, compartment_id=compartment_id,
+            query=cluster_query,
+            time_range=time_range,
+            compartment_id=compartment_id,
+            budget_override=budget_override,
         )
         result["top_error_clusters"] = _parse_cluster_response(cluster_resp)
     except BudgetExceededError:
@@ -377,7 +528,10 @@ async def _drill_down_one_source(
         )
         try:
             entity_resp = await engine.execute(
-                query=entity_query, time_range=time_range, compartment_id=compartment_id,
+                query=entity_query,
+                time_range=time_range,
+                compartment_id=compartment_id,
+                budget_override=budget_override,
             )
             result["top_entities"].extend(
                 _select_top_entities(entity_resp, entity_type, field_name)
@@ -406,7 +560,10 @@ async def _drill_down_one_source(
     )
     try:
         tl_resp = await engine.execute(
-            query=timeline_query, time_range=time_range, compartment_id=compartment_id,
+            query=timeline_query,
+            time_range=time_range,
+            compartment_id=compartment_id,
+            budget_override=budget_override,
         )
         result["timeline"] = _parse_timeline_response(tl_resp)
     except BudgetExceededError:
@@ -429,7 +586,14 @@ def _templated_summary(acc: Dict[str, Any]) -> str:
     parse_count = int((acc.get("parser_failures") or {}).get("total_failure_count", 0) or 0)
     anomalous = acc.get("anomalous_sources") or []
 
-    parts = [f"Investigated {scope} over {time_range}."]
+    reasons = acc.get("partial_reasons") or set()
+    if reasons:
+        parts = [
+            f"Partial investigation over {time_range}: {', '.join(sorted(reasons))}.",
+            f"Completed phases investigated {scope}.",
+        ]
+    else:
+        parts = [f"Investigated {scope} over {time_range}."]
     if anomalous:
         top = anomalous[0]
         parts.append(
@@ -437,18 +601,130 @@ def _templated_summary(acc: Dict[str, Any]) -> str:
             f"pct_change={top.get('pct_change')})."
         )
     else:
-        parts.append("No anomalous sources detected.")
+        if reasons:
+            parts.append("No anomalous sources detected in completed phases.")
+        else:
+            parts.append("No anomalous sources detected.")
 
     if stopped:
         parts.append(f"J1 flags {stopped} stopped source(s).")
     if parse_count:
         parts.append(f"J2 reports {parse_count} parse failure(s).")
 
-    reasons = acc.get("partial_reasons") or set()
-    if reasons:
-        parts.append(f"Result is partial: {', '.join(sorted(reasons))}.")
-
     return " ".join(parts)
+
+
+def _estimate_plan(top_k: int) -> Dict[str, Any]:
+    query_count = BASE_PHASE_QUERY_COUNT + (top_k * PER_SOURCE_QUERY_COUNT)
+    return {
+        "queries": query_count,
+        "bytes": 0,
+        "cost_usd": 0.0,
+        "confidence": "query_count_only",
+        "phases": list(PHASE_ORDER),
+    }
+
+
+async def _estimate_plan_for_scope(
+    engine,
+    query: str,
+    seed_filter: str,
+    time_range: str,
+    top_k: int,
+    compartment_id: Optional[str],
+) -> Dict[str, Any]:
+    plan = _estimate_plan(top_k)
+    estimator = getattr(engine, "estimator", None)
+    if estimator is None:
+        return plan
+
+    estimated_bytes = 0
+    estimated_cost = 0.0
+
+    async def add_estimate(query_text: str, multiplier: int = 1) -> None:
+        nonlocal estimated_bytes, estimated_cost
+        try:
+            estimate = await estimator.estimate(
+                query=query_text,
+                time_range=time_range,
+                compartment_id=compartment_id,
+            )
+        except Exception:
+            return
+        estimated_bytes += int(getattr(estimate, "estimated_bytes", 0) or 0) * multiplier
+        estimated_cost += float(getattr(estimate, "estimated_cost_usd", 0.0) or 0.0) * multiplier
+
+    await add_estimate(query)
+    ranking_query = (
+        "* | stats count as n by 'Log Source'"
+        if seed_filter == "*"
+        else f"{seed_filter} | stats count as n by 'Log Source'"
+    )
+    await add_estimate(ranking_query, multiplier=2)
+
+    try:
+        sources = list(estimator._extract_sources(query))  # type: ignore[attr-defined]
+    except Exception:
+        sources = []
+    for source in sources[:top_k]:
+        source_query = _compose_source_scoped_query(seed_filter, source, "cluster")
+        await add_estimate(source_query, multiplier=PER_SOURCE_QUERY_COUNT)
+
+    plan["bytes"] = estimated_bytes
+    plan["cost_usd"] = round(estimated_cost, 4)
+    plan["confidence"] = "query_count_and_estimator"
+    return plan
+
+
+def _plan_exceeds_budget(
+    estimated_plan: Dict[str, Any],
+    remaining_budget: Dict[str, Any],
+) -> bool:
+    return (
+        estimated_plan.get("queries", 0) > remaining_budget.get("queries", 0)
+        or estimated_plan.get("bytes", 0) > remaining_budget.get("bytes", 0)
+        or float(estimated_plan.get("cost_usd", 0.0) or 0.0)
+        > float(remaining_budget.get("cost_usd", 0.0) or 0.0)
+    )
+
+
+def _budget_decision_payload(
+    *,
+    query: str,
+    time_range: str,
+    top_k: int,
+    compartment_id: Optional[str],
+    estimated_plan: Dict[str, Any],
+    remaining_budget: Dict[str, Any],
+) -> Dict[str, Any]:
+    return {
+        "status": "needs_budget_decision",
+        "requested_scope": {
+            "query": query,
+            "time_range": time_range,
+            "top_k": top_k,
+            "compartment_id": compartment_id,
+        },
+        "estimated_plan": estimated_plan,
+        "remaining_budget": remaining_budget,
+        "options": [
+            {
+                "id": "narrow_time",
+                "time_range": "last_1_hour",
+                "estimated_plan": _estimate_plan(top_k),
+            },
+            {
+                "id": "narrow_topk",
+                "top_k": 1,
+                "estimated_plan": _estimate_plan(1),
+            },
+            {
+                "id": "override",
+                "requires_confirmation": True,
+                "description": "Run the complete requested investigation with budget_override=true.",
+            },
+        ],
+    }
 
 
 class InvestigateIncidentTool:
@@ -484,6 +760,8 @@ class InvestigateIncidentTool:
         time_range: str = "last_1_hour",
         top_k: int = 3,
         compartment_id: Optional[str] = None,
+        budget_override: bool = False,
+        dry_run: bool = False,
     ) -> Dict[str, Any]:
         if top_k < TOP_K_MIN or top_k > TOP_K_MAX:
             raise ValueError(
@@ -491,6 +769,44 @@ class InvestigateIncidentTool:
             )
 
         seed_filter = _extract_seed_filter(query)
+        estimated_plan = await _estimate_plan_for_scope(
+            self._engine,
+            query,
+            seed_filter,
+            time_range,
+            top_k,
+            compartment_id,
+        )
+        remaining_budget = self._budget.remaining() if self._budget else {}
+        exceeds_budget = bool(
+            self._budget
+            and self._budget.limits.enabled
+            and not budget_override
+            and _plan_exceeds_budget(estimated_plan, remaining_budget)
+        )
+        if dry_run:
+            return {
+                "status": "planned",
+                "requested_scope": {
+                    "query": query,
+                    "time_range": time_range,
+                    "top_k": top_k,
+                    "compartment_id": compartment_id,
+                },
+                "estimated_plan": estimated_plan,
+                "remaining_budget": remaining_budget,
+                "would_require_budget_decision": exceeds_budget,
+            }
+        if exceeds_budget:
+            return _budget_decision_payload(
+                query=query,
+                time_range=time_range,
+                top_k=top_k,
+                compartment_id=compartment_id,
+                estimated_plan=estimated_plan,
+                remaining_budget=remaining_budget,
+            )
+
         acc: Dict[str, Any] = {
             "seed": {
                 "query": query,
@@ -507,8 +823,12 @@ class InvestigateIncidentTool:
             "per_source": {},
             "partial_reasons": set(),
             "source_errors": [],
+            "recipes_used": [],
+            "skipped_probes": [],
             "start_time": _utcnow(),
             "budget_snapshot": None,
+            "phases_completed": [],
+            "estimated_plan": estimated_plan,
         }
         try:
             # Phase 1: seed query (result stored for subsequent phases).
@@ -516,12 +836,16 @@ class InvestigateIncidentTool:
                 query=query,
                 time_range=time_range,
                 compartment_id=compartment_id,
+                budget_override=budget_override,
             )
+            acc["phases_completed"].append("seed")
             # Phase 2 — J1 freshness snapshot (configured probe window, not investigation window)
             j1_snapshot = await self._ih_tool.run(
                 compartment_id=compartment_id,
                 severity_filter="all",
+                budget_override=budget_override,
             )
+            acc["phases_completed"].append("ingestion_health")
             probe_window = self._settings.ingestion_health.freshness_probe_window
             acc["ingestion_health"] = {
                 "snapshot": j1_snapshot,
@@ -538,7 +862,9 @@ class InvestigateIncidentTool:
                 time_range=time_range,
                 top_n=10,
                 compartment_id=compartment_id,
+                budget_override=budget_override,
             )
+            acc["phases_completed"].append("parser_failures")
             # Phase 4 — A2 anomaly ranking with anchored windows
             anchor = _utcnow()
             current_w, comparison_w = _compute_windows(time_range, anchor)
@@ -556,8 +882,10 @@ class InvestigateIncidentTool:
                 query=ranking_query,
                 current_window=current_w,
                 comparison_window=comparison_w,
+                budget_override=budget_override,
             )
             acc["diff"] = diff_result
+            acc["phases_completed"].append("diff")
 
             # Identify stopped sources from J1 to exclude from ranking.
             stopped: Set[str] = set()
@@ -591,11 +919,19 @@ class InvestigateIncidentTool:
             # Phases 5+6 — per-source drill-down under Semaphore(2)
             sem = asyncio.Semaphore(PER_SOURCE_CONCURRENCY)
             sources_list = [s["source"] for s in acc["anomalous_sources"]]
+            field_cache: Dict[str, Optional[Set[str]]] = {}
 
             async def bounded(source_name: str):
                 async with sem:
                     return await _drill_down_one_source(
-                        self._engine, source_name, seed_filter, time_range, compartment_id,
+                        self._engine,
+                        self._schema,
+                        source_name,
+                        seed_filter,
+                        time_range,
+                        compartment_id,
+                        budget_override=budget_override,
+                        field_cache=field_cache,
                     )
 
             results = await asyncio.gather(
@@ -626,6 +962,15 @@ class InvestigateIncidentTool:
                 ps["top_entities"] = branch_result["top_entities"]
                 ps["timeline"] = branch_result["timeline"]
                 ps["errors"].extend(branch_result["errors"])
+                ps["recipe_id"] = branch_result.get("recipe_id")
+                ps["recipe_evidence"] = branch_result.get("recipe_evidence", [])
+                ps["skipped_probes"] = branch_result.get("skipped_probes", [])
+                if branch_result.get("recipe_id"):
+                    acc["recipes_used"].append({
+                        "source": source_name,
+                        "recipe_id": branch_result["recipe_id"],
+                    })
+                acc["skipped_probes"].extend(branch_result.get("skipped_probes", []))
                 if branch_result["entity_discovery_partial"]:
                     acc["partial_reasons"].add("entity_discovery_partial")
                 if branch_result["timeline_omitted"]:
@@ -634,11 +979,13 @@ class InvestigateIncidentTool:
                 # inside a per-phase try — maps to source_errors.
                 if branch_result["infra_error"]:
                     acc["partial_reasons"].add("source_errors")
+            acc["phases_completed"].append("per_source_drilldown")
             # Phase 7 — next_steps suggestions from the seed result
             acc["next_steps"] = [
                 step.to_dict()
                 for step in _next_steps.suggest(query, acc.get("seed_result") or {})
             ]
+            acc["phases_completed"].append("next_steps")
         except BudgetExceededError:
             acc["partial_reasons"].add("budget_exceeded")
         return _finalize(acc, self._budget)
@@ -660,6 +1007,9 @@ def _finalize(acc: Dict[str, Any], budget_tracker) -> Dict[str, Any]:
         entry["top_entities"] = ps.get("top_entities", [])
         entry["timeline"] = ps.get("timeline")
         entry["errors"] = ps.get("errors", [])
+        entry["recipe_id"] = ps.get("recipe_id")
+        entry["recipe_evidence"] = ps.get("recipe_evidence", [])
+        entry["skipped_probes"] = ps.get("skipped_probes", [])
         anomalous_list.append(entry)
 
     # Cross-source timeline built from per-source dict.
@@ -677,8 +1027,20 @@ def _finalize(acc: Dict[str, Any], budget_tracker) -> Dict[str, Any]:
         "anomalous_sources": anomalous_list,
         "cross_source_timeline": cross_source,
         "next_steps": acc.get("next_steps") or [],
+        "recipes_used": acc.get("recipes_used") or [],
+        "skipped_probes": acc.get("skipped_probes") or [],
         "budget": budget_snap,
         "partial": bool(reasons),
         "partial_reasons": reasons,
+        "completeness": {
+            "status": "partial" if reasons else "complete",
+            "reasons": reasons,
+            "phases_completed": list(acc.get("phases_completed") or []),
+            "phases_skipped": [
+                phase for phase in PHASE_ORDER
+                if phase not in set(acc.get("phases_completed") or [])
+            ],
+        },
+        "estimated_plan": acc.get("estimated_plan") or {},
         "elapsed_seconds": round(elapsed, 3),
     }

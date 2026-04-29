@@ -578,6 +578,32 @@ def get_tools() -> List[Dict[str, Any]]:
                         "type": "string",
                         "description": "Optional compartment OCID. Uses default if not specified.",
                     },
+                    "dry_run": {
+                        "type": "boolean",
+                        "description": (
+                            "Return planned phases and estimated query budget "
+                            "without executing the investigation. Default: false."
+                        ),
+                        "default": False,
+                    },
+                    "budget_override": {
+                        "type": "boolean",
+                        "description": (
+                            "Run the complete requested investigation even when "
+                            "the preflight estimate exceeds the remaining session "
+                            "budget. Requires confirmation_token and "
+                            "confirmation_secret."
+                        ),
+                        "default": False,
+                    },
+                    "confirmation_token": {
+                        "type": "string",
+                        "description": "Server-generated confirmation token required when budget_override=true.",
+                    },
+                    "confirmation_secret": {
+                        "type": "string",
+                        "description": "User confirmation secret required when budget_override=true.",
+                    },
                 },
                 "required": ["query"],
             },
@@ -620,6 +646,33 @@ def get_tools() -> List[Dict[str, Any]]:
                     "compartment_id": {
                         "type": "string",
                         "description": "Optional compartment OCID. Uses default if not specified.",
+                    },
+                    "dry_run": {
+                        "type": "boolean",
+                        "description": (
+                            "Return the investigation plan and estimated query "
+                            "budget without running A1 or generating a report. "
+                            "Default: false."
+                        ),
+                        "default": False,
+                    },
+                    "budget_override": {
+                        "type": "boolean",
+                        "description": (
+                            "Run the complete requested investigation even when "
+                            "the preflight estimate exceeds the remaining session "
+                            "budget. Requires confirmation_token and "
+                            "confirmation_secret."
+                        ),
+                        "default": False,
+                    },
+                    "confirmation_token": {
+                        "type": "string",
+                        "description": "Server-generated confirmation token required when budget_override=true.",
+                    },
+                    "confirmation_secret": {
+                        "type": "string",
+                        "description": "User confirmation secret required when budget_override=true.",
                     },
                     "format": {
                         "type": "string",
@@ -722,6 +775,100 @@ def get_tools() -> List[Dict[str, Any]]:
             "inputSchema": {"type": "object", "properties": {}},
         },
         {
+            "name": "get_incident_report",
+            "description": (
+                "Retrieve a persisted incident report by report_id, including "
+                "Markdown, HTML, metadata, and local artifact paths."
+            ),
+            "inputSchema": {
+                "type": "object",
+                "required": ["report_id"],
+                "properties": {
+                    "report_id": {
+                        "type": "string",
+                        "description": "Persisted report id such as rpt_<32 hex chars>.",
+                    },
+                },
+            },
+        },
+        {
+            "name": "get_report_storage_options",
+            "description": (
+                "Return saved OCI Object Storage report bucket preference and "
+                "PAR expiry defaults for full-report links."
+            ),
+            "inputSchema": {"type": "object", "properties": {}},
+        },
+        {
+            "name": "list_report_buckets",
+            "description": (
+                "List OCI Object Storage buckets available for persisted report "
+                "artifact delivery. Use this before saving report.artifact_bucket."
+            ),
+            "inputSchema": {
+                "type": "object",
+                "properties": {
+                    "compartment_id": {
+                        "type": "string",
+                        "description": "Optional compartment OCID. Defaults to current Log Analytics compartment.",
+                    },
+                    "include_subcompartments": {
+                        "type": "boolean",
+                        "description": "When true, searches accessible subcompartments. Default: true.",
+                        "default": True,
+                    },
+                },
+            },
+        },
+        {
+            "name": "create_report_bucket",
+            "description": (
+                "Create an OCI Object Storage bucket for report artifacts and "
+                "save it as report.artifact_bucket. TWO-FACTOR CONFIRMATION "
+                "REQUIRED."
+            ),
+            "destructive": True,
+            "inputSchema": {
+                "type": "object",
+                "required": ["compartment_id", "bucket"],
+                "properties": {
+                    "compartment_id": {
+                        "type": "string",
+                        "description": "Compartment OCID where the bucket should be created.",
+                    },
+                    "bucket": {
+                        "type": "string",
+                        "description": "New bucket name.",
+                    },
+                    "namespace": {
+                        "type": "string",
+                        "description": "Optional Object Storage namespace. Auto-detected if omitted.",
+                    },
+                    "confirmation_token": {"type": "string"},
+                    "confirmation_secret": {"type": "string"},
+                },
+            },
+        },
+        {
+            "name": "list_incident_reports",
+            "description": (
+                "List recently persisted incident reports so a client can choose "
+                "one for retrieval or delivery."
+            ),
+            "inputSchema": {
+                "type": "object",
+                "properties": {
+                    "limit": {
+                        "type": "integer",
+                        "minimum": 1,
+                        "maximum": 100,
+                        "description": "Maximum reports to return. Default: 20.",
+                        "default": 20,
+                    },
+                },
+            },
+        },
+        {
             "name": "list_notification_topics",
             "description": (
                 "List OCI Notifications topics available for report email delivery. "
@@ -762,8 +909,8 @@ def get_tools() -> List[Dict[str, Any]]:
                 "and the email channel is requested, the server reuses the current "
                 "user's saved report topic, then the configured ONS default. A "
                 "successful email send saves the topic as the user's future "
-                "default. P0 accepts inline markdown report content only; "
-                "report_id lookup is deferred until report persistence exists."
+                "default. The report payload accepts either inline markdown "
+                "content or a persisted report_id; providing both is rejected."
             ),
             "inputSchema": {
                 "type": "object",
@@ -771,9 +918,9 @@ def get_tools() -> List[Dict[str, Any]]:
                 "properties": {
                     "report": {
                         "type": "object",
-                        "required": ["markdown"],
                         "properties": {
                             "markdown": {"type": "string"},
+                            "report_id": {"type": "string"},
                             "title": {"type": "string"},
                         },
                     },

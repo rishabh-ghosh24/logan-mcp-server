@@ -21,6 +21,16 @@ Do not use this file for:
 
 ## Open Follow-ups
 
+### Investigation Reliability + Report Delivery
+
+Source: review on `feat/investigation-reliability-report-links`
+
+- `IRR-F1` — Deepen built-in investigation recipe coverage beyond the current v1 family fallbacks. Add more source-specific probes for Kubernetes kubelet / pod-object / OKE control-plane sources, Linux audit / syslog / secure / cron, ExaWatcher Meminfo / VMStat, and Exadata Metrics.
+- `IRR-F2` — Broaden report email section matching beyond exact aliases. Current extraction handles common `Summary` / `Findings` aliases; add prefix or token-overlap matching so headings such as `Top Findings (Severity-Ordered)` still render as summaries instead of falling back to the raw 4000-character slice.
+- `IRR-F3` — Sweep non-critical silent error handling and logging. Add logging for corrupt `metadata.json` skipped by report listing, expose estimator uncertainty when A1 preflight cannot estimate bytes, and avoid broad exception catches where cancellation / process-interrupt semantics should propagate.
+- `IRR-F4` — Bound new Object Storage 429 retry loops. Current methods follow the existing recursive retry pattern; add explicit retry caps / backoff accounting so repeated 429s fail with a controlled error.
+- `IRR-F5` — Expand regression tests for recipe selection and Object Storage discovery edge cases. Cover the common source families listed above and make `list_report_buckets` distinguish missing IAM / unauthorized access from a genuine empty bucket list.
+
 ### Agent Guardrails
 
 #### L1 — Read-only mode

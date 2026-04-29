@@ -139,12 +139,14 @@ class ParserTriageTool:
         time_range: str = "last_24_hours",
         top_n: int = 20,
         compartment_id: Optional[str] = None,
+        budget_override: bool = False,
     ) -> Dict[str, Any]:
         stats_query = _build_stats_query(top_n)
         stats_resp = await self._engine.execute(
             query=stats_query,
             time_range=time_range,
             compartment_id=compartment_id,
+            budget_override=budget_override,
         )
         stats = _parse_stats_response(stats_resp)
 
@@ -160,6 +162,7 @@ class ParserTriageTool:
                 query=samples_query,
                 time_range=time_range,
                 compartment_id=compartment_id,
+                budget_override=budget_override,
             )
             samples = _parse_samples_response(samples_resp)
         except BudgetExceededError:
