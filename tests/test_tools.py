@@ -172,6 +172,8 @@ def test_generate_incident_report_schema():
     assert props["format"]["enum"] == ["markdown", "html"]
     assert props["summary_length"]["enum"] == ["short", "standard", "detailed"]
     assert "include_sections" in props
+    assert props["title"]["type"] == "string"
+    assert "title" not in schema.get("required", [])
 
 
 def test_investigation_intent_tooling_guides_full_workflow():
@@ -209,6 +211,8 @@ def test_investigate_and_generate_report_schema():
     assert props["summary_length"]["enum"] == ["short", "standard", "detailed"]
     assert "top_k" in props
     assert "include_sections" in props
+    assert props["title"]["type"] == "string"
+    assert "title" not in schema.get("required", [])
 
 
 def test_report_delivery_option_schemas():
@@ -225,14 +229,34 @@ def test_report_delivery_option_schemas():
     assert "lifecycle_state" in props
 
 
-def test_deliver_report_schema_is_markdown_first():
+def test_incident_report_read_tool_schemas():
+    tools = {t["name"]: t for t in get_tools()}
+
+    get_schema = tools["get_incident_report"]["inputSchema"]
+    assert get_schema["required"] == ["report_id"]
+    assert get_schema["properties"]["report_id"]["type"] == "string"
+
+    list_schema = tools["list_incident_reports"]["inputSchema"]
+    limit_schema = list_schema["properties"]["limit"]
+    assert "required" not in list_schema
+    assert limit_schema["type"] == "integer"
+    assert limit_schema["minimum"] == 1
+    assert limit_schema["maximum"] == 100
+    assert limit_schema["default"] == 20
+
+
+def test_deliver_report_schema_accepts_markdown_or_report_id():
     tools = {tool["name"]: tool for tool in get_tools()}
     schema = tools["deliver_report"]["inputSchema"]
     props = schema["properties"]
+    report_schema = props["report"]
 
     assert "report" in props
-    report_schema = props["report"]
-    assert report_schema["required"] == ["markdown"]
-    assert "report_id" not in report_schema["properties"]
+    assert schema["required"] == ["report"]
+    assert "required" not in report_schema or "markdown" not in report_schema["required"]
+    assert "markdown" in report_schema["properties"]
+    assert "report_id" in report_schema["properties"]
     assert props["channels"]["items"]["enum"] == ["telegram", "email", "slack"]
+    assert props["recipients"]["type"] == "object"
+    assert "email_topic_ocid" in props["recipients"]["properties"]
     assert props["format"]["enum"] == ["pdf", "markdown", "both"]

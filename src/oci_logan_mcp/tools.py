@@ -648,6 +648,10 @@ def get_tools() -> List[Dict[str, Any]]:
                         "description": "Executive summary sentence cap. Default: standard.",
                         "default": "standard",
                     },
+                    "title": {
+                        "type": "string",
+                        "description": "Optional display title for the stored incident report.",
+                    },
                 },
                 "required": ["query"],
             },
@@ -707,6 +711,10 @@ def get_tools() -> List[Dict[str, Any]]:
                         "description": "Executive summary sentence cap. Default: standard.",
                         "default": "standard",
                     },
+                    "title": {
+                        "type": "string",
+                        "description": "Optional display title for the stored incident report.",
+                    },
                 },
                 "required": ["investigation"],
             },
@@ -754,6 +762,36 @@ def get_tools() -> List[Dict[str, Any]]:
             },
         },
         {
+            "name": "get_incident_report",
+            "description": "Read a stored incident report by report_id, including markdown, paths, and metadata.",
+            "inputSchema": {
+                "type": "object",
+                "properties": {
+                    "report_id": {
+                        "type": "string",
+                        "description": "Stored report id such as rpt_0123456789abcdef0123456789abcdef.",
+                    },
+                },
+                "required": ["report_id"],
+            },
+        },
+        {
+            "name": "list_incident_reports",
+            "description": "List stored incident reports with local artifact paths.",
+            "inputSchema": {
+                "type": "object",
+                "properties": {
+                    "limit": {
+                        "type": "integer",
+                        "description": "Maximum reports to return, clamped to 100.",
+                        "minimum": 1,
+                        "maximum": 100,
+                        "default": 20,
+                    },
+                },
+            },
+        },
+        {
             "name": "deliver_report",
             "description": (
                 "Deliver a generated incident report via Telegram, Slack, or OCI "
@@ -762,8 +800,8 @@ def get_tools() -> List[Dict[str, Any]]:
                 "and the email channel is requested, the server reuses the current "
                 "user's saved report topic, then the configured ONS default. A "
                 "successful email send saves the topic as the user's future "
-                "default. P0 accepts inline markdown report content only; "
-                "report_id lookup is deferred until report persistence exists."
+                "default. Provide exactly one of inline markdown report content or "
+                "a stored report_id."
             ),
             "inputSchema": {
                 "type": "object",
@@ -771,9 +809,22 @@ def get_tools() -> List[Dict[str, Any]]:
                 "properties": {
                     "report": {
                         "type": "object",
-                        "required": ["markdown"],
+                        "description": (
+                            "Report content to deliver. Provide exactly one of "
+                            "markdown or report_id."
+                        ),
                         "properties": {
-                            "markdown": {"type": "string"},
+                            "markdown": {
+                                "type": "string",
+                                "description": "Inline markdown report content.",
+                            },
+                            "report_id": {
+                                "type": "string",
+                                "description": (
+                                    "Stored report id returned by generate_incident_report."
+                                ),
+                            },
+                            "metadata": {"type": "object"},
                             "title": {"type": "string"},
                         },
                     },
@@ -1659,14 +1710,27 @@ def get_tools() -> List[Dict[str, Any]]:
         },
         {
             "name": "delete_playbook",
-            "description": "Delete one recorded investigation playbook for the current user.",
+            "destructive": True,
+            "description": (
+                "Delete one recorded investigation playbook for the current user. "
+                "TWO-FACTOR CONFIRMATION REQUIRED: First call returns a confirmation token and summary. "
+                "To execute, re-invoke with confirmation_token and your confirmation secret."
+            ),
             "inputSchema": {
                 "type": "object",
                 "properties": {
                     "playbook_id": {
                         "type": "string",
                         "description": "Playbook id to delete.",
-                    }
+                    },
+                    "confirmation_token": {
+                        "type": "string",
+                        "description": "Server-generated token from the confirmation step. Omit on first call.",
+                    },
+                    "confirmation_secret": {
+                        "type": "string",
+                        "description": "Your confirmation secret. Required with token to execute. You MUST ask the user for this value each time — NEVER reuse a previously provided secret.",
+                    },
                 },
                 "required": ["playbook_id"],
             },

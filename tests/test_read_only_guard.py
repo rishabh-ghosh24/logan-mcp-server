@@ -2,11 +2,16 @@
 
 import pytest
 
+from oci_logan_mcp.confirmation import (
+    GUARDED_TOOLS,
+    NON_DESTRUCTIVE_MUTATION_EXEMPTIONS,
+)
 from oci_logan_mcp.read_only_guard import (
     MUTATING_TOOLS,
     ReadOnlyError,
     raise_if_read_only,
 )
+from oci_logan_mcp.tools import get_tools
 
 
 def test_mutating_tools_is_frozenset():
@@ -22,6 +27,7 @@ def test_mutating_tools_contains_known_writers():
         "save_learned_query",
         "remember_preference",
         "record_investigation",
+        "generate_incident_report",
         "delete_playbook",
         "create_alert",
         "update_alert",
@@ -52,8 +58,49 @@ def test_mutating_tools_excludes_readers():
         "export_results",
         "list_playbooks",
         "get_playbook",
+        "get_incident_report",
+        "list_incident_reports",
     }
     assert readers.isdisjoint(MUTATING_TOOLS)
+
+
+def test_every_mutating_tool_is_guarded_or_named_exempt():
+    unclassified = (
+        MUTATING_TOOLS
+        - GUARDED_TOOLS
+        - set(NON_DESTRUCTIVE_MUTATION_EXEMPTIONS)
+    )
+
+    assert unclassified == set()
+
+
+def test_every_registered_delete_tool_is_classified_mutating():
+    registered_delete_tools = {
+        tool["name"] for tool in get_tools() if tool["name"].startswith("delete_")
+    }
+
+    assert registered_delete_tools <= MUTATING_TOOLS
+
+
+def test_every_registered_delete_tool_is_guarded_unless_explicitly_exempt():
+    registered_delete_tools = {
+        tool["name"] for tool in get_tools() if tool["name"].startswith("delete_")
+    }
+    unguarded = registered_delete_tools - GUARDED_TOOLS - set(
+        NON_DESTRUCTIVE_MUTATION_EXEMPTIONS
+    )
+
+    assert unguarded == set()
+
+
+def test_every_registered_update_tool_is_classified_mutating_or_exempt():
+    registered_update_tools = {
+        tool["name"] for tool in get_tools() if tool["name"].startswith("update_")
+    }
+
+    assert registered_update_tools <= MUTATING_TOOLS | set(
+        NON_DESTRUCTIVE_MUTATION_EXEMPTIONS
+    )
 
 
 def test_raise_if_read_only_allows_non_mutating_when_enabled():
@@ -69,6 +116,13 @@ def test_raise_if_read_only_blocks_mutating_when_enabled():
     with pytest.raises(ReadOnlyError) as exc:
         raise_if_read_only("delete_alert", read_only=True)
     assert "delete_alert" in str(exc.value)
+    assert "read-only" in str(exc.value).lower()
+
+
+def test_raise_if_read_only_blocks_report_generation_when_enabled():
+    with pytest.raises(ReadOnlyError) as exc:
+        raise_if_read_only("generate_incident_report", read_only=True)
+    assert "generate_incident_report" in str(exc.value)
     assert "read-only" in str(exc.value).lower()
 
 
@@ -142,6 +196,8 @@ def test_all_registered_tools_are_classified():
         "generate_incident_report",
         "get_report_delivery_options",
         "list_notification_topics",
+        "get_incident_report",
+        "list_incident_reports",
     }
 
     unclassified = registered - MUTATING_TOOLS - KNOWN_READERS

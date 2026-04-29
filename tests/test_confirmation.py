@@ -8,6 +8,10 @@ from oci_logan_mcp.confirmation import ConfirmationManager, GUARDED_TOOLS
 from oci_logan_mcp.secret_store import SecretStore
 
 
+def test_delete_playbook_requires_confirmation():
+    assert "delete_playbook" in GUARDED_TOOLS
+
+
 class TestConfirmationManager:
     """Unit tests for ConfirmationManager."""
 

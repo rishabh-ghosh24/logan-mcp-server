@@ -19,6 +19,14 @@ SUPPORTED_FORMATS = frozenset({"pdf", "markdown", "both"})
 class ReportDeliveryError(ValueError):
     """Raised when report delivery input is invalid."""
 
+    def __init__(self, code: str, message: str | None = None) -> None:
+        if message is None:
+            message = code
+            code = "invalid_delivery_options"
+        super().__init__(message)
+        self.code = code
+        self.message = message
+
 
 class ReportDeliveryService:
     def __init__(
@@ -82,11 +90,15 @@ class ReportDeliveryService:
         title: Optional[str] = None,
     ) -> tuple[str, str]:
         if not isinstance(report, dict):
-            raise ReportDeliveryError("report is required and must be an object")
+            raise ReportDeliveryError(
+                "missing_report",
+                "report is required and must be an object",
+            )
         markdown = report.get("markdown")
         if not isinstance(markdown, str) or not markdown.strip():
             raise ReportDeliveryError(
-                "report.markdown is required in P0; report_id lookup is deferred"
+                "missing_report",
+                "report.markdown or report.report_id is required",
             )
         effective_title = title or report.get("title") or "Incident Report"
         return markdown, str(effective_title)

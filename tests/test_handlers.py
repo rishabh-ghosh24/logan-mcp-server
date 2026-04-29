@@ -3,6 +3,7 @@
 import hashlib
 import json
 import pytest
+from pathlib import Path
 from unittest.mock import MagicMock, AsyncMock, patch
 
 from oci_logan_mcp.handlers import MCPHandlers, REPORT_EMAIL_TOPIC_PREFERENCE_KEY
@@ -12,6 +13,7 @@ from oci_logan_mcp.preferences import PreferenceStore
 from oci_logan_mcp.secret_store import SecretStore
 from oci_logan_mcp.audit import AuditLogger
 from oci_logan_mcp.report_delivery import ReportDeliveryError
+from oci_logan_mcp.report_store import ReportStoreCorruptError, ReportStoreError
 
 
 # ---------------------------------------------------------------------------
@@ -19,13 +21,14 @@ from oci_logan_mcp.report_delivery import ReportDeliveryError
 # ---------------------------------------------------------------------------
 
 @pytest.fixture
-def settings():
+def settings(tmp_path):
     """Create test Settings."""
     s = Settings()
     s.log_analytics.namespace = "testns"
     s.log_analytics.default_compartment_id = "ocid1.compartment.default"
     s.query.max_results = 1000
     s.query.default_time_range = "last_1_hour"
+    s.report_delivery.artifact_dir = tmp_path / "reports"
     return s
 
 
@@ -925,17 +928,27 @@ class TestConfirmationFlow:
         assert "at least 8 characters" in text["error"]
 
     @pytest.mark.asyncio
-    async def test_setup_confirmation_secret_refuses_overwrite(self, handlers_with_secret):
+    async def test_setup_confirmation_secret_refuses_overwrite(self, handlers):
         """In-band setup is initial-creation only."""
-        result = await handlers_with_secret.handle_tool_call(
+        first_result = await handlers.handle_tool_call(
             "setup_confirmation_secret",
             {
-                "confirmation_secret": "new-secret",
-                "confirmation_secret_confirm": "new-secret",
+                "confirmation_secret": "first-secret",
+                "confirmation_secret_confirm": "first-secret",
             },
         )
-        text = json.loads(result[0]["text"])
-        assert text["status"] == "already_configured"
+        second_result = await handlers.handle_tool_call(
+            "setup_confirmation_secret",
+            {
+                "confirmation_secret": "second-secret",
+                "confirmation_secret_confirm": "second-secret",
+            },
+        )
+        first = json.loads(first_result[0]["text"])
+        second = json.loads(second_result[0]["text"])
+
+        assert first["status"] == "configured"
+        assert second["status"] == "already_configured"
 
     @pytest.mark.asyncio
     async def test_guarded_tool_uses_normal_confirmation_after_setup(self, handlers):
@@ -1433,6 +1446,21 @@ async def test_read_only_blocks_mutating_tool(handlers, settings):
     assert payload["status"] == "read_only_blocked"
     assert payload["tool"] == "delete_alert"
     assert "read-only" in payload["error"].lower()
+
+
+@pytest.mark.asyncio
+async def test_read_only_blocks_report_generation_without_persisting(handlers, settings):
+    settings.read_only = True
+
+    result = await handlers.handle_tool_call(
+        "generate_incident_report",
+        {"investigation": {"summary": "Parser failures increased."}},
+    )
+
+    payload = json.loads(result[0]["text"])
+    assert payload["status"] == "read_only_blocked"
+    assert payload["tool"] == "generate_incident_report"
+    assert not handlers.report_store.root.exists()
 
 
 @pytest.mark.asyncio
@@ -2279,7 +2307,7 @@ class TestRelatedDashboardsAndSearches:
         )
 
 
-class TestInvestigationPlaybooks:
+class TestPlaybooks:
     @pytest.mark.asyncio
     async def test_record_investigation_routes_to_recorder(self, handlers):
         handlers.playbook_recorder.record = MagicMock(
@@ -2338,13 +2366,30 @@ class TestInvestigationPlaybooks:
     async def test_delete_playbook_returns_deleted_flag(self, handlers):
         handlers.playbook_store.delete = MagicMock(return_value=True)
 
+        await handlers.handle_tool_call(
+            "setup_confirmation_secret",
+            {
+                "confirmation_secret": "playbook-secret",
+                "confirmation_secret_confirm": "playbook-secret",
+            },
+        )
+        args = {"playbook_id": "pb_1"}
+        result = await handlers.handle_tool_call("delete_playbook", args)
+        confirmation = json.loads(result[0]["text"])
+        assert confirmation["status"] == "confirmation_required"
+        handlers.playbook_store.delete.assert_not_called()
+
         result = await handlers.handle_tool_call(
             "delete_playbook",
-            {"playbook_id": "pb_1"},
+            {
+                **args,
+                "confirmation_token": confirmation["confirmation_token"],
+                "confirmation_secret": "playbook-secret",
+            },
         )
-
         payload = json.loads(result[0]["text"])
         assert payload == {"deleted": True, "playbook_id": "pb_1"}
+        handlers.playbook_store.delete.assert_called_once_with("pb_1")
 
 
 class TestIncidentReports:
@@ -2352,7 +2397,7 @@ class TestIncidentReports:
     async def test_generate_incident_report_routes_to_generator(self, handlers):
         handlers.report_generator.generate = MagicMock(
             return_value={
-                "report_id": "rpt_1",
+                "report_id": "rpt_0123456789abcdef0123456789abcdef",
                 "markdown": "# Incident Report\n",
                 "html": None,
                 "metadata": {"source_type": "investigation"},
@@ -2371,13 +2416,14 @@ class TestIncidentReports:
         )
 
         payload = json.loads(result[0]["text"])
-        assert payload["report_id"] == "rpt_1"
+        assert payload["report_id"] == "rpt_0123456789abcdef0123456789abcdef"
         assert payload["delivery_options"]["email"]["requires_user_confirmation"] is True
         handlers.report_generator.generate.assert_called_once_with(
             investigation={"summary": "x"},
             output_format="markdown",
             include_sections=["executive_summary"],
             summary_length="short",
+            title=None,
         )
 
     @pytest.mark.asyncio
@@ -2392,7 +2438,7 @@ class TestIncidentReports:
         handlers.investigate_tool.run = AsyncMock(return_value=investigation)
         handlers.report_generator.generate = MagicMock(
             return_value={
-                "report_id": "rpt_2",
+                "report_id": "rpt_22222222222222222222222222222222",
                 "markdown": "# Incident Report\n",
                 "html": None,
                 "metadata": {"source_type": "investigation"},
@@ -2414,7 +2460,8 @@ class TestIncidentReports:
         payload = json.loads(result[0]["text"])
         assert payload["status"] == "report_generated"
         assert payload["investigation"]["summary"] == "top source errors"
-        assert payload["report"]["report_id"] == "rpt_2"
+        assert payload["report"]["report_id"] == "rpt_22222222222222222222222222222222"
+        assert payload["report"]["artifacts"][0]["path"].endswith("/report.md")
         assert payload["delivery_options"]["email"]["requires_user_confirmation"] is True
         handlers.investigate_tool.run.assert_awaited_once_with(
             query="*",
@@ -2427,7 +2474,211 @@ class TestIncidentReports:
             output_format="markdown",
             include_sections=None,
             summary_length="standard",
+            title=None,
         )
+
+    @pytest.mark.asyncio
+    async def test_generate_incident_report_persists_report(self, handlers):
+        result = await handlers.handle_tool_call(
+            "generate_incident_report",
+            {
+                "investigation": {"summary": "Parser failures increased."},
+                "title": "24-hour failures and issues report",
+            },
+        )
+
+        payload = json.loads(result[0]["text"])
+        artifacts = {artifact["name"]: artifact for artifact in payload["artifacts"]}
+
+        assert payload["report_id"].startswith("rpt_")
+        assert artifacts["markdown"]["path"].endswith("/report.md")
+        assert artifacts["metadata"]["path"].endswith("/metadata.json")
+        assert Path(artifacts["markdown"]["path"]).exists()
+        assert Path(artifacts["metadata"]["path"]).exists()
+        assert payload["metadata"]["title"] == "24-hour failures and issues report"
+
+    @pytest.mark.asyncio
+    async def test_get_incident_report_returns_stored_report(self, handlers):
+        result = await handlers.handle_tool_call(
+            "generate_incident_report",
+            {
+                "investigation": {"summary": "Parser failures increased."},
+                "format": "html",
+                "title": "24-hour failures and issues report",
+            },
+        )
+        generated = json.loads(result[0]["text"])
+
+        result = await handlers.handle_tool_call(
+            "get_incident_report",
+            {"report_id": generated["report_id"]},
+        )
+        loaded = json.loads(result[0]["text"])
+
+        assert loaded["report_id"] == generated["report_id"]
+        assert loaded["markdown"].startswith("# 24-hour failures and issues report")
+        assert loaded["markdown_path"].endswith("/report.md")
+        assert loaded["html"].startswith("<!doctype html>")
+        assert loaded["html_path"].endswith("/report.html")
+        assert loaded["metadata"]["title"] == "24-hour failures and issues report"
+        assert loaded["metadata_path"].endswith("/metadata.json")
+
+    @pytest.mark.asyncio
+    async def test_list_incident_reports_returns_newest_first(self, handlers):
+        handlers.report_generator.generate = MagicMock(
+            side_effect=[
+                {
+                    "report_id": "rpt_11111111111111111111111111111111",
+                    "markdown": "# Older report\n",
+                    "html": None,
+                    "metadata": {
+                        "title": "Older report",
+                        "generated_at": "2026-04-27T10:00:00Z",
+                        "summary_length": "standard",
+                        "word_count": 21,
+                    },
+                    "artifacts": [],
+                },
+                {
+                    "report_id": "rpt_22222222222222222222222222222222",
+                    "markdown": "# Newer report\n",
+                    "html": None,
+                    "metadata": {
+                        "title": "Newer report",
+                        "generated_at": "2026-04-27T12:00:00Z",
+                        "summary_length": "standard",
+                        "word_count": 42,
+                    },
+                    "artifacts": [],
+                },
+            ]
+        )
+        await handlers.handle_tool_call(
+            "generate_incident_report",
+            {"investigation": {"summary": "older"}},
+        )
+        await handlers.handle_tool_call(
+            "generate_incident_report",
+            {"investigation": {"summary": "newer"}},
+        )
+
+        result = await handlers.handle_tool_call(
+            "list_incident_reports",
+            {"limit": 20},
+        )
+        listed = json.loads(result[0]["text"])
+
+        assert [entry["title"] for entry in listed["reports"]] == [
+            "Newer report",
+            "Older report",
+        ]
+        assert listed["reports"][0]["markdown_path"].endswith("/report.md")
+        assert listed["reports"][0]["metadata_path"].endswith("/metadata.json")
+        assert listed["reports"][0]["word_count"] == 42
+        assert listed["warnings"] == {"corrupt_count": 0}
+
+    @pytest.mark.asyncio
+    @pytest.mark.parametrize("limit", ["abc", True])
+    async def test_list_incident_reports_rejects_malformed_limit(self, handlers, limit):
+        handlers.report_store.list = MagicMock(return_value={"reports": []})
+
+        result = await handlers.handle_tool_call(
+            "list_incident_reports",
+            {"limit": limit},
+        )
+
+        payload = json.loads(result[0]["text"])
+        assert payload["status"] == "error"
+        assert payload["error_code"] == "invalid_limit"
+        assert "limit must be an integer" in payload["error"]
+        handlers.report_store.list.assert_not_called()
+
+    @pytest.mark.asyncio
+    async def test_get_incident_report_returns_invalid_id_error(self, handlers):
+        result = await handlers.handle_tool_call(
+            "get_incident_report",
+            {"report_id": "not_a_report"},
+        )
+
+        payload = json.loads(result[0]["text"])
+        assert payload["status"] == "error"
+        assert payload["error_code"] == "invalid_report_id"
+
+    @pytest.mark.asyncio
+    async def test_get_incident_report_returns_missing_report_error(self, handlers):
+        result = await handlers.handle_tool_call(
+            "get_incident_report",
+            {"report_id": "rpt_99999999999999999999999999999999"},
+        )
+
+        payload = json.loads(result[0]["text"])
+        assert payload["status"] == "error"
+        assert payload["error_code"] == "report_not_found"
+
+    @pytest.mark.asyncio
+    async def test_get_incident_report_returns_store_error(self, handlers):
+        handlers.report_store.get = MagicMock(
+            side_effect=ReportStoreError("could not read report store")
+        )
+
+        result = await handlers.handle_tool_call(
+            "get_incident_report",
+            {"report_id": "rpt_0123456789abcdef0123456789abcdef"},
+        )
+
+        payload = json.loads(result[0]["text"])
+        assert payload["status"] == "error"
+        assert payload["error_code"] == "report_store_error"
+        assert "could not read report store" in payload["error"]
+
+
+    @pytest.mark.asyncio
+    async def test_get_incident_report_returns_corrupt_error(self, handlers):
+        handlers.report_store.get = MagicMock(
+            side_effect=ReportStoreCorruptError("stored report metadata is corrupt")
+        )
+
+        result = await handlers.handle_tool_call(
+            "get_incident_report",
+            {"report_id": "rpt_0123456789abcdef0123456789abcdef"},
+        )
+
+        payload = json.loads(result[0]["text"])
+        assert payload["status"] == "error"
+        assert payload["error_code"] == "report_store_corrupt"
+        assert "stored report metadata is corrupt" in payload["error"]
+
+    @pytest.mark.asyncio
+    async def test_generate_incident_report_returns_persistence_error(self, handlers):
+        handlers.report_store.save = MagicMock(
+            side_effect=ReportStoreError("could not persist report")
+        )
+
+        result = await handlers.handle_tool_call(
+            "generate_incident_report",
+            {"investigation": {"summary": "Parser failures increased."}},
+        )
+
+        payload = json.loads(result[0]["text"])
+        assert payload["status"] == "error"
+        assert payload["error_code"] == "report_persistence_failed"
+        assert "could not persist report" in payload["error"]
+
+    @pytest.mark.asyncio
+    async def test_generate_incident_report_returns_persistence_error_for_raw_write_failure(self, handlers):
+        handlers.report_store._atomic_write_text = MagicMock(
+            side_effect=OSError("disk full")
+        )
+
+        result = await handlers.handle_tool_call(
+            "generate_incident_report",
+            {"investigation": {"summary": "Parser failures increased."}},
+        )
+
+        payload = json.loads(result[0]["text"])
+        assert payload["status"] == "error"
+        assert payload["error_code"] == "report_persistence_failed"
+        assert "disk full" in payload["error"]
 
     @pytest.mark.asyncio
     async def test_generate_incident_report_requires_investigation_dict(self, handlers):
@@ -2448,6 +2699,18 @@ class TestIncidentReports:
         assert payload["status"] == "error"
         assert payload["error_code"] == "invalid_report_options"
         assert "format must be one of" in payload["error"]
+
+    @pytest.mark.asyncio
+    async def test_generate_incident_report_returns_validation_error_for_invalid_title(self, handlers):
+        result = await handlers.handle_tool_call(
+            "generate_incident_report",
+            {"investigation": {}, "title": ["Incident Report"]},
+        )
+
+        payload = json.loads(result[0]["text"])
+        assert payload["status"] == "error"
+        assert payload["error_code"] == "invalid_report_options"
+        assert "title must be a string" in payload["error"]
 
 
 class TestDeliverReportHandler:
@@ -2592,15 +2855,211 @@ class TestDeliverReportHandler:
         assert saved_value["compartment_id"] == "ocid1.compartment.ops"
 
     @pytest.mark.asyncio
-    async def test_deliver_report_rejects_missing_markdown(self, handlers):
+    async def test_deliver_report_resolves_stored_report_id(self, handlers, monkeypatch):
+        generated_result = await handlers.handle_tool_call(
+            "generate_incident_report",
+            {"investigation": {"summary": "Parser failures increased"}},
+        )
+        generated = json.loads(generated_result[0]["text"])
+
+        delivered_reports = []
+
+        async def fake_deliver(**kwargs):
+            delivered_reports.append(kwargs["report"])
+            return {"status": "sent", "channels": kwargs["channels"], "delivery_id": "test"}
+
+        monkeypatch.setattr(handlers.report_delivery_service, "deliver", fake_deliver)
+
+        response = await handlers.handle_tool_call(
+            "deliver_report",
+            {
+                "report": {"report_id": generated["report_id"]},
+                "channels": ["email"],
+                "recipients": {"email_topic_ocid": "ocid1.onstopic.oc1..demo"},
+            },
+        )
+
+        payload = json.loads(response[0]["text"])
+        assert payload["status"] == "sent"
+        assert payload["channels"] == ["email"]
+        assert delivered_reports[0]["markdown"].startswith("#")
+        assert delivered_reports[0]["report_id"] == generated["report_id"]
+
+    @pytest.mark.asyncio
+    async def test_deliver_report_preserves_stored_report_title(self, handlers, monkeypatch):
+        generated_result = await handlers.handle_tool_call(
+            "generate_incident_report",
+            {
+                "investigation": {"summary": "Parser failures increased"},
+                "title": "Parser Failure Surge",
+            },
+        )
+        generated = json.loads(generated_result[0]["text"])
+
+        delivery_titles = []
+
+        async def fake_deliver(**kwargs):
+            _, effective_title = handlers.report_delivery_service._validate_report(
+                kwargs["report"],
+                title=kwargs["title"],
+            )
+            delivery_titles.append(effective_title)
+            return {"status": "sent", "title": effective_title}
+
+        monkeypatch.setattr(handlers.report_delivery_service, "deliver", fake_deliver)
+
+        response = await handlers.handle_tool_call(
+            "deliver_report",
+            {
+                "report": {"report_id": generated["report_id"]},
+                "channels": ["email"],
+                "recipients": {"email_topic_ocid": "ocid1.onstopic.oc1..demo"},
+            },
+        )
+
+        payload = json.loads(response[0]["text"])
+        assert payload["status"] == "sent"
+        assert payload["title"] == "Parser Failure Surge"
+        assert delivery_titles == ["Parser Failure Surge"]
+
+    @pytest.mark.asyncio
+    async def test_deliver_report_uses_stored_title_when_report_title_is_blank(self, handlers, monkeypatch):
+        generated_result = await handlers.handle_tool_call(
+            "generate_incident_report",
+            {
+                "investigation": {"summary": "Parser failures increased"},
+                "title": "Parser Failure Surge",
+            },
+        )
+        generated = json.loads(generated_result[0]["text"])
+
+        delivery_titles = []
+
+        async def fake_deliver(**kwargs):
+            _, effective_title = handlers.report_delivery_service._validate_report(
+                kwargs["report"],
+                title=kwargs["title"],
+            )
+            delivery_titles.append(effective_title)
+            return {"status": "sent", "title": effective_title}
+
+        monkeypatch.setattr(handlers.report_delivery_service, "deliver", fake_deliver)
+
+        response = await handlers.handle_tool_call(
+            "deliver_report",
+            {
+                "report": {"report_id": generated["report_id"], "title": "   "},
+                "channels": ["email"],
+                "recipients": {"email_topic_ocid": "ocid1.onstopic.oc1..demo"},
+            },
+        )
+
+        payload = json.loads(response[0]["text"])
+        assert payload["status"] == "sent"
+        assert payload["title"] == "Parser Failure Surge"
+        assert delivery_titles == ["Parser Failure Surge"]
+
+    @pytest.mark.asyncio
+    async def test_deliver_report_rejects_conflicting_report_inputs(self, handlers):
+        report_id = "rpt_0123456789abcdef0123456789abcdef"
+
         result = await handlers.handle_tool_call(
             "deliver_report",
-            {"report": {"report_id": "r-123"}},
+            {
+                "report": {"report_id": report_id, "markdown": "# stale"},
+                "channels": ["email"],
+                "recipients": {"email_topic_ocid": "ocid1.onstopic.oc1..demo"},
+            },
         )
 
         payload = json.loads(result[0]["text"])
         assert payload["status"] == "error"
-        assert payload["error_code"] == "missing_report_markdown"
+        assert payload["error_code"] == "conflicting_report_inputs"
+
+    @pytest.mark.asyncio
+    async def test_deliver_report_rejects_missing_report(self, handlers):
+        result = await handlers.handle_tool_call(
+            "deliver_report",
+            {
+                "report": {},
+                "channels": ["email"],
+                "recipients": {"email_topic_ocid": "ocid1.onstopic.oc1..demo"},
+            },
+        )
+
+        payload = json.loads(result[0]["text"])
+        assert payload["status"] == "error"
+        assert payload["error_code"] == "missing_report"
+
+    @pytest.mark.asyncio
+    async def test_deliver_report_rejects_invalid_report_id(self, handlers):
+        result = await handlers.handle_tool_call(
+            "deliver_report",
+            {
+                "report": {"report_id": "not_a_report"},
+                "channels": ["email"],
+                "recipients": {"email_topic_ocid": "ocid1.onstopic.oc1..demo"},
+            },
+        )
+
+        payload = json.loads(result[0]["text"])
+        assert payload["status"] == "error"
+        assert payload["error_code"] == "invalid_report_id"
+
+    @pytest.mark.asyncio
+    async def test_deliver_report_rejects_missing_report_id(self, handlers):
+        result = await handlers.handle_tool_call(
+            "deliver_report",
+            {
+                "report": {"report_id": "rpt_0123456789abcdef0123456789abcdef"},
+                "channels": ["email"],
+                "recipients": {"email_topic_ocid": "ocid1.onstopic.oc1..demo"},
+            },
+        )
+
+        payload = json.loads(result[0]["text"])
+        assert payload["status"] == "error"
+        assert payload["error_code"] == "report_not_found"
+
+    @pytest.mark.asyncio
+    async def test_deliver_report_returns_report_store_corrupt_errors(self, handlers):
+        handlers.report_store.get = MagicMock(
+            side_effect=ReportStoreCorruptError("stored report metadata is corrupt")
+        )
+
+        result = await handlers.handle_tool_call(
+            "deliver_report",
+            {
+                "report": {"report_id": "rpt_0123456789abcdef0123456789abcdef"},
+                "channels": ["email"],
+                "recipients": {"email_topic_ocid": "ocid1.onstopic.oc1..demo"},
+            },
+        )
+
+        payload = json.loads(result[0]["text"])
+        assert payload["status"] == "error"
+        assert payload["error_code"] == "report_store_corrupt"
+        assert "stored report metadata is corrupt" in payload["error"]
+
+    @pytest.mark.asyncio
+    async def test_deliver_report_returns_report_store_errors(self, handlers):
+        handlers.report_store.get = MagicMock(
+            side_effect=ReportStoreError("could not read report store")
+        )
+
+        result = await handlers.handle_tool_call(
+            "deliver_report",
+            {
+                "report": {"report_id": "rpt_0123456789abcdef0123456789abcdef"},
+                "channels": ["email"],
+                "recipients": {"email_topic_ocid": "ocid1.onstopic.oc1..demo"},
+            },
+        )
+
+        payload = json.loads(result[0]["text"])
+        assert payload["status"] == "error"
+        assert payload["error_code"] == "report_store_error"
+        assert "could not read report store" in payload["error"]
 
     @pytest.mark.asyncio
     async def test_deliver_report_returns_delivery_option_errors(self, handlers):
@@ -2627,11 +3086,12 @@ class TestDeliverReportHandler:
         handlers.report_delivery_service.deliver = AsyncMock(
             return_value={"status": "sent", "delivered": [], "pdf_path": None}
         )
+        markdown = "# Report\n\nCustomer account ocid1.compartment.oc1..sensitive"
 
         await handlers.handle_tool_call(
             "deliver_report",
             {
-                "report": {"markdown": "# Report"},
+                "report": {"markdown": markdown},
                 "channels": ["telegram"],
                 "recipients": {
                     "telegram_chat_id": "-100999",
@@ -2646,8 +3106,10 @@ class TestDeliverReportHandler:
         ][-1]
         assert invoked["tool"] == "deliver_report"
         assert invoked["args"]["recipients"] == "<redacted>"
+        assert invoked["args"]["report"]["markdown"] == "<redacted>"
         assert "-100999" not in str(invoked["args"])
         assert "secret" not in str(invoked["args"])
+        assert "sensitive" not in str(invoked["args"])
 
     @pytest.mark.asyncio
     async def test_non_delivery_invoked_audit_args_are_unchanged(self, handlers):

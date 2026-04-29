@@ -48,6 +48,13 @@ from .playbook_recorder import PlaybookRecorder
 from .playbook_store import PlaybookNotFoundError, PlaybookStore
 from .report_delivery import ReportDeliveryError, ReportDeliveryService
 from .report_generator import ReportGenerationError, ReportGenerator
+from .report_store import (
+    InvalidReportIdError,
+    ReportNotFoundError,
+    ReportStore,
+    ReportStoreCorruptError,
+    ReportStoreError,
+)
 
 if TYPE_CHECKING:
     from .catalog import CatalogEntry
@@ -135,6 +142,7 @@ class MCPHandlers:
         )
         self.find_rare_events_tool = RareEventsTool(self.query_engine)
         self.report_generator = ReportGenerator()
+        self.report_store = ReportStore(self.settings.report_delivery.artifact_dir)
         self.trace_request_id_tool = TraceRequestIdTool(self.pivot_tool)
         self.log_source_builder_tool = LogSourceFromSampleTool(
             oci_client=oci_client,
@@ -206,6 +214,8 @@ class MCPHandlers:
             "generate_incident_report": self._generate_incident_report,
             "get_report_delivery_options": self._get_report_delivery_options,
             "list_notification_topics": self._list_notification_topics,
+            "get_incident_report": self._get_incident_report,
+            "list_incident_reports": self._list_incident_reports,
             "deliver_report": self._deliver_report,
             "why_did_this_fire": self._why_did_this_fire,
             "find_rare_events": self._find_rare_events,
@@ -400,12 +410,24 @@ class MCPHandlers:
                 )
             return [{"type": "text", "text": f"Error executing {name}: {str(e)}"}]
 
+    def _json_response(self, payload: Any) -> List[Dict]:
+        return [{"type": "text", "text": json.dumps(payload, indent=2, default=str)}]
+
+    def _error_response(self, error_code: str, message: str, **extra: Any) -> List[Dict]:
+        payload = {"status": "error", "error_code": error_code, "error": message}
+        payload.update(extra)
+        return self._json_response(payload)
+
     def _clean_args_for_audit(self, tool_name: str, arguments: Dict[str, Any]) -> Dict[str, Any]:
         clean_args = self._strip_confirmation_args(arguments)
         if tool_name == "deliver_report":
             clean_args = dict(clean_args)
             if "recipients" in clean_args:
                 clean_args["recipients"] = "<redacted>"
+            report = clean_args.get("report")
+            if isinstance(report, dict) and "markdown" in report:
+                clean_args["report"] = dict(report)
+                clean_args["report"]["markdown"] = "<redacted>"
         elif tool_name == "create_log_source_from_sample":
             clean_args = dict(clean_args)
             if "sample_logs" in clean_args:
@@ -940,13 +962,18 @@ class MCPHandlers:
                 output_format=args.get("format", "markdown"),
                 include_sections=args.get("include_sections"),
                 summary_length=args.get("summary_length", "standard"),
+                title=args.get("title"),
             )
         except ReportGenerationError as e:
-            return [{"type": "text", "text": json.dumps({
-                "status": "error",
-                "error_code": "invalid_report_options",
-                "error": str(e),
-            }, indent=2)}]
+            return self._error_response("invalid_report_options", str(e))
+
+        try:
+            stored = self.report_store.save(report)
+        except ReportStoreError as e:
+            return self._error_response("report_persistence_failed", str(e))
+
+        report["artifacts"] = stored["artifacts"]
+        report["metadata"] = stored["metadata"]
 
         payload = {
             "status": "report_generated",
@@ -959,32 +986,63 @@ class MCPHandlers:
     async def _generate_incident_report(self, args: Dict) -> List[Dict]:
         investigation = args.get("investigation")
         if not isinstance(investigation, dict):
-            return [{"type": "text", "text": json.dumps({
-                "status": "error",
-                "error_code": "missing_investigation",
-                "error": "investigation is required and must be an object",
-            }, indent=2)}]
+            return self._error_response(
+                "missing_investigation",
+                "investigation is required and must be an object",
+            )
 
         try:
-            result = self.report_generator.generate(
+            report = self.report_generator.generate(
                 investigation=investigation,
                 output_format=args.get("format", "markdown"),
                 include_sections=args.get("include_sections"),
                 summary_length=args.get("summary_length", "standard"),
+                title=args.get("title"),
             )
         except ReportGenerationError as e:
-            return [{"type": "text", "text": json.dumps({
-                "status": "error",
-                "error_code": "invalid_report_options",
-                "error": str(e),
-            }, indent=2)}]
-        payload = dict(result)
+            return self._error_response("invalid_report_options", str(e))
+
+        try:
+            stored = self.report_store.save(report)
+        except ReportStoreError as e:
+            return self._error_response("report_persistence_failed", str(e))
+
+        report["artifacts"] = stored["artifacts"]
+        report["metadata"] = stored["metadata"]
+        payload = dict(report)
         payload["delivery_options"] = self._report_delivery_options_payload()
-        return [{"type": "text", "text": json.dumps(payload, indent=2, default=str)}]
+        return self._json_response(payload)
+
+    async def _get_incident_report(self, args: Dict) -> List[Dict]:
+        report_id = str(args.get("report_id", ""))
+        try:
+            report = self.report_store.get(report_id)
+        except InvalidReportIdError as e:
+            return self._error_response("invalid_report_id", str(e))
+        except ReportNotFoundError as e:
+            return self._error_response("report_not_found", str(e))
+        except ReportStoreCorruptError as e:
+            return self._error_response("report_store_corrupt", str(e))
+        except ReportStoreError as e:
+            return self._error_response("report_store_error", str(e))
+        return self._json_response(report)
+
+    async def _list_incident_reports(self, args: Dict) -> List[Dict]:
+        limit = args.get("limit", 20)
+        if isinstance(limit, bool) or not isinstance(limit, int):
+            return self._error_response(
+                "invalid_limit",
+                "limit must be an integer; valid values are clamped to 1..100",
+            )
+        try:
+            reports = self.report_store.list(limit=limit)
+        except ReportStoreError as e:
+            return self._error_response("report_store_error", str(e))
+        return self._json_response(reports)
 
     async def _get_report_delivery_options(self, args: Dict) -> List[Dict]:
         payload = {"status": "ok", **self._report_delivery_options_payload()}
-        return [{"type": "text", "text": json.dumps(payload, indent=2, default=str)}]
+        return self._json_response(payload)
 
     async def _list_notification_topics(self, args: Dict) -> List[Dict]:
         try:
@@ -994,25 +1052,68 @@ class MCPHandlers:
                 lifecycle_state=args.get("lifecycle_state"),
             )
         except Exception as e:
-            return [{"type": "text", "text": json.dumps({
-                "status": "error",
-                "error": str(e),
-            }, indent=2)}]
+            return self._error_response("notification_topic_list_failed", str(e))
 
-        return [{"type": "text", "text": json.dumps({
+        return self._json_response({
             "status": "ok",
             "count": len(topics),
             "topics": topics,
-        }, indent=2, default=str)}]
+        })
+
+    def _resolve_report_for_delivery(
+        self,
+        report: Dict[str, Any],
+    ) -> tuple[Dict[str, Any] | None, str | None, str | None]:
+        has_markdown = bool(str(report.get("markdown") or "").strip())
+        has_report_id = bool(str(report.get("report_id") or "").strip())
+
+        if has_markdown and has_report_id:
+            return None, "conflicting_report_inputs", (
+                "Use either report.markdown or report.report_id, not both."
+            )
+        if not has_markdown and not has_report_id:
+            return None, "missing_report", (
+                "report.markdown or report.report_id is required."
+            )
+        if has_markdown:
+            return dict(report), None, None
+
+        report_id = str(report.get("report_id"))
+        try:
+            stored = self.report_store.get(report_id)
+        except InvalidReportIdError as e:
+            return None, "invalid_report_id", str(e)
+        except ReportNotFoundError as e:
+            return None, "report_not_found", str(e)
+        except ReportStoreCorruptError as e:
+            return None, "report_store_corrupt", str(e)
+        except ReportStoreError as e:
+            return None, "report_store_error", str(e)
+
+        resolved = dict(report)
+        resolved["markdown"] = stored["markdown"]
+        resolved["metadata"] = stored["metadata"]
+        resolved["markdown_path"] = stored["markdown_path"]
+        resolved["html_path"] = stored["html_path"]
+        resolved["metadata_path"] = stored["metadata_path"]
+        title = stored["metadata"].get("title")
+        current_title = resolved.get("title")
+        if (
+            (current_title is None or (isinstance(current_title, str) and not current_title.strip()))
+            and isinstance(title, str)
+            and title.strip()
+        ):
+            resolved["title"] = title
+        return resolved, None, None
 
     async def _deliver_report(self, args: Dict) -> List[Dict]:
-        report = args.get("report")
-        if not isinstance(report, dict) or not isinstance(report.get("markdown"), str):
-            return [{"type": "text", "text": json.dumps({
-                "status": "error",
-                "error_code": "missing_report_markdown",
-                "error": "report.markdown is required in P0; report_id lookup is deferred",
-            }, indent=2)}]
+        raw_report = args.get("report")
+        if not isinstance(raw_report, dict):
+            return self._error_response("missing_report", "report must be an object")
+
+        report, error_code, message = self._resolve_report_for_delivery(raw_report)
+        if error_code:
+            return self._error_response(error_code, message or "")
 
         channels = args.get("channels", ["telegram"])
         recipients, email_topic = self._report_email_recipients(channels, args.get("recipients"))
@@ -1025,11 +1126,10 @@ class MCPHandlers:
                 title=args.get("title"),
             )
         except ReportDeliveryError as e:
-            return [{"type": "text", "text": json.dumps({
-                "status": "error",
-                "error_code": "invalid_delivery_options",
-                "error": str(e),
-            }, indent=2)}]
+            return self._error_response(
+                getattr(e, "code", "invalid_delivery_options"),
+                str(e),
+            )
 
         saved_topic = await self._remember_report_email_topic_after_success(result, email_topic)
         if email_topic or saved_topic:
@@ -1038,7 +1138,7 @@ class MCPHandlers:
                 "email_topic": saved_topic or email_topic,
             }
 
-        return [{"type": "text", "text": json.dumps(result, indent=2, default=str)}]
+        return self._json_response(result)
 
     def _report_delivery_options_payload(self) -> Dict[str, Any]:
         return {
