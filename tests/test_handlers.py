@@ -140,6 +140,12 @@ def test_mcp_handlers_exposes_unified_catalog(handlers):
     assert isinstance(handlers.catalog, UnifiedCatalog)
 
 
+def test_mcp_handlers_scopes_report_store_to_active_user(handlers, settings):
+    assert handlers.report_store.root == (
+        settings.report_delivery.artifact_dir / "users" / "testuser" / "store"
+    )
+
+
 @pytest.mark.asyncio
 async def test_create_log_source_handler_passes_csv_format_without_forcing_ndjson_filename(handlers):
     handlers.log_source_builder_tool.create_from_sample = AsyncMock(return_value={"status": "PASS"})
@@ -1292,10 +1298,11 @@ async def test_get_query_examples_uses_catalog(tmp_path):
     assert "categories" in body
     assert "examples" in body
     assert isinstance(body["examples"], dict)
-    # Entries grouped by category — each entry has exactly name/query/description
+    # Entries grouped by category with provenance so agents can prefer learned
+    # queries over generic starters.
     for cat, entries in body["examples"].items():
         for e in entries:
-            assert set(e.keys()) == {"name", "query", "description"}
+            assert {"name", "query", "description", "source"} <= set(e.keys())
 
 
 @pytest.mark.asyncio
@@ -1306,6 +1313,28 @@ async def test_get_query_examples_filter_by_category(tmp_path):
     body = json.loads(result[0]["text"])
     # Either returns the category entries or an error if category unknown — shape matches existing behavior
     assert "category" in body or "error" in body
+
+
+@pytest.mark.asyncio
+async def test_get_query_examples_includes_personal_learned_queries(tmp_path):
+    handler = _make_handler_with_catalog(tmp_path)
+    handler.user_store.save_query(
+        name="error_like_sources_by_log_source",
+        query="'Original Log Content' like '%error%' | stats count by 'Log Source'",
+        description="User learned canonical error query",
+        category="errors",
+        interest_score=8,
+    )
+
+    result = await handler._get_query_examples({"category": "errors"})
+    body = json.loads(result[0]["text"])
+    personal = [
+        e for e in body["examples"]
+        if e["name"] == "error_like_sources_by_log_source"
+        and e["source"] == "personal"
+    ]
+
+    assert len(personal) == 1
 
 
 # ---------------------------------------------------------------------------
@@ -1896,6 +1925,64 @@ class TestInvestigateIncident:
             time_range="last_1_hour",
             top_k=3,
             compartment_id=None,
+            focus_sources=None,
+            mode="standard",
+        )
+
+    @pytest.mark.asyncio
+    async def test_accepts_user_requested_top_k_and_focus_sources(self, handlers):
+        handlers.investigate_tool.run = AsyncMock(return_value={
+            "summary": "ok",
+            "seed": {},
+            "ingestion_health": None, "parser_failures": None,
+            "anomalous_sources": [], "cross_source_timeline": None,
+            "next_steps": [], "budget": {}, "partial": False,
+            "partial_reasons": [], "elapsed_seconds": 0.1,
+        })
+
+        result = await handlers.handle_tool_call(
+            "investigate_incident",
+            {"query": "*", "top_k": 5, "focus_sources": ["A", "B", "C", "D", "E"]},
+        )
+
+        payload = json.loads(result[0]["text"])
+        assert payload["summary"] == "ok"
+        handlers.investigate_tool.run.assert_awaited_once_with(
+            query="*",
+            time_range="last_1_hour",
+            top_k=5,
+            compartment_id=None,
+            focus_sources=["A", "B", "C", "D", "E"],
+            mode="standard",
+        )
+
+    @pytest.mark.asyncio
+    async def test_accepts_investigation_mode(self, handlers):
+        handlers.investigate_tool.run = AsyncMock(return_value={
+            "summary": "quick",
+            "seed": {},
+            "ingestion_health": {"status": "not_run"},
+            "parser_failures": {"status": "not_run"},
+            "anomalous_sources": [], "cross_source_timeline": None,
+            "next_steps": [], "recommended_parallel_tasks": [], "budget": {},
+            "partial": False, "partial_reasons": [], "elapsed_seconds": 0.1,
+            "investigation_mode": "quick",
+        })
+
+        result = await handlers.handle_tool_call(
+            "investigate_incident",
+            {"query": "*", "mode": "quick"},
+        )
+
+        payload = json.loads(result[0]["text"])
+        assert payload["investigation_mode"] == "quick"
+        handlers.investigate_tool.run.assert_awaited_once_with(
+            query="*",
+            time_range="last_1_hour",
+            top_k=3,
+            compartment_id=None,
+            focus_sources=None,
+            mode="quick",
         )
 
     @pytest.mark.asyncio
@@ -1930,7 +2017,7 @@ class TestInvestigateIncident:
     @pytest.mark.asyncio
     async def test_bad_top_k_returns_structured_error(self, handlers):
         handlers.investigate_tool.run = AsyncMock()
-        for bad in (-1, 0, 4, 10, "abc"):
+        for bad in (-1, 0, 11, "abc"):
             result = await handlers.handle_tool_call(
                 "investigate_incident", {"query": "*", "top_k": bad},
             )
@@ -2468,6 +2555,8 @@ class TestIncidentReports:
             time_range="last_24_hours",
             top_k=3,
             compartment_id=None,
+            focus_sources=None,
+            mode="standard",
         )
         handlers.report_generator.generate.assert_called_once_with(
             investigation=investigation,
@@ -2492,10 +2581,14 @@ class TestIncidentReports:
 
         assert payload["report_id"].startswith("rpt_")
         assert artifacts["markdown"]["path"].endswith("/report.md")
+        assert artifacts["html"]["path"].endswith("/report.html")
         assert artifacts["metadata"]["path"].endswith("/metadata.json")
         assert Path(artifacts["markdown"]["path"]).exists()
+        assert Path(artifacts["html"]["path"]).exists()
         assert Path(artifacts["metadata"]["path"]).exists()
         assert payload["metadata"]["title"] == "24-hour failures and issues report"
+        assert payload["metadata"]["delivery_state"]["status"] == "pending_user_confirmation"
+        assert payload["next_required_action"]["status"] == "awaiting_delivery_decision"
 
     @pytest.mark.asyncio
     async def test_get_incident_report_returns_stored_report(self, handlers):
@@ -2804,24 +2897,32 @@ class TestDeliverReportHandler:
                 "pdf_path": None,
             }
         )
+        generated_result = await handlers.handle_tool_call(
+            "generate_incident_report",
+            {"investigation": {"summary": "Parser failures increased"}},
+        )
+        generated = json.loads(generated_result[0]["text"])
+        prepared_result = await handlers.handle_tool_call(
+            "prepare_report_delivery",
+            {"report_id": generated["report_id"], "channel": "email"},
+        )
+        prepared = json.loads(prepared_result[0]["text"])
 
         result = await handlers.handle_tool_call(
             "deliver_report",
             {
-                "report": {"markdown": "# Report"},
+                "report": {"report_id": generated["report_id"]},
                 "channels": ["email"],
+                "delivery_confirmation_token": prepared["confirmation_token"],
             },
         )
 
         payload = json.loads(result[0]["text"])
         assert payload["delivery_preferences"]["email_topic"]["source"] == "user_preference"
-        handlers.report_delivery_service.deliver.assert_awaited_once_with(
-            report={"markdown": "# Report"},
-            channels=["email"],
-            recipients={"email_topic_ocid": "ocid1.onstopic.oc1..saved"},
-            output_format="pdf",
-            title=None,
-        )
+        kwargs = handlers.report_delivery_service.deliver.await_args.kwargs
+        assert kwargs["channels"] == ["email"]
+        assert kwargs["recipients"]["email_topic_ocid"] == "ocid1.onstopic.oc1..saved"
+        assert kwargs["report"]["report_id"] == generated["report_id"]
 
     @pytest.mark.asyncio
     async def test_deliver_report_saves_successful_explicit_email_topic(self, handlers):
@@ -2838,13 +2939,28 @@ class TestDeliverReportHandler:
                 "pdf_path": None,
             }
         )
+        generated_result = await handlers.handle_tool_call(
+            "generate_incident_report",
+            {"investigation": {"summary": "Parser failures increased"}},
+        )
+        generated = json.loads(generated_result[0]["text"])
+        prepared_result = await handlers.handle_tool_call(
+            "prepare_report_delivery",
+            {
+                "report_id": generated["report_id"],
+                "channel": "email",
+                "recipients": {"email_topic_ocid": "ocid1.onstopic.oc1..explicit"},
+            },
+        )
+        prepared = json.loads(prepared_result[0]["text"])
 
         await handlers.handle_tool_call(
             "deliver_report",
             {
-                "report": {"markdown": "# Report"},
+                "report": {"report_id": generated["report_id"]},
                 "channels": ["email"],
                 "recipients": {"email_topic_ocid": "ocid1.onstopic.oc1..explicit"},
+                "delivery_confirmation_token": prepared["confirmation_token"],
             },
         )
 
@@ -2869,6 +2985,167 @@ class TestDeliverReportHandler:
             return {"status": "sent", "channels": kwargs["channels"], "delivery_id": "test"}
 
         monkeypatch.setattr(handlers.report_delivery_service, "deliver", fake_deliver)
+        prepared_result = await handlers.handle_tool_call(
+            "prepare_report_delivery",
+            {
+                "report_id": generated["report_id"],
+                "channel": "email",
+                "recipients": {"email_topic_ocid": "ocid1.onstopic.oc1..demo"},
+            },
+        )
+        prepared = json.loads(prepared_result[0]["text"])
+
+        response = await handlers.handle_tool_call(
+            "deliver_report",
+            {
+                "report": {"report_id": generated["report_id"]},
+                "channels": ["email"],
+                "recipients": {"email_topic_ocid": "ocid1.onstopic.oc1..demo"},
+                "delivery_confirmation_token": prepared["confirmation_token"],
+            },
+        )
+
+        payload = json.loads(response[0]["text"])
+        assert payload["status"] == "sent"
+        assert payload["channels"] == ["email"]
+        assert delivered_reports[0]["markdown"].startswith("#")
+        assert delivered_reports[0]["report_id"] == generated["report_id"]
+
+    @pytest.mark.asyncio
+    async def test_deliver_report_consumes_confirmation_token_on_email_delivery_error(self, handlers):
+        generated_result = await handlers.handle_tool_call(
+            "generate_incident_report",
+            {"investigation": {"summary": "Parser failures increased"}},
+        )
+        generated = json.loads(generated_result[0]["text"])
+        prepared_result = await handlers.handle_tool_call(
+            "prepare_report_delivery",
+            {
+                "report_id": generated["report_id"],
+                "channel": "email",
+                "recipients": {"email_topic_ocid": "ocid1.onstopic.oc1..demo"},
+            },
+        )
+        prepared = json.loads(prepared_result[0]["text"])
+        handlers.report_delivery_service.deliver = AsyncMock(
+            side_effect=ReportDeliveryError("ONS publish failed")
+        )
+
+        response = await handlers.handle_tool_call(
+            "deliver_report",
+            {
+                "report": {"report_id": generated["report_id"]},
+                "channels": ["email"],
+                "recipients": {"email_topic_ocid": "ocid1.onstopic.oc1..demo"},
+                "delivery_confirmation_token": prepared["confirmation_token"],
+            },
+        )
+
+        payload = json.loads(response[0]["text"])
+        assert payload["status"] == "error"
+        assert payload["error_code"] == "invalid_delivery_options"
+        stored = handlers.report_store.get(generated["report_id"])
+        assert stored["metadata"]["delivery_state"]["status"] == "failed"
+        assert stored["metadata"]["delivery_state"]["confirmation_token"] is None
+        assert stored["metadata"]["next_required_action"]["status"] == "delivery_failed"
+
+        handlers.report_delivery_service.deliver = AsyncMock(return_value={"status": "sent"})
+        retry_response = await handlers.handle_tool_call(
+            "deliver_report",
+            {
+                "report": {"report_id": generated["report_id"]},
+                "channels": ["email"],
+                "recipients": {"email_topic_ocid": "ocid1.onstopic.oc1..demo"},
+                "delivery_confirmation_token": prepared["confirmation_token"],
+            },
+        )
+
+        retry_payload = json.loads(retry_response[0]["text"])
+        assert retry_payload["error_code"] == "email_delivery_confirmation_required"
+        handlers.report_delivery_service.deliver.assert_not_awaited()
+
+    @pytest.mark.asyncio
+    async def test_deliver_report_clears_next_required_action_after_email_success(self, handlers):
+        generated_result = await handlers.handle_tool_call(
+            "generate_incident_report",
+            {"investigation": {"summary": "Parser failures increased"}},
+        )
+        generated = json.loads(generated_result[0]["text"])
+        prepared_result = await handlers.handle_tool_call(
+            "prepare_report_delivery",
+            {
+                "report_id": generated["report_id"],
+                "channel": "email",
+                "recipients": {"email_topic_ocid": "ocid1.onstopic.oc1..demo"},
+            },
+        )
+        prepared = json.loads(prepared_result[0]["text"])
+        handlers.report_delivery_service.deliver = AsyncMock(
+            return_value={
+                "status": "sent",
+                "delivered": [{"channel": "email", "status": "sent"}],
+                "pdf_path": None,
+            }
+        )
+
+        response = await handlers.handle_tool_call(
+            "deliver_report",
+            {
+                "report": {"report_id": generated["report_id"]},
+                "channels": ["email"],
+                "recipients": {"email_topic_ocid": "ocid1.onstopic.oc1..demo"},
+                "delivery_confirmation_token": prepared["confirmation_token"],
+            },
+        )
+
+        payload = json.loads(response[0]["text"])
+        assert payload["status"] == "sent"
+        stored = handlers.report_store.get(generated["report_id"])
+        assert stored["metadata"]["delivery_state"]["status"] == "sent"
+        assert stored["metadata"]["delivery_state"]["confirmation_token"] is None
+        assert stored["metadata"]["next_required_action"] == {
+            "status": "completed",
+            "action": "none",
+            "channel": "email",
+            "provider": "oci_notifications",
+        }
+
+    @pytest.mark.asyncio
+    async def test_prepare_report_delivery_returns_confirmation_token(self, handlers):
+        generated_result = await handlers.handle_tool_call(
+            "generate_incident_report",
+            {"investigation": {"summary": "Parser failures increased"}},
+        )
+        generated = json.loads(generated_result[0]["text"])
+
+        response = await handlers.handle_tool_call(
+            "prepare_report_delivery",
+            {
+                "report_id": generated["report_id"],
+                "channel": "email",
+                "recipients": {"email_topic_ocid": "ocid1.onstopic.oc1..demo"},
+            },
+        )
+
+        payload = json.loads(response[0]["text"])
+        assert payload["status"] == "awaiting_final_confirmation"
+        assert payload["confirmation_token"]
+        assert "Send report" in payload["confirmation_prompt"]
+        stored = handlers.report_store.get(generated["report_id"])
+        assert stored["metadata"]["delivery_state"]["confirmation_token"] == payload["confirmation_token"]
+
+    @pytest.mark.asyncio
+    async def test_deliver_report_rejects_email_without_prepare_confirmation(self, handlers, monkeypatch):
+        generated_result = await handlers.handle_tool_call(
+            "generate_incident_report",
+            {"investigation": {"summary": "Parser failures increased"}},
+        )
+        generated = json.loads(generated_result[0]["text"])
+        monkeypatch.setattr(
+            handlers.report_delivery_service,
+            "deliver",
+            AsyncMock(return_value={"status": "sent"}),
+        )
 
         response = await handlers.handle_tool_call(
             "deliver_report",
@@ -2880,10 +3157,8 @@ class TestDeliverReportHandler:
         )
 
         payload = json.loads(response[0]["text"])
-        assert payload["status"] == "sent"
-        assert payload["channels"] == ["email"]
-        assert delivered_reports[0]["markdown"].startswith("#")
-        assert delivered_reports[0]["report_id"] == generated["report_id"]
+        assert payload["error_code"] == "email_delivery_confirmation_required"
+        handlers.report_delivery_service.deliver.assert_not_awaited()
 
     @pytest.mark.asyncio
     async def test_deliver_report_preserves_stored_report_title(self, handlers, monkeypatch):
@@ -2907,6 +3182,15 @@ class TestDeliverReportHandler:
             return {"status": "sent", "title": effective_title}
 
         monkeypatch.setattr(handlers.report_delivery_service, "deliver", fake_deliver)
+        prepared_result = await handlers.handle_tool_call(
+            "prepare_report_delivery",
+            {
+                "report_id": generated["report_id"],
+                "channel": "email",
+                "recipients": {"email_topic_ocid": "ocid1.onstopic.oc1..demo"},
+            },
+        )
+        prepared = json.loads(prepared_result[0]["text"])
 
         response = await handlers.handle_tool_call(
             "deliver_report",
@@ -2914,6 +3198,7 @@ class TestDeliverReportHandler:
                 "report": {"report_id": generated["report_id"]},
                 "channels": ["email"],
                 "recipients": {"email_topic_ocid": "ocid1.onstopic.oc1..demo"},
+                "delivery_confirmation_token": prepared["confirmation_token"],
             },
         )
 
@@ -2944,6 +3229,15 @@ class TestDeliverReportHandler:
             return {"status": "sent", "title": effective_title}
 
         monkeypatch.setattr(handlers.report_delivery_service, "deliver", fake_deliver)
+        prepared_result = await handlers.handle_tool_call(
+            "prepare_report_delivery",
+            {
+                "report_id": generated["report_id"],
+                "channel": "email",
+                "recipients": {"email_topic_ocid": "ocid1.onstopic.oc1..demo"},
+            },
+        )
+        prepared = json.loads(prepared_result[0]["text"])
 
         response = await handlers.handle_tool_call(
             "deliver_report",
@@ -2951,6 +3245,7 @@ class TestDeliverReportHandler:
                 "report": {"report_id": generated["report_id"], "title": "   "},
                 "channels": ["email"],
                 "recipients": {"email_topic_ocid": "ocid1.onstopic.oc1..demo"},
+                "delivery_confirmation_token": prepared["confirmation_token"],
             },
         )
 

@@ -7,6 +7,7 @@ Design: docs/phase-2/specs/2026-04-22-a1-investigate-incident-design.md
 from __future__ import annotations
 
 import asyncio
+from dataclasses import dataclass
 from datetime import datetime, timezone
 from typing import Any, Dict, List, Optional, Set, Tuple
 
@@ -145,6 +146,27 @@ def _rank_anomalous_sources(
     return out
 
 
+def _normalize_focus_sources(sources: Optional[List[Any]], top_k: int) -> Optional[List[str]]:
+    """Normalize caller-provided source focus list, preserving order."""
+    if sources is None:
+        return None
+    if not isinstance(sources, list):
+        raise ValueError("focus_sources must be a list of log source names")
+    normalized: List[str] = []
+    seen: Set[str] = set()
+    for source in sources:
+        if not isinstance(source, str):
+            raise ValueError("focus_sources must contain only strings")
+        clean = source.strip()
+        if not clean or clean in seen:
+            continue
+        normalized.append(clean)
+        seen.add(clean)
+        if len(normalized) >= top_k:
+            break
+    return normalized
+
+
 def _select_top_entities(
     response: Dict[str, Any],
     entity_type: str,
@@ -222,7 +244,7 @@ def _utcnow() -> datetime:
 
 
 TOP_K_MIN = 1
-TOP_K_MAX = 3
+TOP_K_MAX = 10
 TIMELINE_CAP = 50
 
 # Entity discovery uses the same field names as pivot_tool's ENTITY_FIELD_MAP,
@@ -232,10 +254,79 @@ A1_ENTITY_FIELDS = [
     ("user", "User Name"),
     ("request_id", "Request ID"),
 ]
-PER_SOURCE_CONCURRENCY = 2
+PER_SOURCE_CONCURRENCY = 5
 CLUSTER_HEAD = 3
 ENTITY_HEAD = 5
 TIMELINE_HEAD = 20
+DEFAULT_TRACK_TIMEOUT_SECONDS = 120.0
+
+
+@dataclass(frozen=True)
+class _InvestigationModeConfig:
+    name: str
+    run_ingestion_health: bool
+    run_parser_failures: bool
+    run_entities: bool
+    run_timeline: bool
+    cluster_head: int
+    entity_head: int
+    timeline_head: int
+    per_source_concurrency: int
+    timeout_seconds: float
+
+
+_MODE_CONFIGS: Dict[str, _InvestigationModeConfig] = {
+    "quick": _InvestigationModeConfig(
+        name="quick",
+        run_ingestion_health=False,
+        run_parser_failures=False,
+        run_entities=False,
+        run_timeline=False,
+        cluster_head=3,
+        entity_head=0,
+        timeline_head=0,
+        per_source_concurrency=PER_SOURCE_CONCURRENCY,
+        timeout_seconds=60.0,
+    ),
+    "standard": _InvestigationModeConfig(
+        name="standard",
+        run_ingestion_health=True,
+        run_parser_failures=True,
+        run_entities=True,
+        run_timeline=True,
+        cluster_head=CLUSTER_HEAD,
+        entity_head=ENTITY_HEAD,
+        timeline_head=TIMELINE_HEAD,
+        per_source_concurrency=PER_SOURCE_CONCURRENCY,
+        timeout_seconds=DEFAULT_TRACK_TIMEOUT_SECONDS,
+    ),
+    "deep": _InvestigationModeConfig(
+        name="deep",
+        run_ingestion_health=True,
+        run_parser_failures=True,
+        run_entities=True,
+        run_timeline=True,
+        cluster_head=5,
+        entity_head=10,
+        timeline_head=50,
+        per_source_concurrency=PER_SOURCE_CONCURRENCY,
+        timeout_seconds=180.0,
+    ),
+}
+
+
+def _mode_config(mode: str) -> _InvestigationModeConfig:
+    if mode not in _MODE_CONFIGS:
+        raise ValueError(
+            f"mode must be one of {sorted(_MODE_CONFIGS)}; got {mode!r}"
+        )
+    return _MODE_CONFIGS[mode]
+
+
+async def _await_with_timeout(awaitable, timeout_seconds: Optional[float]):
+    if timeout_seconds is None:
+        return await awaitable
+    return await asyncio.wait_for(awaitable, timeout=timeout_seconds)
 
 
 def _is_field_variance_error(exc: Exception) -> bool:
@@ -327,6 +418,13 @@ async def _drill_down_one_source(
     seed_filter: str,
     time_range: str,
     compartment_id: Optional[str],
+    *,
+    run_entities: bool = True,
+    run_timeline: bool = True,
+    cluster_head: int = CLUSTER_HEAD,
+    entity_head: int = ENTITY_HEAD,
+    timeline_head: int = TIMELINE_HEAD,
+    query_timeout_seconds: Optional[float] = DEFAULT_TRACK_TIMEOUT_SECONDS,
 ) -> Dict[str, Any]:
     """Run cluster + entity discovery + timeline for a single source, sequentially.
 
@@ -358,11 +456,14 @@ async def _drill_down_one_source(
     # Cluster — any non-Budget failure is infrastructure. Record it but
     # don't abort the branch; entity/timeline may still succeed.
     cluster_query = _compose_source_scoped_query(
-        seed_filter, source, f"cluster | sort -Count | head {CLUSTER_HEAD}",
+        seed_filter, source, f"cluster | sort -Count | head {cluster_head}",
     )
     try:
-        cluster_resp = await engine.execute(
-            query=cluster_query, time_range=time_range, compartment_id=compartment_id,
+        cluster_resp = await _await_with_timeout(
+            engine.execute(
+                query=cluster_query, time_range=time_range, compartment_id=compartment_id,
+            ),
+            query_timeout_seconds,
         )
         result["top_error_clusters"] = _parse_cluster_response(cluster_resp)
     except BudgetExceededError:
@@ -371,52 +472,86 @@ async def _drill_down_one_source(
         result["errors"].append(f"cluster: {type(e).__name__}: {e}")
         result["infra_error"] = True
 
-    # Entity discovery (3 fields, sequential). Distinguish field-variance
+    # Entity discovery (3 fields, concurrent). Distinguish field-variance
     # (soft) from infrastructure failures (hard, but non-fatal to branch).
-    for entity_type, field_name in A1_ENTITY_FIELDS:
+    async def run_entity(entity_type: str, field_name: str) -> tuple[str, str, Dict[str, Any]]:
         entity_query = _compose_source_scoped_query(
             seed_filter, source,
-            f"stats count as n by '{field_name}' | sort -n | head {ENTITY_HEAD}",
+            f"stats count as n by '{field_name}' | sort -n | head {entity_head}",
         )
-        try:
-            entity_resp = await engine.execute(
+        entity_resp = await _await_with_timeout(
+            engine.execute(
                 query=entity_query, time_range=time_range, compartment_id=compartment_id,
-            )
-            result["top_entities"].extend(
-                _select_top_entities(entity_resp, entity_type, field_name)
-            )
-        except BudgetExceededError:
-            raise
-        except Exception as e:
-            if _is_field_variance_error(e):
-                result["errors"].append(
-                    f"top_entities[{entity_type}]: field '{field_name}' "
-                    f"not present in this source (InvalidParameter)"
+            ),
+            query_timeout_seconds,
+        )
+        return entity_type, field_name, entity_resp
+
+    if run_entities:
+        entity_results = await asyncio.gather(
+            *(run_entity(entity_type, field_name) for entity_type, field_name in A1_ENTITY_FIELDS),
+            return_exceptions=True,
+        )
+        for entity_spec, entity_result in zip(A1_ENTITY_FIELDS, entity_results):
+            entity_type, field_name = entity_spec
+            if isinstance(entity_result, BudgetExceededError):
+                raise entity_result
+            if isinstance(entity_result, Exception):
+                e = entity_result
+                if _is_field_variance_error(e):
+                    result["errors"].append(
+                        f"top_entities[{entity_type}]: field '{field_name}' "
+                        f"not present in this source (InvalidParameter)"
+                    )
+                    result["entity_discovery_partial"] = True
+                else:
+                    result["errors"].append(
+                        f"top_entities[{entity_type}]: {type(e).__name__}: {e}"
+                    )
+                    result["infra_error"] = True
+                continue
+
+            _, _, entity_resp = entity_result
+            try:
+                result["top_entities"].extend(
+                    _select_top_entities(entity_resp, entity_type, field_name)
                 )
-                result["entity_discovery_partial"] = True
-            else:
-                result["errors"].append(
-                    f"top_entities[{entity_type}]: {type(e).__name__}: {e}"
-                )
-                result["infra_error"] = True
+            except BudgetExceededError:
+                raise
+            except Exception as e:
+                if _is_field_variance_error(e):
+                    result["errors"].append(
+                        f"top_entities[{entity_type}]: field '{field_name}' "
+                        f"not present in this source (InvalidParameter)"
+                    )
+                    result["entity_discovery_partial"] = True
+                else:
+                    result["errors"].append(
+                        f"top_entities[{entity_type}]: {type(e).__name__}: {e}"
+                    )
+                    result["infra_error"] = True
 
     # Timeline — best-effort per design. Any non-Budget error is non-fatal
     # and maps to timeline_omitted (NOT infra_error; timeline is the
     # lowest-value sub-phase).
     timeline_query = _compose_source_scoped_query(
         seed_filter, source,
-        f"fields Time, Severity, 'Original Log Content' | sort -Time | head {TIMELINE_HEAD}",
+        f"fields Time, Severity, 'Original Log Content' | sort -Time | head {timeline_head}",
     )
-    try:
-        tl_resp = await engine.execute(
-            query=timeline_query, time_range=time_range, compartment_id=compartment_id,
-        )
-        result["timeline"] = _parse_timeline_response(tl_resp)
-    except BudgetExceededError:
-        raise
-    except Exception as e:
-        result["errors"].append(f"timeline: {type(e).__name__}: {e}")
-        result["timeline_omitted"] = True
+    if run_timeline:
+        try:
+            tl_resp = await _await_with_timeout(
+                engine.execute(
+                    query=timeline_query, time_range=time_range, compartment_id=compartment_id,
+                ),
+                query_timeout_seconds,
+            )
+            result["timeline"] = _parse_timeline_response(tl_resp)
+        except BudgetExceededError:
+            raise
+        except Exception as e:
+            result["errors"].append(f"timeline: {type(e).__name__}: {e}")
+            result["timeline_omitted"] = True
 
     return result
 
@@ -487,14 +622,25 @@ class InvestigateIncidentTool:
         time_range: str = "last_1_hour",
         top_k: int = 3,
         compartment_id: Optional[str] = None,
+        focus_sources: Optional[List[Any]] = None,
+        mode: str = "standard",
+        track_timeout_seconds: Optional[float] = None,
     ) -> Dict[str, Any]:
         if top_k < TOP_K_MIN or top_k > TOP_K_MAX:
             raise ValueError(
-                f"top_k must be in [{TOP_K_MIN}, {TOP_K_MAX}] for P0; got {top_k}"
+                f"top_k must be in [{TOP_K_MIN}, {TOP_K_MAX}]; got {top_k}"
             )
+        normalized_focus_sources = _normalize_focus_sources(focus_sources, top_k)
+        config = _mode_config(mode)
+        timeout_seconds = (
+            config.timeout_seconds
+            if track_timeout_seconds is None
+            else track_timeout_seconds
+        )
 
         seed_filter = _extract_seed_filter(query)
         acc: Dict[str, Any] = {
+            "mode": config.name,
             "seed": {
                 "query": query,
                 "seed_filter": seed_filter,
@@ -514,53 +660,16 @@ class InvestigateIncidentTool:
             "budget_snapshot": None,
         }
         try:
-            # Phase 1: seed query (result stored for subsequent phases).
-            acc["seed_result"] = await self._engine.execute(
+            await self._run_core_tracks(
+                acc=acc,
                 query=query,
+                seed_filter=seed_filter,
                 time_range=time_range,
                 compartment_id=compartment_id,
+                config=config,
+                timeout_seconds=timeout_seconds,
             )
-            # Phase 2 — J1 freshness snapshot (configured probe window, not investigation window)
-            j1_snapshot = await self._ih_tool.run(
-                compartment_id=compartment_id,
-                severity_filter="all",
-            )
-            probe_window = self._settings.ingestion_health.freshness_probe_window
-            acc["ingestion_health"] = {
-                "snapshot": j1_snapshot,
-                "probe_window": probe_window,
-                "note": (
-                    f"Freshness is evaluated over J1's configured probe window "
-                    f"({probe_window}), which may differ from the investigation "
-                    f"time_range ({time_range}). A source marked healthy here "
-                    f"could have been stopped during the investigation window."
-                ),
-            }
-            # Phase 3 — J2 parser failures (always-on)
-            acc["parser_failures"] = await self._j2_tool.run(
-                time_range=time_range,
-                top_n=10,
-                compartment_id=compartment_id,
-            )
-            # Phase 4 — A2 anomaly ranking with anchored windows
-            anchor = _utcnow()
-            current_w, comparison_w = _compute_windows(time_range, anchor)
-            # Thread compartment_id through the window dicts so DiffTool's
-            # **current_window / **comparison_window splat forwards it to
-            # each engine.execute call. Keeps _compute_windows signature pure.
-            if compartment_id is not None:
-                current_w["compartment_id"] = compartment_id
-                comparison_w["compartment_id"] = compartment_id
-            if seed_filter == "*":
-                ranking_query = "* | stats count as n by 'Log Source'"
-            else:
-                ranking_query = f"{seed_filter} | stats count as n by 'Log Source'"
-            diff_result = await self._diff_tool.run(
-                query=ranking_query,
-                current_window=current_w,
-                comparison_window=comparison_w,
-            )
-            acc["diff"] = diff_result
+            diff_result = acc.get("diff") or {}
 
             # Identify stopped sources from J1 to exclude from ranking.
             stopped: Set[str] = set()
@@ -582,6 +691,16 @@ class InvestigateIncidentTool:
             acc["anomalous_sources"] = _rank_anomalous_sources(
                 normalized_delta, stopped, top_k,
             )
+            if normalized_focus_sources is not None:
+                acc["anomalous_sources"] = [
+                    {
+                        "source": source,
+                        "current_count": None,
+                        "comparison_count": None,
+                        "pct_change": None,
+                    }
+                    for source in normalized_focus_sources
+                ]
             # Seed per_source entries for drill-down phases.
             for s in acc["anomalous_sources"]:
                 acc["per_source"][s["source"]] = {
@@ -591,14 +710,24 @@ class InvestigateIncidentTool:
                     "errors": [],
                 }
 
-            # Phases 5+6 — per-source drill-down under Semaphore(2)
-            sem = asyncio.Semaphore(PER_SOURCE_CONCURRENCY)
+            # Phases 5+6 — per-source drill-down under bounded semaphore.
+            sem = asyncio.Semaphore(config.per_source_concurrency)
             sources_list = [s["source"] for s in acc["anomalous_sources"]]
 
             async def bounded(source_name: str):
                 async with sem:
                     return await _drill_down_one_source(
-                        self._engine, source_name, seed_filter, time_range, compartment_id,
+                        self._engine,
+                        source_name,
+                        seed_filter,
+                        time_range,
+                        compartment_id,
+                        run_entities=config.run_entities,
+                        run_timeline=config.run_timeline,
+                        cluster_head=config.cluster_head,
+                        entity_head=config.entity_head,
+                        timeline_head=config.timeline_head,
+                        query_timeout_seconds=timeout_seconds,
                     )
 
             results = await asyncio.gather(
@@ -642,9 +771,278 @@ class InvestigateIncidentTool:
                 step.to_dict()
                 for step in _next_steps.suggest(query, acc.get("seed_result") or {})
             ]
+            acc["recommended_parallel_tasks"] = _recommended_parallel_tasks(acc, config)
         except BudgetExceededError:
             acc["partial_reasons"].add("budget_exceeded")
         return _finalize(acc, self._budget)
+
+    async def _run_core_tracks(
+        self,
+        *,
+        acc: Dict[str, Any],
+        query: str,
+        seed_filter: str,
+        time_range: str,
+        compartment_id: Optional[str],
+        config: _InvestigationModeConfig,
+        timeout_seconds: Optional[float],
+    ) -> None:
+        track_specs = [
+            (
+                "seed",
+                "seed_result",
+                self._run_seed_track(query, time_range, compartment_id, timeout_seconds),
+            ),
+            (
+                "diff",
+                "diff",
+                self._run_diff_track(seed_filter, time_range, compartment_id, timeout_seconds),
+            ),
+        ]
+        if config.run_ingestion_health:
+            track_specs.append((
+                "ingestion_health",
+                "ingestion_health",
+                self._run_ingestion_health_track(compartment_id, time_range, timeout_seconds),
+            ))
+        else:
+            acc["ingestion_health"] = _not_run_track(
+                "ingestion_health",
+                config.name,
+                "disabled_by_investigation_mode",
+            )
+        if config.run_parser_failures:
+            track_specs.append((
+                "parser_failures",
+                "parser_failures",
+                self._run_parser_failures_track(time_range, compartment_id, timeout_seconds),
+            ))
+        else:
+            acc["parser_failures"] = _not_run_track(
+                "parser_failures",
+                config.name,
+                "disabled_by_investigation_mode",
+            )
+
+        results = await asyncio.gather(
+            *(spec[2] for spec in track_specs),
+            return_exceptions=True,
+        )
+        for (track_name, acc_key, _), result in zip(track_specs, results):
+            if isinstance(result, BudgetExceededError):
+                acc["partial_reasons"].add("budget_exceeded")
+                acc[acc_key] = _track_error_payload(track_name, result)
+                continue
+            if isinstance(result, asyncio.TimeoutError):
+                acc["partial_reasons"].add(f"{track_name}_timeout")
+                acc[acc_key] = _track_error_payload(track_name, result)
+                continue
+            if isinstance(result, Exception):
+                acc["partial_reasons"].add(f"{track_name}_errors")
+                acc[acc_key] = _track_error_payload(track_name, result)
+                continue
+            acc[acc_key] = result
+
+    async def _run_seed_track(
+        self,
+        query: str,
+        time_range: str,
+        compartment_id: Optional[str],
+        timeout_seconds: Optional[float],
+    ) -> Dict[str, Any]:
+        return await _await_with_timeout(
+            self._engine.execute(
+                query=query,
+                time_range=time_range,
+                compartment_id=compartment_id,
+            ),
+            timeout_seconds,
+        )
+
+    async def _run_ingestion_health_track(
+        self,
+        compartment_id: Optional[str],
+        time_range: str,
+        timeout_seconds: Optional[float],
+    ) -> Dict[str, Any]:
+        j1_snapshot = await _await_with_timeout(
+            self._ih_tool.run(
+                compartment_id=compartment_id,
+                severity_filter="all",
+            ),
+            timeout_seconds,
+        )
+        probe_window = self._settings.ingestion_health.freshness_probe_window
+        return {
+            "snapshot": j1_snapshot,
+            "probe_window": probe_window,
+            "note": (
+                f"Freshness is evaluated over J1's configured probe window "
+                f"({probe_window}), which may differ from the investigation "
+                f"time_range ({time_range}). A source marked healthy here "
+                f"could have been stopped during the investigation window."
+            ),
+        }
+
+    async def _run_parser_failures_track(
+        self,
+        time_range: str,
+        compartment_id: Optional[str],
+        timeout_seconds: Optional[float],
+    ) -> Dict[str, Any]:
+        return await _await_with_timeout(
+            self._j2_tool.run(
+                time_range=time_range,
+                top_n=10,
+                compartment_id=compartment_id,
+            ),
+            timeout_seconds,
+        )
+
+    async def _run_diff_track(
+        self,
+        seed_filter: str,
+        time_range: str,
+        compartment_id: Optional[str],
+        timeout_seconds: Optional[float],
+    ) -> Dict[str, Any]:
+        anchor = _utcnow()
+        current_w, comparison_w = _compute_windows(time_range, anchor)
+        # Thread compartment_id through the window dicts so DiffTool's
+        # **current_window / **comparison_window splat forwards it to
+        # each engine.execute call. Keeps _compute_windows signature pure.
+        if compartment_id is not None:
+            current_w["compartment_id"] = compartment_id
+            comparison_w["compartment_id"] = compartment_id
+        if seed_filter == "*":
+            ranking_query = "* | stats count as n by 'Log Source'"
+        else:
+            ranking_query = f"{seed_filter} | stats count as n by 'Log Source'"
+        return await _await_with_timeout(
+            self._diff_tool.run(
+                query=ranking_query,
+                current_window=current_w,
+                comparison_window=comparison_w,
+            ),
+            timeout_seconds,
+        )
+
+
+def _not_run_track(track_name: str, mode: str, reason: str) -> Dict[str, Any]:
+    return {
+        "status": "not_run",
+        "track": track_name,
+        "mode": mode,
+        "reason": reason,
+    }
+
+
+def _track_error_payload(track_name: str, exc: Exception) -> Dict[str, Any]:
+    return {
+        "status": "error",
+        "track": track_name,
+        "error_type": type(exc).__name__,
+        "error": str(exc),
+        "delta": [],
+        "summary": "",
+    }
+
+
+def _recommended_parallel_tasks(
+    acc: Dict[str, Any],
+    config: _InvestigationModeConfig,
+) -> List[Dict[str, Any]]:
+    seed = acc.get("seed") or {}
+    seed_filter = seed.get("seed_filter") or "*"
+    time_range = seed.get("time_range") or "last_1_hour"
+    compartment_id = seed.get("compartment_id")
+    tasks: List[Dict[str, Any]] = []
+
+    if (acc.get("ingestion_health") or {}).get("status") == "not_run":
+        tasks.append({
+            "task_id": "track.ingestion_health",
+            "type": "investigation_track",
+            "tool_name": "ingestion_health",
+            "suggested_args": {
+                "severity_filter": "all",
+                **({"compartment_id": compartment_id} if compartment_id else {}),
+            },
+            "reason": "Quick mode skipped ingestion-health context.",
+            "can_run_in_parallel": True,
+        })
+    if (acc.get("parser_failures") or {}).get("status") == "not_run":
+        tasks.append({
+            "task_id": "track.parser_failures",
+            "type": "investigation_track",
+            "tool_name": "parser_failure_triage",
+            "suggested_args": {
+                "time_range": time_range,
+                "top_n": 10,
+                **({"compartment_id": compartment_id} if compartment_id else {}),
+            },
+            "reason": "Quick mode skipped parser-failure context.",
+            "can_run_in_parallel": True,
+        })
+
+    for source_entry in acc.get("anomalous_sources") or []:
+        source = source_entry.get("source")
+        if not source:
+            continue
+        source_key = str(source).lower().replace(" ", "_")
+        tasks.append({
+            "task_id": f"source.{source_key}.clusters",
+            "type": "source_drilldown",
+            "source": source,
+            "tool_name": "run_query",
+            "suggested_args": {
+                "query": _compose_source_scoped_query(
+                    seed_filter,
+                    source,
+                    f"cluster | sort -Count | head {config.cluster_head}",
+                ),
+                "time_range": time_range,
+                **({"compartment_id": compartment_id} if compartment_id else {}),
+            },
+            "reason": "Cluster dominant error patterns for this source.",
+            "can_run_in_parallel": True,
+        })
+        for entity_type, field_name in A1_ENTITY_FIELDS:
+            tasks.append({
+                "task_id": f"source.{source_key}.entity.{entity_type}",
+                "type": "source_drilldown",
+                "source": source,
+                "tool_name": "run_query",
+                "suggested_args": {
+                    "query": _compose_source_scoped_query(
+                        seed_filter,
+                        source,
+                        f"stats count as n by '{field_name}' | sort -n | head {max(config.entity_head, ENTITY_HEAD)}",
+                    ),
+                    "time_range": time_range,
+                    **({"compartment_id": compartment_id} if compartment_id else {}),
+                },
+                "reason": f"Find top {entity_type} values for this source.",
+                "can_run_in_parallel": True,
+            })
+        tasks.append({
+            "task_id": f"source.{source_key}.timeline",
+            "type": "source_drilldown",
+            "source": source,
+            "tool_name": "run_query",
+            "suggested_args": {
+                "query": _compose_source_scoped_query(
+                    seed_filter,
+                    source,
+                    f"fields Time, Severity, 'Original Log Content' | sort -Time | head {max(config.timeline_head, TIMELINE_HEAD)}",
+                ),
+                "time_range": time_range,
+                **({"compartment_id": compartment_id} if compartment_id else {}),
+            },
+            "reason": "Build a recent event timeline for this source.",
+            "can_run_in_parallel": True,
+        })
+
+    return tasks
 
 
 def _finalize(acc: Dict[str, Any], budget_tracker) -> Dict[str, Any]:
@@ -674,12 +1072,14 @@ def _finalize(acc: Dict[str, Any], budget_tracker) -> Dict[str, Any]:
 
     return {
         "summary": _templated_summary(acc),
+        "investigation_mode": acc.get("mode", "standard"),
         "seed": acc["seed"],
         "ingestion_health": acc["ingestion_health"],
         "parser_failures": acc["parser_failures"],
         "anomalous_sources": anomalous_list,
         "cross_source_timeline": cross_source,
         "next_steps": acc.get("next_steps") or [],
+        "recommended_parallel_tasks": acc.get("recommended_parallel_tasks") or [],
         "budget": budget_snap,
         "partial": bool(reasons),
         "partial_reasons": reasons,

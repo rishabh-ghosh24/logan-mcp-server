@@ -169,7 +169,7 @@ def test_generate_incident_report_schema():
     props = schema["properties"]
 
     assert schema["required"] == ["investigation"]
-    assert props["format"]["enum"] == ["markdown", "html"]
+    assert props["format"]["enum"] == ["markdown", "html", "both"]
     assert props["summary_length"]["enum"] == ["short", "standard", "detailed"]
     assert "include_sections" in props
     assert props["title"]["type"] == "string"
@@ -207,9 +207,10 @@ def test_investigate_and_generate_report_schema():
     props = schema["properties"]
 
     assert schema["required"] == ["query"]
-    assert props["format"]["enum"] == ["markdown", "html"]
+    assert props["format"]["enum"] == ["markdown", "html", "both"]
     assert props["summary_length"]["enum"] == ["short", "standard", "detailed"]
     assert "top_k" in props
+    assert props["mode"]["enum"] == ["quick", "standard", "deep"]
     assert "include_sections" in props
     assert props["title"]["type"] == "string"
     assert "title" not in schema.get("required", [])
@@ -235,6 +236,10 @@ def test_incident_report_read_tool_schemas():
     get_schema = tools["get_incident_report"]["inputSchema"]
     assert get_schema["required"] == ["report_id"]
     assert get_schema["properties"]["report_id"]["type"] == "string"
+
+    prepare_schema = tools["prepare_report_delivery"]["inputSchema"]
+    assert prepare_schema["required"] == ["report_id"]
+    assert prepare_schema["properties"]["channel"]["enum"] == ["email"]
 
     list_schema = tools["list_incident_reports"]["inputSchema"]
     limit_schema = list_schema["properties"]["limit"]

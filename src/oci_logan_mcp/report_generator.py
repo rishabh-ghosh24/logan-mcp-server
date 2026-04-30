@@ -29,7 +29,7 @@ SECTION_TITLES = {
 }
 
 SUMMARY_SENTENCE_LIMITS = {"short": 3, "standard": 5, "detailed": 8}
-FORMATS = {"markdown", "html"}
+FORMATS = {"markdown", "html", "both"}
 
 
 class ReportGenerationError(ValueError):
@@ -48,7 +48,7 @@ class ReportGenerator:
         title: str | None = None,
     ) -> Dict[str, Any]:
         if output_format not in FORMATS:
-            raise ReportGenerationError("format must be one of: html, markdown")
+            raise ReportGenerationError("format must be one of: both, html, markdown")
         if summary_length not in SUMMARY_SENTENCE_LIMITS:
             raise ReportGenerationError(
                 "summary_length must be one of: detailed, short, standard"
@@ -70,7 +70,7 @@ class ReportGenerator:
         markdown = "\n".join(parts).strip() + "\n"
 
         html_output = None
-        if output_format == "html":
+        if output_format in {"html", "both"}:
             html_output = self._render_html(markdown, title=report_title)
 
         return {

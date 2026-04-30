@@ -20,6 +20,7 @@ MUTATING_TOOLS: frozenset[str] = frozenset(
         "remember_preference",
         "record_investigation",
         "generate_incident_report",
+        "prepare_report_delivery",
         "delete_playbook",
         # OCI Monitoring alarms
         "create_alert",

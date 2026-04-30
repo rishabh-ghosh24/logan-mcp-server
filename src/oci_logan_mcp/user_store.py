@@ -99,6 +99,8 @@ class UserStore:
         interest_score: int = 0,
         force: bool = False,
         rename_to: Optional[str] = None,
+        intent_key: Optional[str] = None,
+        query_shape: Optional[str] = None,
     ) -> Dict[str, Any]:
         """Save or update a learned query.
 
@@ -122,6 +124,10 @@ class UserStore:
                     q["last_used"] = now
                     q["use_count"] = q.get("use_count", 0) + 1
                     q["interest_score"] = max(q.get("interest_score", 0), interest_score)
+                    if intent_key is not None:
+                        q["intent_key"] = intent_key
+                    if query_shape is not None:
+                        q["query_shape"] = query_shape
                     self._save(data)
                     return deepcopy(q)
 
@@ -152,6 +158,10 @@ class UserStore:
                     q["last_used"] = now
                     q["use_count"] = q.get("use_count", 0) + 1
                     q["interest_score"] = max(q.get("interest_score", 0), interest_score)
+                    if intent_key is not None:
+                        q["intent_key"] = intent_key
+                    if query_shape is not None:
+                        q["query_shape"] = query_shape
                     self._save(data)
                     return deepcopy(q)
 
@@ -185,6 +195,10 @@ class UserStore:
                 "failure_count": 0,
                 "interest_score": interest_score,
             }
+            if intent_key is not None:
+                entry["intent_key"] = intent_key
+            if query_shape is not None:
+                entry["query_shape"] = query_shape
             queries.append(entry)
 
             # Enforce max limit

@@ -51,6 +51,55 @@ def test_save_writes_report_files_under_store(tmp_path):
     ]
 
 
+def test_user_scoped_store_isolates_reports_with_shared_artifact_dir(tmp_path):
+    alice = ReportStore(tmp_path, user_id="alice")
+    bob = ReportStore(tmp_path, user_id="bob")
+
+    saved = alice.save(_report())
+
+    assert saved["markdown_path"] == str(
+        tmp_path / "users" / "alice" / "store" / "rpt_0123456789abcdef0123456789abcdef" / "report.md"
+    )
+    assert alice.get("rpt_0123456789abcdef0123456789abcdef")["metadata"]["title"] == (
+        "24-hour failures and issues report"
+    )
+    with pytest.raises(ReportNotFoundError):
+        bob.get("rpt_0123456789abcdef0123456789abcdef")
+
+
+def test_user_scoped_store_rejects_invalid_user_id(tmp_path):
+    with pytest.raises(ReportStoreError):
+        ReportStore(tmp_path, user_id="../alice")
+
+
+def test_user_scoped_store_imports_legacy_shared_reports(tmp_path):
+    legacy = ReportStore(tmp_path)
+    legacy.save(_report())
+
+    alice = ReportStore(tmp_path, user_id="alice")
+
+    listed = alice.list(limit=10)
+    loaded = alice.get("rpt_0123456789abcdef0123456789abcdef")
+    expected_dir = tmp_path / "users" / "alice" / "store" / "rpt_0123456789abcdef0123456789abcdef"
+    legacy_dir = tmp_path / "store" / "rpt_0123456789abcdef0123456789abcdef"
+    assert listed["reports"][0]["report_id"] == "rpt_0123456789abcdef0123456789abcdef"
+    assert loaded["metadata"]["legacy_shared_imported_from"] == str(legacy_dir)
+    assert loaded["metadata"]["markdown_path"] == str(expected_dir / "report.md")
+    assert loaded["metadata"]["html_path"] == str(expected_dir / "report.html")
+    assert loaded["metadata"]["metadata_path"] == str(expected_dir / "metadata.json")
+    assert (legacy_dir / "report.md").exists()
+    assert (legacy_dir / "report.html").exists()
+    assert (legacy_dir / "metadata.json").exists()
+
+    first_metadata = (expected_dir / "metadata.json").read_text(encoding="utf-8")
+    alice_again = ReportStore(tmp_path, user_id="alice")
+
+    assert alice_again.list(limit=10)["reports"][0]["report_id"] == (
+        "rpt_0123456789abcdef0123456789abcdef"
+    )
+    assert (expected_dir / "metadata.json").read_text(encoding="utf-8") == first_metadata
+
+
 def test_incomplete_report_without_metadata_is_not_listed_or_loaded(tmp_path):
     store = ReportStore(tmp_path)
     report_id = "rpt_44444444444444444444444444444444"
@@ -78,6 +127,21 @@ def test_get_returns_markdown_html_paths_and_metadata(tmp_path):
     assert loaded["markdown_path"].endswith("/report.md")
     assert loaded["html_path"].endswith("/report.html")
     assert loaded["metadata_path"].endswith("/metadata.json")
+
+
+def test_update_metadata_merges_patch_safely(tmp_path):
+    store = ReportStore(tmp_path)
+    store.save(_report())
+
+    updated = store.update_metadata(
+        "rpt_0123456789abcdef0123456789abcdef",
+        {"delivery_state": {"status": "awaiting_final_confirmation"}},
+    )
+
+    assert updated["metadata"]["title"] == "24-hour failures and issues report"
+    assert updated["metadata"]["delivery_state"]["status"] == "awaiting_final_confirmation"
+    loaded = store.get("rpt_0123456789abcdef0123456789abcdef")
+    assert loaded["metadata"]["delivery_state"]["status"] == "awaiting_final_confirmation"
 
 
 def test_markdown_only_resave_removes_stale_html(tmp_path):

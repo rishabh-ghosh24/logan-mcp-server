@@ -567,11 +567,31 @@ def get_tools() -> List[Dict[str, Any]]:
                     "top_k": {
                         "type": "integer",
                         "minimum": 1,
-                        "maximum": 3,
+                        "maximum": 10,
                         "description": (
                             "Number of anomalous sources to drill into. "
-                            "Default: 3. P0 clamp is [1, 3] to match the "
-                            "~20s p95 latency guarantee."
+                            "Default: 3. Explicit user requests can raise "
+                            "this to 10; wider investigations may take longer."
+                        ),
+                    },
+                    "mode": {
+                        "type": "string",
+                        "enum": ["quick", "standard", "deep"],
+                        "description": (
+                            "Investigation depth. quick runs seed/diff plus "
+                            "light source clustering; standard runs the normal "
+                            "context and drilldown; deep increases source "
+                            "drilldown row limits. Default: standard."
+                        ),
+                        "default": "standard",
+                    },
+                    "focus_sources": {
+                        "type": "array",
+                        "items": {"type": "string"},
+                        "description": (
+                            "Optional exact log source names to drill into. "
+                            "Use when the user already selected top offenders; "
+                            "the list is deduplicated and capped by top_k."
                         ),
                     },
                     "compartment_id": {
@@ -614,8 +634,22 @@ def get_tools() -> List[Dict[str, Any]]:
                     "top_k": {
                         "type": "integer",
                         "minimum": 1,
-                        "maximum": 3,
+                        "maximum": 10,
                         "description": "Number of anomalous sources to drill into. Default: 3.",
+                    },
+                    "mode": {
+                        "type": "string",
+                        "enum": ["quick", "standard", "deep"],
+                        "description": (
+                            "Investigation depth passed through to "
+                            "investigate_incident. Default: standard."
+                        ),
+                        "default": "standard",
+                    },
+                    "focus_sources": {
+                        "type": "array",
+                        "items": {"type": "string"},
+                        "description": "Optional exact log source names to drill into.",
                     },
                     "compartment_id": {
                         "type": "string",
@@ -623,9 +657,9 @@ def get_tools() -> List[Dict[str, Any]]:
                     },
                     "format": {
                         "type": "string",
-                        "enum": ["markdown", "html"],
-                        "description": "Report output renderer. Default: markdown.",
-                        "default": "markdown",
+                        "enum": ["markdown", "html", "both"],
+                        "description": "Report output renderer. Default: both.",
+                        "default": "both",
                     },
                     "include_sections": {
                         "type": "array",
@@ -680,12 +714,12 @@ def get_tools() -> List[Dict[str, Any]]:
                     },
                     "format": {
                         "type": "string",
-                        "enum": ["markdown", "html"],
+                        "enum": ["markdown", "html", "both"],
                         "description": (
                             "Output renderer. Markdown is always returned; html "
-                            "adds an HTML rendering."
+                            "adds an HTML rendering. Default: both."
                         ),
-                        "default": "markdown",
+                        "default": "both",
                     },
                     "include_sections": {
                         "type": "array",
@@ -792,6 +826,38 @@ def get_tools() -> List[Dict[str, Any]]:
             },
         },
         {
+            "name": "prepare_report_delivery",
+            "description": (
+                "Prepare OCI Notifications email delivery for a stored incident "
+                "report. This does not send email. It returns a confirmation "
+                "token and exact prompt that must be shown to the user before "
+                "calling deliver_report with delivery_confirmation_token."
+            ),
+            "inputSchema": {
+                "type": "object",
+                "required": ["report_id"],
+                "properties": {
+                    "report_id": {
+                        "type": "string",
+                        "description": "Stored report id returned by generate_incident_report.",
+                    },
+                    "channel": {
+                        "type": "string",
+                        "enum": ["email"],
+                        "default": "email",
+                    },
+                    "recipients": {
+                        "type": "object",
+                        "properties": {
+                            "email_topic_ocid": {"type": "string"},
+                            "email_topic_name": {"type": "string"},
+                            "email_topic_compartment_id": {"type": "string"},
+                        },
+                    },
+                },
+            },
+        },
+        {
             "name": "deliver_report",
             "description": (
                 "Deliver a generated incident report via Telegram, Slack, or OCI "
@@ -849,6 +915,14 @@ def get_tools() -> List[Dict[str, Any]]:
                         "type": "string",
                         "enum": ["pdf", "markdown", "both"],
                         "default": "pdf",
+                    },
+                    "delivery_confirmation_token": {
+                        "type": "string",
+                        "description": (
+                            "Required for email delivery. Use the token returned "
+                            "by prepare_report_delivery after the user confirms "
+                            "the exact prompt."
+                        ),
                     },
                     "title": {"type": "string"},
                 },
@@ -1163,7 +1237,33 @@ def get_tools() -> List[Dict[str, Any]]:
                         "type": "string",
                         "enum": ["basic", "security", "performance", "errors", "statistics", "all"],
                         "description": "Category of examples to return. Use 'all' for complete reference.",
-                    }
+                    },
+                    "include_personal": {
+                        "type": "boolean",
+                        "description": (
+                            "Include the current user's learned successful queries "
+                            "alongside starter examples. Default: true."
+                        ),
+                        "default": True,
+                    },
+                    "include_shared": {
+                        "type": "boolean",
+                        "description": (
+                            "Include shared promoted favorite queries alongside "
+                            "starter examples. Default: true."
+                        ),
+                        "default": True,
+                    },
+                    "limit_per_source": {
+                        "type": "integer",
+                        "minimum": 0,
+                        "maximum": 20,
+                        "description": (
+                            "Maximum personal and shared examples to add for the "
+                            "requested category. Default: 5."
+                        ),
+                        "default": 5,
+                    },
                 },
             },
         },

@@ -1,4 +1,5 @@
 """Tests for investigate_incident (A1) module."""
+import asyncio
 from datetime import datetime, timedelta, timezone
 
 import pytest
@@ -535,6 +536,92 @@ class TestInvestigateSkeleton:
         assert "budget_exceeded" in report["partial_reasons"]
 
 
+class TestCoreTrackParallelism:
+    @pytest.mark.asyncio
+    async def test_seed_ingestion_parser_and_diff_tracks_start_in_parallel(self):
+        started = set()
+        release = asyncio.Event()
+
+        async def mark_started(name, payload):
+            started.add(name)
+            if started == {"seed", "j1", "j2", "diff"}:
+                release.set()
+            await asyncio.wait_for(release.wait(), timeout=0.2)
+            return payload
+
+        engine = _make_engine()
+
+        async def execute_router(**kwargs):
+            if kwargs.get("query") == "'Event' = 'error'":
+                return await mark_started("seed", {"data": {"columns": [], "rows": []}})
+            return {"data": {"columns": [], "rows": []}}
+
+        engine.execute = AsyncMock(side_effect=execute_router)
+        schema, ih, j2, diff = _make_deps()
+
+        async def ih_run(**kwargs):
+            return await mark_started("j1", {
+                "summary": {"sources_healthy": 0, "sources_stopped": 0, "sources_unknown": 0},
+                "findings": [],
+                "checked_at": "2026-04-22T10:00:00+00:00",
+                "metadata": {},
+            })
+
+        async def j2_run(**kwargs):
+            return await mark_started("j2", {
+                "failures": [],
+                "total_failure_count": 0,
+            })
+
+        async def diff_run(**kwargs):
+            return await mark_started("diff", {
+                "current": {},
+                "comparison": {},
+                "delta": [],
+                "summary": "no change",
+            })
+
+        ih.run = AsyncMock(side_effect=ih_run)
+        j2.run = AsyncMock(side_effect=j2_run)
+        diff.run = AsyncMock(side_effect=diff_run)
+        tool = InvestigateIncidentTool(
+            query_engine=engine, schema_manager=schema,
+            ingestion_health_tool=ih, parser_triage_tool=j2, diff_tool=diff,
+            settings=_make_settings(), budget_tracker=_make_budget(),
+        )
+
+        report = await tool.run(query="'Event' = 'error'", time_range="last_1_hour", top_k=3)
+
+        assert report["partial"] is False
+        assert started == {"seed", "j1", "j2", "diff"}
+
+    @pytest.mark.asyncio
+    async def test_track_timeout_returns_partial_report(self):
+        engine = _make_engine()
+
+        async def slow_seed(**kwargs):
+            await asyncio.sleep(0.05)
+            return {"data": {"columns": [], "rows": []}}
+
+        engine.execute = AsyncMock(side_effect=slow_seed)
+        schema, ih, j2, diff = _make_deps()
+        tool = InvestigateIncidentTool(
+            query_engine=engine, schema_manager=schema,
+            ingestion_health_tool=ih, parser_triage_tool=j2, diff_tool=diff,
+            settings=_make_settings(), budget_tracker=_make_budget(),
+        )
+
+        report = await tool.run(
+            query="*",
+            time_range="last_1_hour",
+            top_k=3,
+            track_timeout_seconds=0.01,
+        )
+
+        assert report["partial"] is True
+        assert "seed_timeout" in report["partial_reasons"]
+
+
 class TestPhase1SeedExecution:
     @pytest.mark.asyncio
     async def test_seed_query_executed_with_time_range(self):
@@ -659,6 +746,64 @@ class TestPhase4AnomalyRanking:
         assert srcs == ["A", "B", "C"]  # by |pct_change|: 100, 50, 50
 
     @pytest.mark.asyncio
+    async def test_explicit_top_k_five_is_honored(self):
+        diff_result = {
+            "current": {}, "comparison": {}, "summary": "",
+            "delta": [
+                {"dimension": f"S{i}", "current": 100 - i, "comparison": 1, "pct_change": 1000.0 - i}
+                for i in range(6)
+            ],
+        }
+        schema, ih, j2, diff = _make_deps()
+        diff.run = AsyncMock(return_value=diff_result)
+        tool = InvestigateIncidentTool(
+            query_engine=_make_engine(), schema_manager=schema,
+            ingestion_health_tool=ih, parser_triage_tool=j2, diff_tool=diff,
+            settings=_make_settings(), budget_tracker=_make_budget(),
+        )
+
+        report = await tool.run(query="*", time_range="last_1_hour", top_k=5)
+
+        assert [s["source"] for s in report["anomalous_sources"]] == [
+            "S0", "S1", "S2", "S3", "S4",
+        ]
+
+    @pytest.mark.asyncio
+    async def test_focus_sources_drills_into_exact_requested_sources(self):
+        seen_queries = []
+
+        async def execute_router(**kwargs):
+            q = kwargs.get("query", "")
+            seen_queries.append(q)
+            return {"data": {"columns": [], "rows": []}}
+
+        engine = MagicMock()
+        engine.execute = AsyncMock(side_effect=execute_router)
+        schema, ih, j2, diff = _make_deps()
+        diff.run = AsyncMock(return_value={"current": {}, "comparison": {}, "delta": [], "summary": ""})
+        tool = InvestigateIncidentTool(
+            query_engine=engine, schema_manager=schema,
+            ingestion_health_tool=ih, parser_triage_tool=j2, diff_tool=diff,
+            settings=_make_settings(), budget_tracker=_make_budget(),
+        )
+
+        report = await tool.run(
+            query="'Event' = 'error'",
+            time_range="last_1_hour",
+            top_k=5,
+            focus_sources=["A", "B", "C", "D", "E"],
+        )
+
+        assert [s["source"] for s in report["anomalous_sources"]] == ["A", "B", "C", "D", "E"]
+        for source in report["anomalous_sources"]:
+            assert source["current_count"] is None
+            assert source["comparison_count"] is None
+        cluster_queries = [q for q in seen_queries if "| cluster" in q]
+        assert len(cluster_queries) == 5
+        for source in ["A", "B", "C", "D", "E"]:
+            assert any(f"'Log Source' = '{source}'" in q for q in cluster_queries)
+
+    @pytest.mark.asyncio
     async def test_stopped_sources_excluded_from_ranking(self):
         ih_result = {
             "summary": {"sources_healthy": 1, "sources_stopped": 1, "sources_unknown": 0},
@@ -683,6 +828,94 @@ class TestPhase4AnomalyRanking:
         srcs = [s["source"] for s in report["anomalous_sources"]]
         assert "Broken" not in srcs
         assert "Working" in srcs
+
+
+class TestInvestigationModes:
+    @pytest.mark.asyncio
+    async def test_quick_mode_skips_slower_context_and_lightens_drilldown(self):
+        diff_result = {
+            "current": {}, "comparison": {}, "summary": "",
+            "delta": [{"dimension": "Apache", "current": 100, "comparison": 50, "pct_change": 100.0}],
+        }
+        seen_queries = []
+
+        async def execute_router(**kwargs):
+            seen_queries.append(kwargs.get("query", ""))
+            return {"data": {"columns": [], "rows": []}}
+
+        engine = MagicMock()
+        engine.execute = AsyncMock(side_effect=execute_router)
+        schema, ih, j2, diff = _make_deps()
+        diff.run = AsyncMock(return_value=diff_result)
+        tool = InvestigateIncidentTool(
+            query_engine=engine, schema_manager=schema,
+            ingestion_health_tool=ih, parser_triage_tool=j2, diff_tool=diff,
+            settings=_make_settings(), budget_tracker=_make_budget(),
+        )
+
+        report = await tool.run(query="*", time_range="last_1_hour", top_k=3, mode="quick")
+
+        assert report["investigation_mode"] == "quick"
+        assert report["ingestion_health"]["status"] == "not_run"
+        assert report["parser_failures"]["status"] == "not_run"
+        ih.run.assert_not_awaited()
+        j2.run.assert_not_awaited()
+        assert any("| cluster" in q for q in seen_queries)
+        assert not any("User Name" in q or "Request ID" in q or "| fields Time" in q for q in seen_queries)
+
+    @pytest.mark.asyncio
+    async def test_deep_mode_increases_drilldown_depth(self):
+        diff_result = {
+            "current": {}, "comparison": {}, "summary": "",
+            "delta": [{"dimension": "Apache", "current": 100, "comparison": 50, "pct_change": 100.0}],
+        }
+        seen_queries = []
+
+        async def execute_router(**kwargs):
+            seen_queries.append(kwargs.get("query", ""))
+            return {"data": {"columns": [], "rows": []}}
+
+        engine = MagicMock()
+        engine.execute = AsyncMock(side_effect=execute_router)
+        schema, ih, j2, diff = _make_deps()
+        diff.run = AsyncMock(return_value=diff_result)
+        tool = InvestigateIncidentTool(
+            query_engine=engine, schema_manager=schema,
+            ingestion_health_tool=ih, parser_triage_tool=j2, diff_tool=diff,
+            settings=_make_settings(), budget_tracker=_make_budget(),
+        )
+
+        report = await tool.run(query="*", time_range="last_1_hour", top_k=3, mode="deep")
+
+        assert report["investigation_mode"] == "deep"
+        assert any("| cluster | sort -Count | head 5" in q for q in seen_queries)
+        assert any("| sort -n | head 10" in q for q in seen_queries)
+        assert any("| fields Time, Severity, 'Original Log Content' | sort -Time | head 50" in q for q in seen_queries)
+
+    @pytest.mark.asyncio
+    async def test_recommended_parallel_tasks_are_returned_for_sources(self):
+        diff_result = {
+            "current": {}, "comparison": {}, "summary": "",
+            "delta": [
+                {"dimension": "Apache", "current": 100, "comparison": 50, "pct_change": 100.0},
+                {"dimension": "Kubelet", "current": 30, "comparison": 10, "pct_change": 200.0},
+            ],
+        }
+        schema, ih, j2, diff = _make_deps()
+        diff.run = AsyncMock(return_value=diff_result)
+        tool = InvestigateIncidentTool(
+            query_engine=_make_engine(), schema_manager=schema,
+            ingestion_health_tool=ih, parser_triage_tool=j2, diff_tool=diff,
+            settings=_make_settings(), budget_tracker=_make_budget(),
+        )
+
+        report = await tool.run(query="'Event' = 'error'", time_range="last_1_hour", top_k=2)
+
+        tasks = report["recommended_parallel_tasks"]
+        assert tasks
+        assert all(task["can_run_in_parallel"] is True for task in tasks)
+        assert {"Apache", "Kubelet"} <= {task.get("source") for task in tasks if task.get("source")}
+        assert any(task["tool_name"] == "run_query" and "| cluster" in task["suggested_args"]["query"] for task in tasks)
 
 
 class TestPhase5And6DrillDown:
@@ -1145,7 +1378,9 @@ class TestToolSchema:
         assert "enum" in props["time_range"]
         assert "top_k" in props
         assert props["top_k"]["minimum"] == 1
-        assert props["top_k"]["maximum"] == 3
+        assert props["top_k"]["maximum"] == 10
+        assert props["mode"]["enum"] == ["quick", "standard", "deep"]
+        assert "focus_sources" in props
         assert "compartment_id" in props
         assert tool["inputSchema"].get("required") == ["query"]
 

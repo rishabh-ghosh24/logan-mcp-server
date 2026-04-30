@@ -8,6 +8,7 @@ from pathlib import Path
 from typing import Any
 
 REPORT_ID_RE = re.compile(r"^rpt_[0-9a-f]{32}$")
+USER_ID_RE = re.compile(r"^[a-zA-Z0-9_.-]+$")
 
 
 class ReportStoreError(Exception):
@@ -27,9 +28,18 @@ class ReportStoreCorruptError(ReportStoreError):
 
 
 class ReportStore:
-    def __init__(self, artifact_dir: Path | str) -> None:
+    def __init__(self, artifact_dir: Path | str, user_id: str | None = None) -> None:
         self.artifact_dir = Path(artifact_dir).expanduser()
-        self.root = self.artifact_dir / "store"
+        self.user_id = user_id
+        if user_id is not None:
+            if not USER_ID_RE.fullmatch(user_id):
+                raise ReportStoreError(
+                    f"Invalid user_id '{user_id}': must be alphanumeric, _, ., or -"
+                )
+            self.root = self.artifact_dir / "users" / user_id / "store"
+            self._import_legacy_shared_reports()
+        else:
+            self.root = self.artifact_dir / "store"
 
     def save(self, report: dict[str, Any]) -> dict[str, Any]:
         report_id = self._validate_report_id(str(report.get("report_id", "")))
@@ -119,6 +129,34 @@ class ReportStore:
             "html_path": str(html_path) if html_path.exists() else None,
             "metadata": metadata,
             "metadata_path": str(metadata_path),
+        }
+
+    def update_metadata(self, report_id: str, patch: dict[str, Any]) -> dict[str, Any]:
+        report_id = self._validate_report_id(report_id)
+        if not isinstance(patch, dict):
+            raise ReportStoreError("metadata patch must be an object")
+        self._ensure_existing_root_for_read(report_id)
+        report_dir = self._existing_report_dir(report_id)
+        metadata_path = report_dir / "metadata.json"
+        if metadata_path.is_symlink() or not metadata_path.exists():
+            raise ReportNotFoundError(f"Report not found: {report_id}")
+        self._ensure_file_within_root(metadata_path, report_id)
+
+        metadata = self._read_metadata(metadata_path, report_id)
+        metadata.update(patch)
+        try:
+            self._atomic_write_text(
+                metadata_path,
+                json.dumps(metadata, indent=2, sort_keys=True) + "\n",
+            )
+        except OSError as exc:
+            raise ReportStoreError(f"Could not update report metadata: {exc}") from exc
+
+        loaded = self.get(report_id)
+        return {
+            "report_id": report_id,
+            "metadata": loaded["metadata"],
+            "metadata_path": loaded["metadata_path"],
         }
 
     def list(self, limit: int = 20) -> dict[str, Any]:
@@ -229,6 +267,65 @@ class ReportStore:
             raise ReportStoreError(f"Report path is unsafe: {report_id}")
         self._ensure_path_within_root(report_dir, ReportStoreError)
         return report_dir
+
+    def _import_legacy_shared_reports(self) -> None:
+        legacy_root = self.artifact_dir / "store"
+        if legacy_root == self.root or legacy_root.is_symlink() or not legacy_root.is_dir():
+            return
+
+        # Intentionally copy legacy shared reports into each user's scoped store.
+        for legacy_dir in legacy_root.iterdir():
+            report_id = legacy_dir.name
+            if not REPORT_ID_RE.fullmatch(report_id):
+                continue
+            if legacy_dir.is_symlink() or not legacy_dir.is_dir():
+                continue
+            target_dir = self._report_dir(report_id)
+            if target_dir.exists():
+                continue
+
+            markdown_path = legacy_dir / "report.md"
+            metadata_path = legacy_dir / "metadata.json"
+            html_path = legacy_dir / "report.html"
+            if (
+                markdown_path.is_symlink()
+                or metadata_path.is_symlink()
+                or not markdown_path.is_file()
+                or not metadata_path.is_file()
+            ):
+                continue
+            if html_path.is_symlink():
+                continue
+
+            try:
+                markdown = markdown_path.read_text(encoding="utf-8")
+                metadata = json.loads(metadata_path.read_text(encoding="utf-8"))
+                html = html_path.read_text(encoding="utf-8") if html_path.is_file() else None
+            except (OSError, json.JSONDecodeError):
+                continue
+            if not isinstance(metadata, dict):
+                continue
+
+            try:
+                report_dir = self._report_dir_for_save(report_id)
+                new_markdown_path = report_dir / "report.md"
+                new_html_path = report_dir / "report.html" if html else None
+                new_metadata_path = report_dir / "metadata.json"
+                metadata["report_id"] = report_id
+                metadata["markdown_path"] = str(new_markdown_path)
+                metadata["html_path"] = str(new_html_path) if new_html_path else None
+                metadata["metadata_path"] = str(new_metadata_path)
+                metadata.setdefault("legacy_shared_imported_from", str(legacy_dir))
+
+                self._atomic_write_text(new_markdown_path, markdown)
+                if html and new_html_path:
+                    self._atomic_write_text(new_html_path, html)
+                self._atomic_write_text(
+                    new_metadata_path,
+                    json.dumps(metadata, indent=2, sort_keys=True) + "\n",
+                )
+            except ReportStoreError:
+                continue
 
     def _existing_report_dir(self, report_id: str) -> Path:
         report_dir = self._report_dir(report_id)

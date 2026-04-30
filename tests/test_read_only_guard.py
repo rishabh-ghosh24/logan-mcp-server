@@ -28,6 +28,7 @@ def test_mutating_tools_contains_known_writers():
         "remember_preference",
         "record_investigation",
         "generate_incident_report",
+        "prepare_report_delivery",
         "delete_playbook",
         "create_alert",
         "update_alert",

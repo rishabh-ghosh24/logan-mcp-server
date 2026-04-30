@@ -191,6 +191,14 @@ def test_html_format_returns_escaped_html_document():
     assert "<critical>" not in report["html"]
 
 
+def test_both_format_returns_markdown_and_html_document():
+    report = ReportGenerator().generate(_investigation(), output_format="both")
+
+    assert report["markdown"].startswith("# Incident Report")
+    assert report["html"].startswith("<!doctype html>")
+    assert "<h1>Incident Report</h1>" in report["html"]
+
+
 def test_html_format_uses_custom_title():
     report = ReportGenerator().generate(
         _investigation(),

@@ -36,6 +36,24 @@ def test_catalog_entry_minimum_fields():
     assert entry.tags == []  # default
 
 
+def test_catalog_loads_intent_metadata_from_personal_queries(tmp_path):
+    store = UserStore(base_dir=tmp_path, user_id="alice")
+    store.save_query(
+        name="error_like_sources_by_log_source",
+        query="'Original Log Content' like '%error%' | stats count by 'Log Source'",
+        description="canonical",
+        category="errors",
+        intent_key="error_like_sources",
+        query_shape="count_by_log_source",
+    )
+
+    catalog = UnifiedCatalog(base_dir=tmp_path)
+    entry = catalog.load_personal("alice")[0]
+
+    assert entry.intent_key == "error_like_sources"
+    assert entry.query_shape == "count_by_log_source"
+
+
 def test_source_type_values():
     """SourceType enum has correct values."""
     assert SourceType.BUILTIN.value == "builtin"
@@ -260,6 +278,37 @@ def test_for_onboarding_includes_community_favorites_when_shared_exists(tmp_path
     # Top-2 by interest_score: fav_high (10) and fav_mid (5), NOT fav_low (1)
     shared_names = {e.name for e in shared_entries}
     assert shared_names == {"fav_high", "fav_mid"}
+
+
+def test_for_onboarding_includes_ranked_personal_queries_when_user_supplied(tmp_path):
+    store = UserStore(base_dir=tmp_path, user_id="alice")
+    store.save_query(
+        name="error_like_sources_by_log_source",
+        query="'Original Log Content' like '%error%' | stats count by 'Log Source'",
+        description="canonical personal",
+        category="errors",
+        interest_score=4,
+    )
+    store.save_query(
+        name="low_value_error_query",
+        query="'Original Log Content' like '%exception%' | head 20",
+        description="less useful",
+        category="errors",
+        interest_score=1,
+    )
+    store.record_success("'Original Log Content' like '%error%' | stats count by 'Log Source'")
+    store.record_success("'Original Log Content' like '%error%' | stats count by 'Log Source'")
+
+    catalog = UnifiedCatalog(base_dir=tmp_path)
+    entries = catalog.for_onboarding(
+        user_id="alice",
+        category="errors",
+        include_personal=1,
+        include_community_favorites=0,
+    )
+
+    personal = [e for e in entries if e.source == SourceType.PERSONAL]
+    assert [e.name for e in personal] == ["error_like_sources_by_log_source"]
 
 
 def test_for_onboarding_without_shared_returns_only_starters(tmp_path):

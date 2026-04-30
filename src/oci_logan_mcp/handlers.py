@@ -3,6 +3,7 @@
 import hashlib
 import json
 import logging
+import secrets
 from datetime import datetime, timezone
 from typing import TYPE_CHECKING, Any, Dict, List, Optional
 
@@ -142,7 +143,10 @@ class MCPHandlers:
         )
         self.find_rare_events_tool = RareEventsTool(self.query_engine)
         self.report_generator = ReportGenerator()
-        self.report_store = ReportStore(self.settings.report_delivery.artifact_dir)
+        self.report_store = ReportStore(
+            self.settings.report_delivery.artifact_dir,
+            user_id=user_store.user_id,
+        )
         self.trace_request_id_tool = TraceRequestIdTool(self.pivot_tool)
         self.log_source_builder_tool = LogSourceFromSampleTool(
             oci_client=oci_client,
@@ -213,6 +217,7 @@ class MCPHandlers:
             "investigate_and_generate_report": self._investigate_and_generate_report,
             "generate_incident_report": self._generate_incident_report,
             "get_report_delivery_options": self._get_report_delivery_options,
+            "prepare_report_delivery": self._prepare_report_delivery,
             "list_notification_topics": self._list_notification_topics,
             "get_incident_report": self._get_incident_report,
             "list_incident_reports": self._list_incident_reports,
@@ -935,10 +940,25 @@ class MCPHandlers:
             top_k = int(args.get("top_k", 3))
         except (TypeError, ValueError):
             return None, {"status": "error", "error": "top_k must be an integer"}
-        if top_k < 1 or top_k > 3:
+        if top_k < 1 or top_k > 10:
             return None, {
                 "status": "error",
-                "error": "top_k must be between 1 and 3 (P0)",
+                "error": "top_k must be between 1 and 10",
+            }
+        focus_sources = args.get("focus_sources")
+        if focus_sources is not None and (
+            not isinstance(focus_sources, list)
+            or any(not isinstance(source, str) for source in focus_sources)
+        ):
+            return None, {
+                "status": "error",
+                "error": "focus_sources must be a list of log source names",
+            }
+        mode = args.get("mode", "standard")
+        if mode not in ("quick", "standard", "deep"):
+            return None, {
+                "status": "error",
+                "error": "mode must be one of: quick, standard, deep",
             }
         try:
             report = await self.investigate_tool.run(
@@ -946,6 +966,8 @@ class MCPHandlers:
                 time_range=args.get("time_range", "last_1_hour"),
                 top_k=top_k,
                 compartment_id=args.get("compartment_id"),
+                focus_sources=focus_sources,
+                mode=mode,
             )
         except Exception as e:
             return None, {"status": "error", "error": str(e)}
@@ -959,7 +981,7 @@ class MCPHandlers:
         try:
             report = self.report_generator.generate(
                 investigation=investigation or {},
-                output_format=args.get("format", "markdown"),
+                output_format=args.get("format", "both"),
                 include_sections=args.get("include_sections"),
                 summary_length=args.get("summary_length", "standard"),
                 title=args.get("title"),
@@ -967,6 +989,7 @@ class MCPHandlers:
         except ReportGenerationError as e:
             return self._error_response("invalid_report_options", str(e))
 
+        next_required_action = self._attach_report_delivery_state(report)
         try:
             stored = self.report_store.save(report)
         except ReportStoreError as e:
@@ -974,12 +997,14 @@ class MCPHandlers:
 
         report["artifacts"] = stored["artifacts"]
         report["metadata"] = stored["metadata"]
+        report["next_required_action"] = next_required_action
 
         payload = {
             "status": "report_generated",
             "investigation": investigation,
             "report": report,
             "delivery_options": self._report_delivery_options_payload(),
+            "next_required_action": next_required_action,
         }
         return [{"type": "text", "text": json.dumps(payload, indent=2, default=str)}]
 
@@ -994,7 +1019,7 @@ class MCPHandlers:
         try:
             report = self.report_generator.generate(
                 investigation=investigation,
-                output_format=args.get("format", "markdown"),
+                output_format=args.get("format", "both"),
                 include_sections=args.get("include_sections"),
                 summary_length=args.get("summary_length", "standard"),
                 title=args.get("title"),
@@ -1002,6 +1027,7 @@ class MCPHandlers:
         except ReportGenerationError as e:
             return self._error_response("invalid_report_options", str(e))
 
+        next_required_action = self._attach_report_delivery_state(report)
         try:
             stored = self.report_store.save(report)
         except ReportStoreError as e:
@@ -1011,7 +1037,42 @@ class MCPHandlers:
         report["metadata"] = stored["metadata"]
         payload = dict(report)
         payload["delivery_options"] = self._report_delivery_options_payload()
+        payload["next_required_action"] = next_required_action
         return self._json_response(payload)
+
+    def _attach_report_delivery_state(self, report: Dict[str, Any]) -> Dict[str, Any]:
+        metadata = report.setdefault("metadata", {})
+        if not isinstance(metadata, dict):
+            metadata = {}
+            report["metadata"] = metadata
+        topic = self._saved_report_email_topic() or self._configured_report_email_topic()
+        title = metadata.get("title") or report.get("title") or "Incident Report"
+        topic_label = None
+        if topic:
+            topic_label = topic.get("name") or topic.get("topic_id") or topic.get("id")
+        prompt = (
+            f"Send report '{title}' to OCI Notifications topic '{topic_label}'?"
+            if topic_label
+            else f"Choose an OCI Notifications topic before sending report '{title}'."
+        )
+        state = {
+            "status": "pending_user_confirmation",
+            "channel": "email",
+            "provider": "oci_notifications",
+            "suggested_topic": topic,
+            "last_delivery_attempt": None,
+        }
+        metadata["delivery_state"] = state
+        next_required_action = {
+            "status": "awaiting_delivery_decision",
+            "action": "confirm_or_skip_email_delivery",
+            "channel": "email",
+            "provider": "oci_notifications",
+            "confirmation_prompt": prompt,
+            "suggested_topic": topic,
+        }
+        metadata["next_required_action"] = next_required_action
+        return next_required_action
 
     async def _get_incident_report(self, args: Dict) -> List[Dict]:
         report_id = str(args.get("report_id", ""))
@@ -1043,6 +1104,75 @@ class MCPHandlers:
     async def _get_report_delivery_options(self, args: Dict) -> List[Dict]:
         payload = {"status": "ok", **self._report_delivery_options_payload()}
         return self._json_response(payload)
+
+    async def _prepare_report_delivery(self, args: Dict) -> List[Dict]:
+        report_id = str(args.get("report_id", ""))
+        channel = args.get("channel", "email")
+        if channel != "email":
+            return self._error_response(
+                "unsupported_delivery_channel",
+                "prepare_report_delivery currently supports only email",
+            )
+        try:
+            stored = self.report_store.get(report_id)
+        except InvalidReportIdError as e:
+            return self._error_response("invalid_report_id", str(e))
+        except ReportNotFoundError as e:
+            return self._error_response("report_not_found", str(e))
+        except ReportStoreCorruptError as e:
+            return self._error_response("report_store_corrupt", str(e))
+        except ReportStoreError as e:
+            return self._error_response("report_store_error", str(e))
+
+        recipients, topic = self._report_email_recipients(["email"], args.get("recipients"))
+        token = secrets.token_urlsafe(24)
+        metadata = stored.get("metadata") or {}
+        title = metadata.get("title") or "Incident Report"
+        topic_label = (topic or {}).get("name") or recipients.get("email_topic_ocid") or "configured email topic"
+        prompt = f"Send report '{title}' to OCI Notifications topic '{topic_label}'?"
+        delivery_state = {
+            "status": "awaiting_final_confirmation",
+            "channel": "email",
+            "provider": "oci_notifications",
+            "selected_topic": topic,
+            "recipients": {
+                "email_topic_ocid": recipients.get("email_topic_ocid"),
+                "email_topic_name": recipients.get("email_topic_name", ""),
+                "email_topic_compartment_id": recipients.get("email_topic_compartment_id", ""),
+            },
+            "confirmation_token": token,
+            "confirmation_prompt": prompt,
+            "prepared_at": datetime.now(timezone.utc).isoformat(),
+            "last_delivery_attempt": None,
+        }
+        next_required_action = {
+            "status": "awaiting_final_confirmation",
+            "action": "confirm_email_delivery",
+            "channel": "email",
+            "provider": "oci_notifications",
+            "confirmation_prompt": prompt,
+            "selected_topic": topic,
+        }
+        try:
+            updated = self.report_store.update_metadata(
+                report_id,
+                {
+                    "delivery_state": delivery_state,
+                    "next_required_action": next_required_action,
+                },
+            )
+        except ReportStoreError as e:
+            return self._error_response("report_store_error", str(e))
+
+        return self._json_response({
+            "status": "awaiting_final_confirmation",
+            "report_id": report_id,
+            "channel": "email",
+            "confirmation_token": token,
+            "confirmation_prompt": prompt,
+            "selected_topic": topic,
+            "metadata_path": updated["metadata_path"],
+        })
 
     async def _list_notification_topics(self, args: Dict) -> List[Dict]:
         try:
@@ -1116,7 +1246,23 @@ class MCPHandlers:
             return self._error_response(error_code, message or "")
 
         channels = args.get("channels", ["telegram"])
-        recipients, email_topic = self._report_email_recipients(channels, args.get("recipients"))
+        recipients_arg = args.get("recipients")
+        if self._email_channel_requested(channels):
+            error = self._validate_email_delivery_confirmation(
+                raw_report=raw_report,
+                resolved_report=report,
+                token=args.get("delivery_confirmation_token"),
+            )
+            if error:
+                return error
+            recipients_arg = self._recipients_from_delivery_state(report, recipients_arg)
+
+        recipients, email_topic = self._report_email_recipients(channels, recipients_arg)
+        email_report_id = (
+            str(raw_report["report_id"])
+            if self._email_channel_requested(channels) and raw_report.get("report_id")
+            else None
+        )
         try:
             result = await self.report_delivery_service.deliver(
                 report=report,
@@ -1126,6 +1272,15 @@ class MCPHandlers:
                 title=args.get("title"),
             )
         except ReportDeliveryError as e:
+            if email_report_id:
+                self._record_email_delivery_attempt(
+                    email_report_id,
+                    {
+                        "status": "failed",
+                        "error_code": getattr(e, "code", "invalid_delivery_options"),
+                        "error": str(e),
+                    },
+                )
             return self._error_response(
                 getattr(e, "code", "invalid_delivery_options"),
                 str(e),
@@ -1138,7 +1293,116 @@ class MCPHandlers:
                 "email_topic": saved_topic or email_topic,
             }
 
+        if email_report_id:
+            self._record_email_delivery_attempt(email_report_id, result)
+
         return self._json_response(result)
+
+    def _validate_email_delivery_confirmation(
+        self,
+        *,
+        raw_report: Dict[str, Any],
+        resolved_report: Dict[str, Any],
+        token: Any,
+    ) -> Optional[List[Dict]]:
+        report_id = raw_report.get("report_id")
+        if not isinstance(report_id, str) or not report_id.strip():
+            return self._error_response(
+                "email_delivery_requires_stored_report",
+                "Email delivery requires a stored report_id prepared with prepare_report_delivery.",
+            )
+        expected = (
+            (resolved_report.get("metadata") or {})
+            .get("delivery_state", {})
+            .get("confirmation_token")
+        )
+        status = (
+            (resolved_report.get("metadata") or {})
+            .get("delivery_state", {})
+            .get("status")
+        )
+        if not expected or status != "awaiting_final_confirmation":
+            return self._error_response(
+                "email_delivery_confirmation_required",
+                "Call prepare_report_delivery first and ask the user for final confirmation.",
+            )
+        if not isinstance(token, str) or token != expected:
+            return self._error_response(
+                "email_delivery_confirmation_required",
+                "Valid delivery_confirmation_token from prepare_report_delivery is required.",
+            )
+        return None
+
+    def _recipients_from_delivery_state(
+        self,
+        report: Dict[str, Any],
+        recipients: Optional[Dict[str, str]],
+    ) -> Optional[Dict[str, str]]:
+        merged = dict(recipients or {})
+        state = (report.get("metadata") or {}).get("delivery_state") or {}
+        stored_recipients = state.get("recipients") or {}
+        for key in ("email_topic_ocid", "email_topic_name", "email_topic_compartment_id"):
+            if stored_recipients.get(key) and not merged.get(key):
+                merged[key] = stored_recipients[key]
+        selected_topic = state.get("selected_topic") or {}
+        if selected_topic.get("source") and not merged.get("email_topic_source"):
+            merged["email_topic_source"] = selected_topic["source"]
+        if selected_topic.get("topic_id") and not merged.get("email_topic_ocid"):
+            merged["email_topic_ocid"] = selected_topic["topic_id"]
+        if selected_topic.get("name") and not merged.get("email_topic_name"):
+            merged["email_topic_name"] = selected_topic["name"]
+        if selected_topic.get("compartment_id") and not merged.get("email_topic_compartment_id"):
+            merged["email_topic_compartment_id"] = selected_topic["compartment_id"]
+        return merged
+
+    def _record_email_delivery_attempt(self, report_id: str, result: Dict[str, Any]) -> None:
+        status = "sent" if self._email_delivery_sent(result) else "failed"
+        last_attempt = {
+            "status": result.get("status"),
+            "attempted_at": datetime.now(timezone.utc).isoformat(),
+        }
+        if result.get("error_code"):
+            last_attempt["error_code"] = result["error_code"]
+        if result.get("error"):
+            last_attempt["error"] = result["error"]
+        delivery_state = {
+            "status": status,
+            "channel": "email",
+            "provider": "oci_notifications",
+            "confirmation_token": None,
+            "last_delivery_attempt": last_attempt,
+        }
+        next_required_action = {
+            "status": "completed",
+            "action": "none",
+            "channel": "email",
+            "provider": "oci_notifications",
+        }
+        if status == "failed":
+            next_required_action = {
+                "status": "delivery_failed",
+                "action": "prepare_report_delivery",
+                "channel": "email",
+                "provider": "oci_notifications",
+                "message": (
+                    "Email delivery failed. Call prepare_report_delivery to create a new "
+                    "confirmation token before retrying."
+                ),
+            }
+            if result.get("error_code"):
+                next_required_action["error_code"] = result["error_code"]
+            if result.get("error"):
+                next_required_action["error"] = result["error"]
+        try:
+            self.report_store.update_metadata(
+                report_id,
+                {
+                    "delivery_state": delivery_state,
+                    "next_required_action": next_required_action,
+                },
+            )
+        except ReportStoreError:
+            logger.warning("failed to update report delivery state", exc_info=True)
 
     def _report_delivery_options_payload(self) -> Dict[str, Any]:
         return {
@@ -1209,7 +1473,7 @@ class MCPHandlers:
                 "name": effective_recipients.get("email_topic_name", ""),
                 "compartment_id": effective_recipients.get("email_topic_compartment_id", ""),
                 "lifecycle_state": "",
-                "source": "explicit",
+                "source": effective_recipients.get("email_topic_source", "explicit"),
             }
 
         saved = self._saved_report_email_topic()
@@ -1749,14 +2013,27 @@ class MCPHandlers:
     async def _get_query_examples(self, args: Dict) -> List[Dict]:
         """Get example queries for common use cases (onboarding surface)."""
         category = args.get("category", "all")
+        include_personal = args.get("include_personal", True)
+        include_shared = args.get("include_shared", True)
+        try:
+            limit_per_source = int(args.get("limit_per_source", 5))
+        except (TypeError, ValueError):
+            limit_per_source = 5
+        limit_per_source = max(0, min(limit_per_source, 20))
 
-        entries = self.catalog.for_onboarding()
+        entries = self.catalog.for_onboarding(
+            include_community_favorites=limit_per_source if include_shared else 0,
+            user_id=self.user_store.user_id if include_personal else None,
+            include_personal=limit_per_source if include_personal else 0,
+            category=category,
+        )
         examples: Dict[str, List[Dict[str, Any]]] = {}
         for e in entries:
             examples.setdefault(e.category, []).append({
                 "name": e.name,
                 "query": e.query,
                 "description": e.description,
+                "source": e.source.value,
             })
 
         if category == "all":
