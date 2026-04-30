@@ -328,10 +328,6 @@ def get_tools() -> List[Dict[str, Any]]:
                         "description": "OCID of the saved search.",
                     },
                 },
-                "anyOf": [
-                    {"required": ["name"]},
-                    {"required": ["id"]},
-                ],
             },
         },
         {

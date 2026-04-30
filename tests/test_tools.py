@@ -39,18 +39,34 @@ def test_guarded_tools_description_mentions_confirmation():
         )
 
 
-def test_run_saved_search_requires_name_or_id():
-    """run_saved_search must constrain callers to provide at least one of
-    name/id so the LLM cannot call it empty and get a non-actionable error."""
+def test_run_saved_search_documents_name_or_id_requirement():
+    """run_saved_search must tell callers to provide name or id via the
+    description (handler enforces it at runtime). Top-level combinators are
+    not allowed because OpenAI strict tool-calling rejects them, which would
+    400 every Codex turn."""
     tools = {t["name"]: t for t in get_tools()}
-    schema = tools["run_saved_search"]["inputSchema"]
-    # Accept either 'anyOf' with two required-branches, or a direct required
-    # that lists both (less preferred — treats them as both required).
-    any_of = schema.get("anyOf")
-    assert any_of, "run_saved_search inputSchema must use anyOf to require name OR id"
-    required_sets = [frozenset(b.get("required", [])) for b in any_of]
-    assert frozenset({"name"}) in required_sets
-    assert frozenset({"id"}) in required_sets
+    tool = tools["run_saved_search"]
+    description = tool["description"].lower()
+    assert "name" in description and "id" in description, (
+        "run_saved_search description must mention both name and id so the "
+        "model knows the requirement (schema can't enforce it under OpenAI "
+        "strict tool-calling)"
+    )
+
+
+def test_no_tool_has_top_level_schema_combinators():
+    """OpenAI strict tool-calling rejects any tool whose inputSchema has a
+    top-level oneOf/anyOf/allOf/not/enum. A single bad tool fails the entire
+    tool list and 400s every chat turn — guard against regressions across
+    every tool we expose."""
+    forbidden = {"oneOf", "anyOf", "allOf", "not", "enum"}
+    for tool in get_tools():
+        schema = tool.get("inputSchema") or {}
+        offenders = forbidden & set(schema.keys())
+        assert not offenders, (
+            f"Tool {tool['name']!r} has forbidden top-level schema "
+            f"keys {offenders}; OpenAI will reject the whole tool list."
+        )
 
 
 def test_setup_confirmation_secret_tool_schema():
