@@ -245,6 +245,17 @@ class TestToolRouting:
         assert "boom" in result[0]["text"]
 
 
+@pytest.mark.asyncio
+async def test_run_saved_search_missing_name_and_id_returns_structured_error(handlers):
+    """The schema cannot use top-level anyOf, so the handler must enforce this."""
+    result = await handlers.handle_tool_call("run_saved_search", {})
+    payload = json.loads(result[0]["text"])
+
+    assert payload["status"] == "error"
+    assert payload["error_code"] == "MISSING_ARGUMENT"
+    assert "list_saved_searches" in payload["next_step"]
+
+
 # ---------------------------------------------------------------------------
 # Scope Resolution Tests
 # ---------------------------------------------------------------------------
