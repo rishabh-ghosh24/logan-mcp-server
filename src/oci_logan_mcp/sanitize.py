@@ -15,8 +15,19 @@ UUID_RE = re.compile(
     r"\b[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}\b", re.IGNORECASE,
 )
 LONG_HEX_RE = re.compile(r"\b[a-f0-9]{24,}\b", re.IGNORECASE)
+JWT_RE = re.compile(
+    r"\b[A-Za-z0-9_-]{10,}\.[A-Za-z0-9_-]{10,}\.[A-Za-z0-9_-]{10,}\b"
+)
 
-_SENSITIVE_PATTERNS = [OCID_RE, IPV4_RE, EMAIL_RE, SECRETISH_RE, UUID_RE, LONG_HEX_RE]
+_SENSITIVE_PATTERNS = [
+    OCID_RE,
+    IPV4_RE,
+    EMAIL_RE,
+    SECRETISH_RE,
+    UUID_RE,
+    LONG_HEX_RE,
+    JWT_RE,
+]
 
 
 def looks_sensitive(text: str) -> bool:
@@ -33,6 +44,9 @@ def sanitize_query_text(query_text: str) -> Optional[str]:
     cleaned = EMAIL_RE.sub("<email>", cleaned)
     cleaned = UUID_RE.sub("<uuid>", cleaned)
     cleaned = LONG_HEX_RE.sub("<id>", cleaned)
+    cleaned = JWT_RE.sub("<jwt>", cleaned)
+    if "<jwt>" in cleaned:
+        return None
     if SECRETISH_RE.search(cleaned):
         return None
     return cleaned

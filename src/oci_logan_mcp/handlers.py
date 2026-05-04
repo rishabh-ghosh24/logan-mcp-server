@@ -57,6 +57,7 @@ from .report_store import (
     ReportStoreCorruptError,
     ReportStoreError,
 )
+from .sanitize import sanitize_query_text
 
 if TYPE_CHECKING:
     from .catalog import CatalogEntry
@@ -395,9 +396,6 @@ class MCPHandlers:
                         "data_warning": DATA_WARNING,
                         "sample_line_count": sample_line_count,
                     }
-                confirmation = self.confirmation_manager.request_confirmation(
-                    name, arguments, summary_extras=summary_extras,
-                )
                 if not self._write_audit_event(
                     user=user_id,
                     tool=name,
@@ -409,6 +407,9 @@ class MCPHandlers:
                     result_summary={"success": True, "status": "confirmation_required"},
                 ) and audit_strictness == "required":
                     return self._audit_blocked_response(name, audit_strictness)
+                confirmation = self.confirmation_manager.request_confirmation(
+                    name, arguments, summary_extras=summary_extras,
+                )
                 return [{"type": "text", "text": json.dumps(confirmation, indent=2)}]
 
             if not self.confirmation_manager.validate_confirmation(
@@ -514,6 +515,13 @@ class MCPHandlers:
         block_reason: Optional[str] = None,
     ) -> bool:
         if self.audit_logger is None:
+            if audit_strictness == "required":
+                logger.error(
+                    "Required audit logger unavailable for %s outcome=%s",
+                    tool,
+                    outcome,
+                )
+                return False
             return True
         try:
             self.audit_logger.log(
@@ -578,7 +586,6 @@ class MCPHandlers:
             text = str(text)
         summary["text_length"] = len(text)
         if text:
-            from .sanitize import sanitize_query_text
             sanitized_preview = sanitize_query_text(text[:200])
             summary["preview"] = (
                 sanitized_preview if sanitized_preview is not None else "<redacted>"
@@ -813,11 +820,20 @@ class MCPHandlers:
         compartment_id, include_subs = self._resolve_scope(args)
         budget_override = bool(args.get("budget_override", False))
 
-        logger.info(f"run_query: include_subcompartments={include_subs}, compartment_id={compartment_id}, args={args}")
+        query_text = args["query"]
+        query_hash = hashlib.sha256(query_text.encode("utf-8")).hexdigest()[:12]
+        logger.info(
+            "run_query: include_subcompartments=%s, compartment_id=%s, "
+            "time_range=%s, query_hash=%s",
+            include_subs,
+            compartment_id,
+            args.get("time_range"),
+            query_hash,
+        )
 
         try:
             result = await self.query_engine.execute(
-                query=args["query"],
+                query=query_text,
                 time_range=args.get("time_range"),
                 time_start=args.get("time_start"),
                 time_end=args.get("time_end"),
@@ -828,33 +844,35 @@ class MCPHandlers:
             )
         except Exception:
             # Track failure before re-raising
-            try:
-                self.user_store.record_failure(args["query"])
-            except Exception:
-                pass
+            if not self.settings.read_only:
+                try:
+                    self.user_store.record_failure(query_text)
+                except Exception:
+                    pass
             raise
 
-        # Auto-save interesting queries / bump usage for existing ones
-        self.auto_saver.process_successful_query(args["query"], result)
+        if not self.settings.read_only:
+            # Auto-save interesting queries / bump usage for existing ones.
+            self.auto_saver.process_successful_query(query_text, result)
 
-        # Track success and preferences
-        try:
-            self.user_store.record_success(args["query"])
-        except Exception:
-            pass
-        if self.preference_store:
+            # Track success and preferences.
             try:
-                source = self.auto_saver._extract_source(args["query"])
-                groupby = self.auto_saver._extract_groupby(args["query"])
-                if source and groupby:
-                    self.preference_store.track_field_usage(source, groupby)
-                if source and args.get("time_range"):
-                    self.preference_store.track_time_range(source, args["time_range"])
+                self.user_store.record_success(query_text)
             except Exception:
                 pass
+            if self.preference_store:
+                try:
+                    source = self.auto_saver._extract_source(query_text)
+                    groupby = self.auto_saver._extract_groupby(query_text)
+                    if source and groupby:
+                        self.preference_store.track_field_usage(source, groupby)
+                    if source and args.get("time_range"):
+                        self.preference_store.track_time_range(source, args["time_range"])
+                except Exception:
+                    pass
 
         # Use compact formatter for cluster queries
-        if self._is_cluster_query(args["query"]):
+        if self._is_cluster_query(query_text):
             formatted = self._format_cluster_result(result)
             return [{"type": "text", "text": json.dumps(formatted, indent=2, default=str)}]
 
@@ -1000,9 +1018,10 @@ class MCPHandlers:
             compartment_id=args.get("compartment_id"),
         )
         # Auto-save interesting queries from batch results
-        for q_spec, r in zip(args["queries"], results):
-            if isinstance(r, dict) and "error" not in r:
-                self.auto_saver.process_successful_query(q_spec["query"], r)
+        if not self.settings.read_only:
+            for q_spec, r in zip(args["queries"], results):
+                if isinstance(r, dict) and "error" not in r:
+                    self.auto_saver.process_successful_query(q_spec["query"], r)
         return [{"type": "text", "text": json.dumps(results, indent=2, default=str)}]
 
     async def _diff_time_windows(self, args: Dict) -> List[Dict]:
@@ -1977,7 +1996,8 @@ class MCPHandlers:
         logger.info(f"Visualize: Query returned {row_count} rows, {col_count} columns")
 
         # Auto-save interesting queries
-        self.auto_saver.process_successful_query(args["query"], query_result)
+        if not self.settings.read_only:
+            self.auto_saver.process_successful_query(args["query"], query_result)
 
         chart_type = ChartType(args["chart_type"])
         viz_result = self.visualization.generate(
@@ -2013,7 +2033,8 @@ class MCPHandlers:
         )
 
         # Auto-save interesting queries
-        self.auto_saver.process_successful_query(args["query"], result)
+        if not self.settings.read_only:
+            self.auto_saver.process_successful_query(args["query"], result)
 
         exported = self.export_service.export(
             data=result["data"], format=args["format"]

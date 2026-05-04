@@ -12,6 +12,7 @@ from pathlib import Path
 from typing import Any, Dict, Iterator, List
 
 from .file_lock import locked_file
+from .sanitize import redact_dict
 
 logger = logging.getLogger(__name__)
 
@@ -95,11 +96,10 @@ class AuditLogger:
                 "source_ip_truncated": None,
             },
             "event_type": event_type,
-            "args_redacted": clean_args,
+            "args_redacted": redact_dict(clean_args),
             "blocked": blocked,
             "block_reason": block_reason,
             "audit_strictness": audit_strictness or "best_effort",
-            "audit_write_status": "ok",
         }
         if result_summary != "":
             entry["result_summary"] = result_summary

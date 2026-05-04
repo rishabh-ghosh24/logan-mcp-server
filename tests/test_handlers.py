@@ -1557,6 +1557,37 @@ async def test_get_session_budget_returns_usage(handlers):
         assert key in payload["remaining"]
 
 
+def _registered_tool_handler_names() -> dict[str, str]:
+    import ast
+
+    handlers_src = (
+        Path(__file__).parent.parent / "src" / "oci_logan_mcp" / "handlers.py"
+    ).read_text()
+    tree = ast.parse(handlers_src)
+
+    for node in ast.walk(tree):
+        if not (isinstance(node, ast.AsyncFunctionDef) and node.name == "handle_tool_call"):
+            continue
+        for sub in ast.walk(node):
+            if (
+                isinstance(sub, ast.Assign)
+                and len(sub.targets) == 1
+                and isinstance(sub.targets[0], ast.Name)
+                and sub.targets[0].id == "handlers"
+                and isinstance(sub.value, ast.Dict)
+            ):
+                tool_handlers: dict[str, str] = {}
+                for key, value in zip(sub.value.keys, sub.value.values):
+                    if (
+                        isinstance(key, ast.Constant)
+                        and isinstance(key.value, str)
+                        and isinstance(value, ast.Attribute)
+                    ):
+                        tool_handlers[key.value] = value.attr
+                return tool_handlers
+    raise AssertionError("Could not locate handle_tool_call handler registry")
+
+
 # ---------------------------------------------------------------------------
 # Invoked audit event tests (Task N6)
 # ---------------------------------------------------------------------------
@@ -1667,6 +1698,67 @@ async def test_audit_write_failure_blocks_required_tool_before_execution(handler
     handlers.report_delivery_service.deliver.assert_not_called()
 
 
+@pytest.mark.asyncio
+async def test_audit_write_failure_blocks_required_export_before_query(handlers):
+    """Non-confirmation required-audit tools must fail closed before query execution."""
+    handlers.audit_logger.log = MagicMock(side_effect=Exception("disk full"))
+    handlers.query_engine.execute = AsyncMock(return_value={"data": {"rows": []}})
+
+    result = await handlers.handle_tool_call(
+        "export_results",
+        {"query": "* | stats count", "format": "json"},
+    )
+
+    payload = json.loads(result[0]["text"])
+    assert payload["status"] == "audit_blocked"
+    assert payload["tool"] == "export_results"
+    handlers.query_engine.execute.assert_not_called()
+
+
+@pytest.mark.asyncio
+async def test_required_audit_tool_blocks_when_audit_logger_is_unavailable(handlers):
+    """Required-audit tools need a configured logger; no logger is not a pass."""
+    handlers.audit_logger = None
+    handlers.query_engine.execute = AsyncMock(return_value={"data": {"rows": []}})
+
+    result = await handlers.handle_tool_call(
+        "export_results",
+        {"query": "* | stats count", "format": "json"},
+    )
+
+    payload = json.loads(result[0]["text"])
+    assert payload["status"] == "audit_blocked"
+    assert payload["tool"] == "export_results"
+    handlers.query_engine.execute.assert_not_called()
+
+
+@pytest.mark.asyncio
+async def test_every_registered_tool_success_path_logs_one_terminal_event(handlers, tmp_path):
+    """Handler registry drift should not introduce success paths without terminal audit."""
+    tool_handlers = _registered_tool_handler_names()
+    handlers.confirmation_manager.is_guarded_call = MagicMock(return_value=False)
+
+    for tool_name, handler_attr in tool_handlers.items():
+        audit_dir = tmp_path / f"audit_{tool_name}"
+        audit = AuditLogger(audit_dir)
+        handlers.audit_logger = audit
+        setattr(
+            handlers,
+            handler_attr,
+            AsyncMock(return_value=[{"type": "text", "text": "{}"}]),
+        )
+
+        await handlers.handle_tool_call(tool_name, {})
+
+        entries = [
+            json.loads(ln)
+            for ln in (audit_dir / "audit.log").read_text().strip().splitlines()
+        ]
+        outcomes = [entry["outcome"] for entry in entries]
+        assert outcomes == ["invoked", "executed"], tool_name
+        assert entries[0]["trace_id"] == entries[1]["trace_id"], tool_name
+
+
 def test_result_summary_preview_redacts_sensitive_text():
     """Result previews should stay useful without preserving raw sensitive text."""
     summary = MCPHandlers._summarize_tool_result(
@@ -1680,6 +1772,24 @@ def test_result_summary_preview_redacts_sensitive_text():
     assert summary["preview"] == "<redacted>"
     assert "alice@example.com" not in str(summary)
     assert "secret-value" not in str(summary)
+
+
+def test_result_summary_preview_redacts_jwt_like_tokens():
+    """Result previews should not expose JWT-like bearer tokens."""
+    summary = MCPHandlers._summarize_tool_result(
+        [{
+            "type": "text",
+            "text": (
+                "session id "
+                "eyJhbGciOiJIUzI1NiJ9.eyJzdWIiOiIxMjM0NTY3ODkwIn0."
+                "SflKxwRJSMeKKF2QT4fwpMeJf36POk6yJV_adQssw5c"
+            ),
+        }],
+        execution_ms=3,
+    )
+
+    assert summary["preview"] == "<redacted>"
+    assert "eyJhbGciOiJIUzI1NiJ9" not in str(summary)
 
 
 @pytest.mark.asyncio
@@ -1718,6 +1828,78 @@ async def test_invoked_event_strips_confirmation_secret(handlers, tmp_path):
     args = invoked_entries[0]["args"]
     assert "confirmation_secret" not in args
     assert args.get("some_arg") == "ok"
+
+
+@pytest.mark.asyncio
+async def test_read_only_run_query_success_does_not_write_local_learning_state(
+    handlers, settings
+):
+    settings.read_only = True
+    handlers.query_engine.execute = AsyncMock(return_value={"data": {"rows": []}})
+    handlers.auto_saver.process_successful_query = MagicMock()
+    handlers.user_store.record_success = MagicMock()
+    handlers.user_store.record_failure = MagicMock()
+    handlers.preference_store.track_field_usage = MagicMock()
+    handlers.preference_store.track_time_range = MagicMock()
+
+    await handlers.handle_tool_call(
+        "run_query",
+        {
+            "query": "'Log Source' = 'OCI Audit Logs' | stats count by Entity",
+            "time_range": "last_1_hour",
+        },
+    )
+
+    handlers.auto_saver.process_successful_query.assert_not_called()
+    handlers.user_store.record_success.assert_not_called()
+    handlers.user_store.record_failure.assert_not_called()
+    handlers.preference_store.track_field_usage.assert_not_called()
+    handlers.preference_store.track_time_range.assert_not_called()
+
+
+@pytest.mark.asyncio
+async def test_read_only_run_query_failure_does_not_write_failure_state(
+    handlers, settings
+):
+    settings.read_only = True
+    handlers.query_engine.execute = AsyncMock(side_effect=Exception("boom"))
+    handlers.user_store.record_failure = MagicMock()
+
+    await handlers.handle_tool_call("run_query", {"query": "* | stats count"})
+
+    handlers.user_store.record_failure.assert_not_called()
+
+
+@pytest.mark.asyncio
+async def test_read_only_batch_visualize_and_export_do_not_auto_save(
+    handlers, settings
+):
+    settings.read_only = True
+    handlers.auto_saver.process_successful_query = MagicMock()
+
+    handlers.query_engine.execute_batch = AsyncMock(return_value=[{"data": {"rows": []}}])
+    await handlers.handle_tool_call(
+        "run_batch_queries",
+        {"queries": [{"query": "* | stats count"}]},
+    )
+
+    handlers.query_engine.execute = AsyncMock(return_value={"data": {"rows": []}})
+    handlers.visualization.generate = MagicMock(
+        return_value={"image_base64": "abc", "raw_data": []}
+    )
+    await handlers.handle_tool_call(
+        "visualize",
+        {"query": "* | stats count", "chart_type": "table"},
+    )
+
+    handlers.query_engine.execute = AsyncMock(return_value={"data": {"rows": []}})
+    handlers.export_service.export = MagicMock(return_value="[]")
+    await handlers.handle_tool_call(
+        "export_results",
+        {"query": "* | stats count", "format": "json"},
+    )
+
+    handlers.auto_saver.process_successful_query.assert_not_called()
 
 
 @pytest.mark.asyncio

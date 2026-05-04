@@ -74,10 +74,12 @@ The current handler already logs:
 - `confirmation_requested`
 - `confirmation_failed`
 - `confirmed`
-- `executed` for guarded calls
-- `execution_failed` for guarded calls
+- `executed`
+- `execution_failed`
+- `unknown_tool`
+- `audit_blocked`
 
-Known gap: non-guarded tools currently get `invoked` but not universal completion/result summaries.
+Current branch status: non-guarded tools now receive terminal completion/failure audit events with compact result summaries.
 
 ### Existing Confirmation Gate
 
@@ -109,6 +111,7 @@ Argus POC is not the same as global Logan read-only mode:
 
 - Argus POC allows reports and some Argus-owned creates.
 - Global `read_only` blocks mutating tools for all clients.
+- Global `read_only` must also avoid hidden local learning writes from reader tools.
 
 Do not confuse these two policies.
 
@@ -117,13 +120,30 @@ Do not confuse these two policies.
 ```text
 Reads: allowed.
 Telegram notifications: allowed through Hermes.
-ONS email reports: allowed.
-Argus-owned creates: allowed with naming, metadata, rate limits, and audit.
+Telegram reports: allowed through Hermes.
+ONS email reports: later phase / consent-gated until cadence and rate limits are proven.
+Persistent Argus-owned creates: consent-gated during Phase 0/1.
 Special creates: explicit in-chat consent.
 Updates/deletes: explicit approval plus Logan confirmation secret where supported.
 Autonomous remediation: not allowed.
 Everything: audited.
 ```
+
+Phase posture:
+
+| Phase | Policy |
+|---|---|
+| Phase 0 / Smoke | Reads, health checks, Telegram test report by explicit request; no persistent creates |
+| Phase 1 / Observation | Reads, Telegram notifications/reports, local summaries; saved searches/dashboards/tiles still consent-gated |
+| Phase 2 / Assisted artifacts | Argus-owned saved searches/dashboards/tiles may be enabled with naming, rate limits, and audit |
+
+Hard POC rules:
+
+- No raw logs in Telegram/email by default.
+- Do not mutate shared MCP compartment/namespace context except explicit one-time bootstrap.
+- The Logan confirmation secret is a second factor, not approval by itself.
+- Ambiguous action requests require clarification before any tool call.
+- Every user-visible notification/report includes `audit_ref`, short `trace_id`, time window, queried data sources, severity, confidence, and whether creates happened.
 
 ## Build Sequence
 
@@ -145,6 +165,17 @@ Only step 1 should be considered for the first implementation review.
 ### Objective
 
 Make Logan audit complete enough that every tool call that reaches Logan has a start and terminal event, with useful actor, trace, redaction, result summary, and strictness behavior.
+
+### Review Findings Incorporated
+
+The current branch incorporates the following review-driven requirements:
+
+- `args_redacted` must run through structured redaction, not merely confirmation-field stripping.
+- `audit_write_status` is omitted because a successful JSONL entry can only represent a successful write; failed writes are surfaced through handler return paths and local warnings.
+- Required-audit tools fail closed when audit logging fails or when no audit logger is configured.
+- Confirmation tokens are requested only after the `confirmation_requested` audit event is durable.
+- Read-only mode suppresses local learning side effects from reader tools such as `run_query`, `run_batch_queries`, `visualize`, and `export_results`.
+- Raw result previews are summarized and pattern-redacted; Argus policy still forbids raw log payloads in user-facing messages by default.
 
 ### Files Expected To Change
 
@@ -190,7 +221,6 @@ Add or evolve audit events toward this shape:
   "blocked": false,
   "block_reason": null,
   "audit_strictness": "best_effort",
-  "audit_write_status": "ok",
   "outcome": "executed"
 }
 ```
@@ -262,6 +292,8 @@ If audit write fails:
 
 Important: this is stricter than the existing `AuditLogger.log()` behavior. Implement carefully so reads are not accidentally blocked by transient audit failures.
 
+Deployment decision: if `audit_logger` is unavailable, required-audit tools must fail closed. Best-effort read tools may proceed and log a local warning.
+
 ### Redaction
 
 Preserve forensic usefulness while removing secrets.
@@ -291,6 +323,8 @@ Keep or summarize:
 - row count, execution time, success/failure
 
 Hashing PII with persistent salt can be Phase 2. Do not block v1 on it unless Claude insists.
+
+Known Phase 1 boundary: result previews use pattern-based redaction, not a full DLP engine. Add negative tests for obvious sensitive patterns such as OCIDs, emails, IPs, password/token keywords, long IDs, and JWT-like tokens. Raw log payloads remain forbidden in user-visible Argus output by policy.
 
 ### Terminal Outcomes To Capture
 
@@ -336,6 +370,9 @@ Add or update tests to prove:
 9. `create_log_source_from_sample` logs sample count/hash but not sample content.
 10. Audit write failure does not block read tools.
 11. Audit write failure blocks required-strictness tools before execution.
+12. Required-audit tools block if `audit_logger` is not configured.
+13. Read-only mode does not write local learned-query, user success/failure, preference, or auto-save state.
+14. Every registered handler success path emits `invoked` and exactly one terminal audit event.
 
 Suggested commands:
 

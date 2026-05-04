@@ -69,7 +69,31 @@ class TestAuditLogger:
         assert entry["blocked"] is False
         assert entry["block_reason"] is None
         assert entry["audit_strictness"] == "best_effort"
-        assert entry["audit_write_status"] == "ok"
+        assert "audit_write_status" not in entry
+
+    def test_args_redacted_masks_sensitive_values(
+        self, logger: AuditLogger, log_dir: Path
+    ) -> None:
+        logger.log(
+            user="alice",
+            tool="run_query",
+            args={
+                "query": "'User' = 'alice@example.com' | where ip = '203.0.113.10'",
+                "compartment_id": "ocid1.compartment.oc1..abc123",
+                "api_key": "secret-token",
+            },
+            outcome="executed",
+        )
+
+        entry = json.loads((log_dir / "audit.log").read_text().strip())
+        redacted = entry["args_redacted"]
+        assert "alice@example.com" not in str(redacted)
+        assert "203.0.113.10" not in str(redacted)
+        assert "ocid1.compartment.oc1..abc123" not in str(redacted)
+        assert redacted["api_key"] == "<redacted>"
+        assert "<email>" in redacted["query"]
+        assert "<ip_address>" in redacted["query"]
+        assert redacted["compartment_id"] == "<resource_ocid>"
 
     def test_result_summary_and_error_fields(self, logger: AuditLogger, log_dir: Path) -> None:
         logger.log(
