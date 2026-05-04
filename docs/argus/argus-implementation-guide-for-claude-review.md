@@ -121,6 +121,7 @@ Do not confuse these two policies.
 Reads: allowed.
 Telegram notifications: allowed through Hermes.
 Telegram reports: allowed through Hermes.
+Persisted incident report artifacts: allowed as an explicit POC exception.
 ONS email reports: later phase / consent-gated until cadence and rate limits are proven.
 Persistent Argus-owned creates: consent-gated during Phase 0/1.
 Special creates: explicit in-chat consent.
@@ -134,7 +135,7 @@ Phase posture:
 | Phase | Policy |
 |---|---|
 | Phase 0 / Smoke | Reads, health checks, Telegram test report by explicit request; no persistent creates |
-| Phase 1 / Observation | Reads, Telegram notifications/reports, local summaries; saved searches/dashboards/tiles still consent-gated |
+| Phase 1 / Observation | Reads, Telegram notifications/reports, persisted local incident report artifacts for laptop review; saved searches/dashboards/tiles still consent-gated |
 | Phase 2 / Assisted artifacts | Argus-owned saved searches/dashboards/tiles may be enabled with naming, rate limits, and audit |
 
 Hard POC rules:
@@ -175,7 +176,14 @@ The current branch incorporates the following review-driven requirements:
 - Required-audit tools fail closed when audit logging fails or when no audit logger is configured.
 - Confirmation tokens are requested only after the `confirmation_requested` audit event is durable.
 - Read-only mode suppresses local learning side effects from reader tools such as `run_query`, `run_batch_queries`, `visualize`, and `export_results`.
+- `investigate_and_generate_report` intentionally remains allowed in read-only mode as a required-audit report-persistence exception, because Rishabh wants generated report docs persisted for laptop review.
 - Raw result previews are summarized and pattern-redacted; Argus policy still forbids raw log payloads in user-facing messages by default.
+
+### Audit Raw Args Compatibility
+
+`AuditLogger` still writes the legacy `args` field for compatibility with playbook/transcript consumers. That field is privileged forensic data and can contain raw query text for general tools.
+
+For dashboards, SIEM exports, shared reviews, and any user-visible summaries, use `args_redacted`. Do not treat legacy `args` as safe-to-share.
 
 ### Files Expected To Change
 

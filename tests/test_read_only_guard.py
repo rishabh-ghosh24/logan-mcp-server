@@ -127,6 +127,11 @@ def test_raise_if_read_only_blocks_report_generation_when_enabled():
     assert "read-only" in str(exc.value).lower()
 
 
+def test_read_only_allows_investigate_and_generate_report_as_report_exception():
+    """Argus POC intentionally allows persisted investigation report artifacts."""
+    raise_if_read_only("investigate_and_generate_report", read_only=True)
+
+
 def test_read_only_error_is_exception_subclass():
     assert issubclass(ReadOnlyError, Exception)
 

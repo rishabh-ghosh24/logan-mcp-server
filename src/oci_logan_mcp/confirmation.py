@@ -81,6 +81,16 @@ _SUMMARY_KEYS: Dict[str, list] = {
     ],
 }
 
+_COMMON_SCOPE_SUMMARY_KEYS = [
+    "compartment_id",
+    "namespace",
+    "log_group_id",
+    "target_ocid",
+    "audit_ref",
+    "argus_owned",
+    "argus_audit_ref",
+]
+
 
 class ConfirmationManager:
     """Manages two-factor confirmation tokens for destructive operations.
@@ -216,7 +226,11 @@ class ConfirmationManager:
         """Build a human-readable summary of the pending operation."""
         action = tool_name.replace("_", " ").upper()
         parts = [f"Action: {action}"]
-        for key in _SUMMARY_KEYS.get(tool_name, []):
+        summary_keys = dict.fromkeys([
+            *_SUMMARY_KEYS.get(tool_name, []),
+            *_COMMON_SCOPE_SUMMARY_KEYS,
+        ])
+        for key in summary_keys:
             if key in arguments:
                 val = str(arguments[key])
                 if key != "data_warning" and len(val) > 120:
