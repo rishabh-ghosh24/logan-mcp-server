@@ -39,18 +39,34 @@ def test_guarded_tools_description_mentions_confirmation():
         )
 
 
-def test_run_saved_search_requires_name_or_id():
-    """run_saved_search must constrain callers to provide at least one of
-    name/id so the LLM cannot call it empty and get a non-actionable error."""
+def test_run_saved_search_documents_name_or_id_requirement():
+    """run_saved_search must tell callers to provide name or id via the
+    description (handler enforces it at runtime). Top-level combinators are
+    not allowed because OpenAI strict tool-calling rejects them, which would
+    400 every Codex turn."""
     tools = {t["name"]: t for t in get_tools()}
-    schema = tools["run_saved_search"]["inputSchema"]
-    # Accept either 'anyOf' with two required-branches, or a direct required
-    # that lists both (less preferred — treats them as both required).
-    any_of = schema.get("anyOf")
-    assert any_of, "run_saved_search inputSchema must use anyOf to require name OR id"
-    required_sets = [frozenset(b.get("required", [])) for b in any_of]
-    assert frozenset({"name"}) in required_sets
-    assert frozenset({"id"}) in required_sets
+    tool = tools["run_saved_search"]
+    description = tool["description"].lower()
+    assert "name" in description and "id" in description, (
+        "run_saved_search description must mention both name and id so the "
+        "model knows the requirement (schema can't enforce it under OpenAI "
+        "strict tool-calling)"
+    )
+
+
+def test_no_tool_has_top_level_schema_combinators():
+    """OpenAI strict tool-calling rejects any tool whose inputSchema has a
+    top-level oneOf/anyOf/allOf/not/enum. A single bad tool fails the entire
+    tool list and 400s every chat turn — guard against regressions across
+    every tool we expose."""
+    forbidden = {"oneOf", "anyOf", "allOf", "not", "enum"}
+    for tool in get_tools():
+        schema = tool.get("inputSchema") or {}
+        offenders = forbidden & set(schema.keys())
+        assert not offenders, (
+            f"Tool {tool['name']!r} has forbidden top-level schema "
+            f"keys {offenders}; OpenAI will reject the whole tool list."
+        )
 
 
 def test_setup_confirmation_secret_tool_schema():
@@ -169,19 +185,99 @@ def test_generate_incident_report_schema():
     props = schema["properties"]
 
     assert schema["required"] == ["investigation"]
-    assert props["format"]["enum"] == ["markdown", "html"]
+    assert props["format"]["enum"] == ["markdown", "html", "both"]
     assert props["summary_length"]["enum"] == ["short", "standard", "detailed"]
     assert "include_sections" in props
+    assert props["title"]["type"] == "string"
+    assert "title" not in schema.get("required", [])
 
 
-def test_deliver_report_schema_is_markdown_first():
+def test_investigation_intent_tooling_guides_full_workflow():
+    tools = {t["name"]: t for t in get_tools()}
+    investigate = tools["investigate_incident"]
+    desc = investigate["description"].lower()
+
+    for phrase in (
+        "investigate",
+        "investigation mode",
+        "investigator mode",
+        "root cause",
+        "what happened",
+        "likely story",
+        "triage this incident",
+        "troubleshoot",
+        "find the issue",
+        "what is wrong",
+    ):
+        assert phrase in desc
+
+    assert "generate_incident_report" in desc
+    assert "deliver_report" in desc
+    assert "oci notifications" in desc
+
+
+def test_investigate_and_generate_report_schema():
+    tools = {t["name"]: t for t in get_tools()}
+    spec = tools["investigate_and_generate_report"]
+    schema = spec["inputSchema"]
+    props = schema["properties"]
+
+    assert schema["required"] == ["query"]
+    assert props["format"]["enum"] == ["markdown", "html", "both"]
+    assert props["summary_length"]["enum"] == ["short", "standard", "detailed"]
+    assert "top_k" in props
+    assert props["mode"]["enum"] == ["quick", "standard", "deep"]
+    assert "include_sections" in props
+    assert props["title"]["type"] == "string"
+    assert "title" not in schema.get("required", [])
+
+
+def test_report_delivery_option_schemas():
+    tools = {t["name"]: t for t in get_tools()}
+
+    defaults = tools["get_report_delivery_options"]
+    assert "OCI Notifications email" in defaults["description"]
+    assert defaults["inputSchema"]["properties"] == {}
+
+    topics = tools["list_notification_topics"]
+    props = topics["inputSchema"]["properties"]
+    assert "compartment_id" in props
+    assert "include_subcompartments" in props
+    assert "lifecycle_state" in props
+
+
+def test_incident_report_read_tool_schemas():
+    tools = {t["name"]: t for t in get_tools()}
+
+    get_schema = tools["get_incident_report"]["inputSchema"]
+    assert get_schema["required"] == ["report_id"]
+    assert get_schema["properties"]["report_id"]["type"] == "string"
+
+    prepare_schema = tools["prepare_report_delivery"]["inputSchema"]
+    assert prepare_schema["required"] == ["report_id"]
+    assert prepare_schema["properties"]["channel"]["enum"] == ["email"]
+
+    list_schema = tools["list_incident_reports"]["inputSchema"]
+    limit_schema = list_schema["properties"]["limit"]
+    assert "required" not in list_schema
+    assert limit_schema["type"] == "integer"
+    assert limit_schema["minimum"] == 1
+    assert limit_schema["maximum"] == 100
+    assert limit_schema["default"] == 20
+
+
+def test_deliver_report_schema_accepts_markdown_or_report_id():
     tools = {tool["name"]: tool for tool in get_tools()}
     schema = tools["deliver_report"]["inputSchema"]
     props = schema["properties"]
+    report_schema = props["report"]
 
     assert "report" in props
-    report_schema = props["report"]
-    assert report_schema["required"] == ["markdown"]
-    assert "report_id" not in report_schema["properties"]
+    assert schema["required"] == ["report"]
+    assert "required" not in report_schema or "markdown" not in report_schema["required"]
+    assert "markdown" in report_schema["properties"]
+    assert "report_id" in report_schema["properties"]
     assert props["channels"]["items"]["enum"] == ["telegram", "email", "slack"]
+    assert props["recipients"]["type"] == "object"
+    assert "email_topic_ocid" in props["recipients"]["properties"]
     assert props["format"]["enum"] == ["pdf", "markdown", "both"]

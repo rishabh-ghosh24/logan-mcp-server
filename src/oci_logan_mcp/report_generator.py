@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import html
+import json
 import re
 import uuid
 from datetime import datetime, timezone
@@ -28,7 +29,7 @@ SECTION_TITLES = {
 }
 
 SUMMARY_SENTENCE_LIMITS = {"short": 3, "standard": 5, "detailed": 8}
-FORMATS = {"markdown", "html"}
+FORMATS = {"markdown", "html", "both"}
 
 
 class ReportGenerationError(ValueError):
@@ -44,19 +45,23 @@ class ReportGenerator:
         output_format: str = "markdown",
         include_sections: Optional[List[str]] = None,
         summary_length: str = "standard",
+        title: str | None = None,
     ) -> Dict[str, Any]:
         if output_format not in FORMATS:
-            raise ReportGenerationError("format must be one of: html, markdown")
+            raise ReportGenerationError("format must be one of: both, html, markdown")
         if summary_length not in SUMMARY_SENTENCE_LIMITS:
             raise ReportGenerationError(
                 "summary_length must be one of: detailed, short, standard"
             )
+        if title is not None and not isinstance(title, str):
+            raise ReportGenerationError("title must be a string")
 
         sections = self._resolve_sections(include_sections)
         report_id = f"rpt_{uuid.uuid4().hex}"
+        report_title = title.strip() if title and title.strip() else "Incident Report"
         generated_at = datetime.now(timezone.utc).isoformat()
 
-        parts = ["# Incident Report", ""]
+        parts = [f"# {report_title}", ""]
         for section_id in sections:
             parts.append(f"## {SECTION_TITLES[section_id]}")
             parts.append("")
@@ -65,14 +70,15 @@ class ReportGenerator:
         markdown = "\n".join(parts).strip() + "\n"
 
         html_output = None
-        if output_format == "html":
-            html_output = self._render_html(markdown)
+        if output_format in {"html", "both"}:
+            html_output = self._render_html(markdown, title=report_title)
 
         return {
             "report_id": report_id,
             "markdown": markdown,
             "html": html_output,
             "metadata": {
+                "title": report_title,
                 "generated_at": generated_at,
                 "source_type": "investigation",
                 "summary_length": summary_length,
@@ -169,7 +175,7 @@ class ReportGenerator:
                 sample = _first_present(cluster, ["Cluster Sample", "pattern", "sample", "message"])
                 count = _first_present(cluster, ["Count", "count"])
                 lines.append(
-                    f"  - Cluster: {sample or cluster} "
+                    f"  - Cluster: {_clean_cluster_sample(sample or cluster)} "
                     f"({count or 'unknown'} events)"
                 )
             for entity in (source.get("top_entities") or [])[:2]:
@@ -241,14 +247,14 @@ class ReportGenerator:
             "- Transcript export is available separately through `export_transcript`.",
         ]
 
-    def _render_html(self, markdown: str) -> str:
+    def _render_html(self, markdown: str, title: str = "Incident Report") -> str:
         lines = markdown.splitlines()
         html_lines = [
             "<!doctype html>",
             '<html lang="en">',
             "<head>",
             '<meta charset="utf-8">',
-            "<title>Incident Report</title>",
+            f"<title>{html.escape(title)}</title>",
             "</head>",
             "<body>",
         ]
@@ -296,3 +302,23 @@ def _first_present(row: Dict[str, Any], keys: Iterable[str]) -> Any:
         if value not in (None, ""):
             return value
     return None
+
+
+def _clean_cluster_sample(sample: Any, max_len: int = 120) -> str:
+    text = str(sample or "")
+    text = re.sub(r"<#v[^>]*>", "", text)
+    text = text.replace("</#v>", "")
+    text = " ".join(text.split())
+
+    try:
+        obj = json.loads(text)
+    except (TypeError, ValueError):
+        obj = None
+    if isinstance(obj, dict):
+        metadata = obj.get("metadata")
+        if isinstance(metadata, dict) and metadata.get("name"):
+            return f"Kubernetes object metadata: {metadata['name']}"
+
+    if len(text) > max_len:
+        return text[:max_len].rstrip() + "..."
+    return text

@@ -8,6 +8,10 @@ from oci_logan_mcp.confirmation import ConfirmationManager, GUARDED_TOOLS
 from oci_logan_mcp.secret_store import SecretStore
 
 
+def test_delete_playbook_requires_confirmation():
+    assert "delete_playbook" in GUARDED_TOOLS
+
+
 class TestConfirmationManager:
     """Unit tests for ConfirmationManager."""
 
@@ -59,6 +63,94 @@ class TestConfirmationManager:
         assert len(result["confirmation_token"]) >= 32
         assert "DELETE ALERT" in result["summary"]
         assert "ocid1.alarm.oc1..abc" in result["summary"]
+
+    @pytest.mark.parametrize(
+        "tool_name,args",
+        [
+            (
+                "create_alert",
+                {
+                    "display_name": "argus-alert-test",
+                    "query": "* | stats count",
+                    "destination_topic_id": "ocid1.onstopic.oc1..topic",
+                },
+            ),
+            (
+                "create_saved_search",
+                {
+                    "display_name": "argus-search-test",
+                    "query": "* | stats count",
+                },
+            ),
+            (
+                "create_dashboard",
+                {
+                    "display_name": "argus-dashboard-test",
+                    "tiles": [],
+                },
+            ),
+            (
+                "add_dashboard_tile",
+                {
+                    "dashboard_id": "ocid1.managementdashboard.oc1..dashboard",
+                    "title": "Errors",
+                    "query": "* | stats count",
+                    "visualization_type": "table",
+                },
+            ),
+            (
+                "update_alert",
+                {
+                    "alert_id": "ocid1.alarm.oc1..alert",
+                    "query": "* | stats count",
+                },
+            ),
+            (
+                "update_saved_search",
+                {
+                    "saved_search_id": "ocid1.loganalyticssavedsearch.oc1..search",
+                    "query": "* | stats count",
+                },
+            ),
+            (
+                "delete_alert",
+                {"alert_id": "ocid1.alarm.oc1..alert"},
+            ),
+            (
+                "delete_saved_search",
+                {"saved_search_id": "ocid1.loganalyticssavedsearch.oc1..search"},
+            ),
+            (
+                "delete_dashboard",
+                {"dashboard_id": "ocid1.managementdashboard.oc1..dashboard"},
+            ),
+            (
+                "create_log_source_from_sample",
+                {
+                    "source_name": "argus-source-test",
+                    "log_group_id": "ocid1.loganalyticsloggroup.oc1..group",
+                    "sample_line_count": 2,
+                    "data_warning": "review sample data",
+                },
+            ),
+        ],
+    )
+    def test_guarded_summary_includes_scope_and_audit_metadata(
+        self, manager, tool_name, args
+    ):
+        scoped_args = {
+            **args,
+            "compartment_id": "ocid1.compartment.oc1..scope",
+            "namespace": "axfo51x8x2ap",
+            "audit_ref": "argus-action-20260504-001",
+        }
+
+        result = manager.request_confirmation(tool_name, scoped_args)
+
+        summary = result["summary"]
+        assert "compartment_id: ocid1.compartment.oc1..scope" in summary
+        assert "namespace: axfo51x8x2ap" in summary
+        assert "audit_ref: argus-action-20260504-001" in summary
 
     def test_validate_succeeds_with_matching_args(self, manager):
         args = {"alert_id": "ocid1.alarm.oc1..abc"}

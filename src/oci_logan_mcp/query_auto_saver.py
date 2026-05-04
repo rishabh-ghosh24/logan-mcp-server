@@ -80,19 +80,36 @@ class QueryAutoSaver:
         Returns the saved/updated entry, or None if skipped.
         """
         try:
-            # 1. Already saved? → bump use_count only
-            if self.user_store.record_usage(query):
-                return None
-
-            # 2. Trivial? → skip
+            # 1. Trivial? → skip
             score = self._compute_interest_score(query)
             if score < 2:
                 return None
 
-            # 3. Generate metadata from query text
-            name, description, category = self._generate_metadata(query)
+            # 2. Canonical semantic queries before the generic exact-query
+            # usage bump, so legacy auto-save names can be migrated in place.
+            semantic = self._semantic_metadata(query)
+            if semantic:
+                canonical = self._canonicalize_semantic_query(query, semantic, score)
+                if canonical:
+                    return canonical
 
-            # 4. Save via user_store
+            # 3. Already saved? → bump use_count only
+            if self.user_store.record_usage(query):
+                return None
+
+            # 4. Generate metadata from query text
+            if semantic:
+                name = self._unique_name(semantic["name"])
+                description = semantic["description"]
+                category = semantic["category"]
+                intent_key = semantic["intent_key"]
+                query_shape = semantic["query_shape"]
+            else:
+                name, description, category = self._generate_metadata(query)
+                intent_key = None
+                query_shape = None
+
+            # 5. Save via user_store
             saved = self.user_store.save_query(
                 name=name,
                 query=query.strip(),
@@ -100,6 +117,8 @@ class QueryAutoSaver:
                 category=category,
                 tags=["auto-saved"],
                 interest_score=score,
+                intent_key=intent_key,
+                query_shape=query_shape,
             )
             # If collision with builtin/shared, silently skip
             if "collision_warning" in saved:
@@ -213,6 +232,84 @@ class QueryAutoSaver:
         category = self._infer_category(q_lower)
 
         return name, description, category
+
+    def _semantic_metadata(self, query: str) -> Optional[Dict[str, str]]:
+        """Return high-confidence semantic metadata for known query intents."""
+        if self._is_error_like_sources_query(query):
+            return {
+                "name": "error_like_sources_by_log_source",
+                "description": (
+                    "Count error-like activity by log source using severity "
+                    "and case-insensitive Original Log Content keyword search"
+                ),
+                "category": "errors",
+                "intent_key": "error_like_sources",
+                "query_shape": "count_by_log_source",
+            }
+        return None
+
+    def _is_error_like_sources_query(self, query: str) -> bool:
+        q = query.lower()
+        has_severity = "severity in" in q and all(
+            token in q for token in ("'error'", "'critical'", "'fatal'")
+        )
+        has_text_terms = "'original log content'" in q and all(
+            term in q for term in ("%error%", "%fail%", "%fatal%", "%critical%", "%exception%")
+        )
+        groups_by_source = bool(
+            re.search(r"\bstats\s+count(?:\s+as\s+\w+)?\s+by\s+'log source'", q)
+        )
+        return has_severity and has_text_terms and groups_by_source
+
+    def _canonicalize_semantic_query(
+        self,
+        query: str,
+        semantic: Dict[str, str],
+        score: int,
+    ) -> Optional[Dict[str, Any]]:
+        matches = self._semantic_equivalent_queries(query, semantic)
+        if not matches:
+            return None
+
+        canonical_name = semantic["name"]
+        saved = self.user_store.save_query(
+            name=canonical_name,
+            query=query.strip(),
+            description=f"[auto-saved] {semantic['description']}",
+            category=semantic["category"],
+            tags=["auto-saved"],
+            interest_score=score,
+            force=True,
+            intent_key=semantic["intent_key"],
+            query_shape=semantic["query_shape"],
+        )
+        for existing in matches:
+            if existing.get("name") != canonical_name:
+                self.user_store.delete_query(existing.get("name", ""))
+
+        return saved
+
+    def _semantic_equivalent_queries(
+        self,
+        query: str,
+        semantic: Dict[str, str],
+    ) -> list[Dict[str, Any]]:
+        clean_query = query.strip()
+        matches: list[Dict[str, Any]] = []
+        for existing in self.user_store.list_queries():
+            existing_query = str(existing.get("query", "")).strip()
+            same_query = existing_query == clean_query
+            same_semantic = (
+                existing.get("intent_key") == semantic["intent_key"]
+                and existing.get("query_shape") == semantic["query_shape"]
+            )
+            legacy_error_name = (
+                re.fullmatch(r"count_by_log_source(?:_v\d+)?", str(existing.get("name", ""))) is not None
+                and self._is_error_like_sources_query(existing_query)
+            )
+            if same_query or same_semantic or legacy_error_name:
+                matches.append(existing)
+        return matches
 
     def _extract_source(self, query: str) -> Optional[str]:
         """Extract Log Source name if explicitly filtered."""

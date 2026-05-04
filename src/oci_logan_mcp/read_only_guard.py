@@ -6,6 +6,11 @@ a mutating operation. A tool is mutating if it changes state in OCI, on disk
 
 Any new tool registered in handlers.handle_tool_call must be classified — see
 the drift-catching test in tests/test_read_only_guard.py.
+
+Argus POC exception: investigate_and_generate_report persists a local report
+artifact for human review but does not change OCI or external systems. It is
+allowed in read-only mode by explicit product policy and remains required-audit
+in the handler.
 """
 
 MUTATING_TOOLS: frozenset[str] = frozenset(
@@ -19,6 +24,8 @@ MUTATING_TOOLS: frozenset[str] = frozenset(
         "save_learned_query",
         "remember_preference",
         "record_investigation",
+        "generate_incident_report",
+        "prepare_report_delivery",
         "delete_playbook",
         # OCI Monitoring alarms
         "create_alert",

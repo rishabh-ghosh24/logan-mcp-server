@@ -328,10 +328,6 @@ def get_tools() -> List[Dict[str, Any]]:
                         "description": "OCID of the saved search.",
                     },
                 },
-                "anyOf": [
-                    {"required": ["name"]},
-                    {"required": ["id"]},
-                ],
             },
         },
         {
@@ -512,18 +508,29 @@ def get_tools() -> List[Dict[str, Any]]:
         {
             "name": "investigate_incident",
             "description": (
-                "Flagship triage tool. Given a seed Logan query and a time "
-                "range, returns a structured first-cut investigation: which "
-                "sources are stopped (J1), which parsers are failing (J2), "
-                "which sources are anomalous vs. the prior equal-length "
-                "window (A2), and for each of the top_k anomalous sources: "
-                "top error clusters (Logan `cluster`), top entities "
-                "(host/user/request_id by count), and a recent-events "
-                "timeline. Merged cross-source timeline + next-step "
-                "suggestions round out the report. Budget exhaustion and "
-                "per-source errors yield a partial InvestigationReport with "
-                "`partial: true` and specific `partial_reasons` — A1 never "
-                "raises BudgetExceededError out of its boundary."
+                "Flagship triage tool and required first step for investigation "
+                "intent. Use this when the user says investigate, investigation "
+                "mode, investigator mode, root cause, what happened, likely story, "
+                "triage this incident, troubleshoot, find the issue, find the "
+                "issues, what is wrong, diagnose, what went wrong, why did this "
+                "happen, why is this failing, RCA, postmortem, analyze these "
+                "errors, or asks for underlying workload symptoms from logs. "
+                "Supporting subagents or manual run_query calls may deepen the "
+                "evidence, but must not replace investigate_incident. Given a "
+                "seed Logan query and a time range, returns a structured "
+                "first-cut investigation: which sources are stopped (J1), which "
+                "parsers are failing (J2), which sources are anomalous vs. the "
+                "prior equal-length window (A2), and for each of the top_k "
+                "anomalous sources: top error clusters (Logan `cluster`), top "
+                "entities (host/user/request_id by count), and a recent-events "
+                "timeline. After this tool returns, call generate_incident_report "
+                "for a written report. If the user confirms email delivery, use "
+                "OCI Notifications topic selection/defaults and then call "
+                "deliver_report; never send by OCI Notifications without explicit "
+                "final confirmation. Budget exhaustion and per-source errors yield "
+                "a partial InvestigationReport with `partial: true` and specific "
+                "`partial_reasons` — A1 never raises BudgetExceededError out of "
+                "its boundary."
             ),
             "inputSchema": {
                 "type": "object",
@@ -556,11 +563,31 @@ def get_tools() -> List[Dict[str, Any]]:
                     "top_k": {
                         "type": "integer",
                         "minimum": 1,
-                        "maximum": 3,
+                        "maximum": 10,
                         "description": (
                             "Number of anomalous sources to drill into. "
-                            "Default: 3. P0 clamp is [1, 3] to match the "
-                            "~20s p95 latency guarantee."
+                            "Default: 3. Explicit user requests can raise "
+                            "this to 10; wider investigations may take longer."
+                        ),
+                    },
+                    "mode": {
+                        "type": "string",
+                        "enum": ["quick", "standard", "deep"],
+                        "description": (
+                            "Investigation depth. quick runs seed/diff plus "
+                            "light source clustering; standard runs the normal "
+                            "context and drilldown; deep increases source "
+                            "drilldown row limits. Default: standard."
+                        ),
+                        "default": "standard",
+                    },
+                    "focus_sources": {
+                        "type": "array",
+                        "items": {"type": "string"},
+                        "description": (
+                            "Optional exact log source names to drill into. "
+                            "Use when the user already selected top offenders; "
+                            "the list is deduplicated and capped by top_k."
                         ),
                     },
                     "compartment_id": {
@@ -572,11 +599,104 @@ def get_tools() -> List[Dict[str, Any]]:
             },
         },
         {
+            "name": "investigate_and_generate_report",
+            "description": (
+                "Convenience workflow for investigation-mode requests that need a "
+                "report. This always runs the same A1 investigate_incident "
+                "orchestrator first, then passes the InvestigationReport to "
+                "generate_incident_report. It does not deliver email. After the "
+                "report is generated, ask whether the user wants OCI Notifications "
+                "email delivery; if yes, use saved topic/default discovery and ask "
+                "for final confirmation before deliver_report."
+            ),
+            "inputSchema": {
+                "type": "object",
+                "properties": {
+                    "query": {
+                        "type": "string",
+                        "description": "Seed Logan query for investigate_incident.",
+                    },
+                    "time_range": {
+                        "type": "string",
+                        "enum": [
+                            "last_15_min", "last_30_min",
+                            "last_1_hour", "last_3_hours", "last_6_hours",
+                            "last_12_hours", "last_24_hours",
+                            "last_2_days", "last_7_days", "last_14_days",
+                            "last_30_days",
+                        ],
+                        "description": "Investigation window. Default: 'last_1_hour'.",
+                    },
+                    "top_k": {
+                        "type": "integer",
+                        "minimum": 1,
+                        "maximum": 10,
+                        "description": "Number of anomalous sources to drill into. Default: 3.",
+                    },
+                    "mode": {
+                        "type": "string",
+                        "enum": ["quick", "standard", "deep"],
+                        "description": (
+                            "Investigation depth passed through to "
+                            "investigate_incident. Default: standard."
+                        ),
+                        "default": "standard",
+                    },
+                    "focus_sources": {
+                        "type": "array",
+                        "items": {"type": "string"},
+                        "description": "Optional exact log source names to drill into.",
+                    },
+                    "compartment_id": {
+                        "type": "string",
+                        "description": "Optional compartment OCID. Uses default if not specified.",
+                    },
+                    "format": {
+                        "type": "string",
+                        "enum": ["markdown", "html", "both"],
+                        "description": "Report output renderer. Default: both.",
+                        "default": "both",
+                    },
+                    "include_sections": {
+                        "type": "array",
+                        "items": {
+                            "type": "string",
+                            "enum": [
+                                "executive_summary",
+                                "timeline",
+                                "top_findings",
+                                "evidence",
+                                "recommended_next_steps",
+                                "appendix",
+                            ],
+                        },
+                        "description": "Optional ordered report section allowlist.",
+                    },
+                    "summary_length": {
+                        "type": "string",
+                        "enum": ["short", "standard", "detailed"],
+                        "description": "Executive summary sentence cap. Default: standard.",
+                        "default": "standard",
+                    },
+                    "title": {
+                        "type": "string",
+                        "description": "Optional display title for the stored incident report.",
+                    },
+                },
+                "required": ["query"],
+            },
+        },
+        {
             "name": "generate_incident_report",
             "description": (
                 "Generate a deterministic Markdown incident report, and optional "
-                "HTML rendering, from an A1 investigate_incident response. P0 is "
-                "template-first and does not call an internal LLM."
+                "HTML rendering, from an A1 investigate_incident response. For "
+                "investigation-mode user requests, call this after "
+                "investigate_incident unless investigate_and_generate_report was "
+                "used. P0 is template-first and does not call an internal LLM. "
+                "After report generation, ask whether the user wants OCI "
+                "Notifications email delivery; only call deliver_report after "
+                "topic selection/default reuse and final confirmation."
             ),
             "inputSchema": {
                 "type": "object",
@@ -590,12 +710,12 @@ def get_tools() -> List[Dict[str, Any]]:
                     },
                     "format": {
                         "type": "string",
-                        "enum": ["markdown", "html"],
+                        "enum": ["markdown", "html", "both"],
                         "description": (
                             "Output renderer. Markdown is always returned; html "
-                            "adds an HTML rendering."
+                            "adds an HTML rendering. Default: both."
                         ),
-                        "default": "markdown",
+                        "default": "both",
                     },
                     "include_sections": {
                         "type": "array",
@@ -621,17 +741,129 @@ def get_tools() -> List[Dict[str, Any]]:
                         "description": "Executive summary sentence cap. Default: standard.",
                         "default": "standard",
                     },
+                    "title": {
+                        "type": "string",
+                        "description": "Optional display title for the stored incident report.",
+                    },
                 },
                 "required": ["investigation"],
+            },
+        },
+        {
+            "name": "get_report_delivery_options",
+            "description": (
+                "Return report delivery guidance and known OCI Notifications email "
+                "topic defaults for the current user. Use after "
+                "generate_incident_report when asking whether to deliver the report "
+                "by OCI Notifications email."
+            ),
+            "inputSchema": {"type": "object", "properties": {}},
+        },
+        {
+            "name": "list_notification_topics",
+            "description": (
+                "List OCI Notifications topics available for report email delivery. "
+                "Use this only after the user says they want OCI Notifications "
+                "email delivery and no saved/default topic should be reused."
+            ),
+            "inputSchema": {
+                "type": "object",
+                "properties": {
+                    "compartment_id": {
+                        "type": "string",
+                        "description": (
+                            "Optional compartment OCID. Defaults to the current "
+                            "Log Analytics compartment."
+                        ),
+                    },
+                    "include_subcompartments": {
+                        "type": "boolean",
+                        "description": (
+                            "When true, also searches accessible compartments in "
+                            "the tenancy. Default: true."
+                        ),
+                        "default": True,
+                    },
+                    "lifecycle_state": {
+                        "type": "string",
+                        "description": "Optional topic lifecycle filter, for example ACTIVE.",
+                    },
+                },
+            },
+        },
+        {
+            "name": "get_incident_report",
+            "description": "Read a stored incident report by report_id, including markdown, paths, and metadata.",
+            "inputSchema": {
+                "type": "object",
+                "properties": {
+                    "report_id": {
+                        "type": "string",
+                        "description": "Stored report id such as rpt_0123456789abcdef0123456789abcdef.",
+                    },
+                },
+                "required": ["report_id"],
+            },
+        },
+        {
+            "name": "list_incident_reports",
+            "description": "List stored incident reports with local artifact paths.",
+            "inputSchema": {
+                "type": "object",
+                "properties": {
+                    "limit": {
+                        "type": "integer",
+                        "description": "Maximum reports to return, clamped to 100.",
+                        "minimum": 1,
+                        "maximum": 100,
+                        "default": 20,
+                    },
+                },
+            },
+        },
+        {
+            "name": "prepare_report_delivery",
+            "description": (
+                "Prepare OCI Notifications email delivery for a stored incident "
+                "report. This does not send email. It returns a confirmation "
+                "token and exact prompt that must be shown to the user before "
+                "calling deliver_report with delivery_confirmation_token."
+            ),
+            "inputSchema": {
+                "type": "object",
+                "required": ["report_id"],
+                "properties": {
+                    "report_id": {
+                        "type": "string",
+                        "description": "Stored report id returned by generate_incident_report.",
+                    },
+                    "channel": {
+                        "type": "string",
+                        "enum": ["email"],
+                        "default": "email",
+                    },
+                    "recipients": {
+                        "type": "object",
+                        "properties": {
+                            "email_topic_ocid": {"type": "string"},
+                            "email_topic_name": {"type": "string"},
+                            "email_topic_compartment_id": {"type": "string"},
+                        },
+                    },
+                },
             },
         },
         {
             "name": "deliver_report",
             "description": (
                 "Deliver a generated incident report via Telegram, Slack, or OCI "
-                "Notifications email-topic delivery. P0 accepts inline markdown "
-                "report content only; report_id lookup is deferred until report "
-                "persistence exists."
+                "Notifications email-topic delivery. Email delivery requires the "
+                "user's explicit final confirmation. If email_topic_ocid is omitted "
+                "and the email channel is requested, the server reuses the current "
+                "user's saved report topic, then the configured ONS default. A "
+                "successful email send saves the topic as the user's future "
+                "default. Provide exactly one of inline markdown report content or "
+                "a stored report_id."
             ),
             "inputSchema": {
                 "type": "object",
@@ -639,9 +871,22 @@ def get_tools() -> List[Dict[str, Any]]:
                 "properties": {
                     "report": {
                         "type": "object",
-                        "required": ["markdown"],
+                        "description": (
+                            "Report content to deliver. Provide exactly one of "
+                            "markdown or report_id."
+                        ),
                         "properties": {
-                            "markdown": {"type": "string"},
+                            "markdown": {
+                                "type": "string",
+                                "description": "Inline markdown report content.",
+                            },
+                            "report_id": {
+                                "type": "string",
+                                "description": (
+                                    "Stored report id returned by generate_incident_report."
+                                ),
+                            },
+                            "metadata": {"type": "object"},
                             "title": {"type": "string"},
                         },
                     },
@@ -658,12 +903,22 @@ def get_tools() -> List[Dict[str, Any]]:
                         "properties": {
                             "telegram_chat_id": {"type": "string"},
                             "email_topic_ocid": {"type": "string"},
+                            "email_topic_name": {"type": "string"},
+                            "email_topic_compartment_id": {"type": "string"},
                         },
                     },
                     "format": {
                         "type": "string",
                         "enum": ["pdf", "markdown", "both"],
                         "default": "pdf",
+                    },
+                    "delivery_confirmation_token": {
+                        "type": "string",
+                        "description": (
+                            "Required for email delivery. Use the token returned "
+                            "by prepare_report_delivery after the user confirms "
+                            "the exact prompt."
+                        ),
                     },
                     "title": {"type": "string"},
                 },
@@ -978,7 +1233,33 @@ def get_tools() -> List[Dict[str, Any]]:
                         "type": "string",
                         "enum": ["basic", "security", "performance", "errors", "statistics", "all"],
                         "description": "Category of examples to return. Use 'all' for complete reference.",
-                    }
+                    },
+                    "include_personal": {
+                        "type": "boolean",
+                        "description": (
+                            "Include the current user's learned successful queries "
+                            "alongside starter examples. Default: true."
+                        ),
+                        "default": True,
+                    },
+                    "include_shared": {
+                        "type": "boolean",
+                        "description": (
+                            "Include shared promoted favorite queries alongside "
+                            "starter examples. Default: true."
+                        ),
+                        "default": True,
+                    },
+                    "limit_per_source": {
+                        "type": "integer",
+                        "minimum": 0,
+                        "maximum": 20,
+                        "description": (
+                            "Maximum personal and shared examples to add for the "
+                            "requested category. Default: 5."
+                        ),
+                        "default": 5,
+                    },
                 },
             },
         },
@@ -1525,14 +1806,27 @@ def get_tools() -> List[Dict[str, Any]]:
         },
         {
             "name": "delete_playbook",
-            "description": "Delete one recorded investigation playbook for the current user.",
+            "destructive": True,
+            "description": (
+                "Delete one recorded investigation playbook for the current user. "
+                "TWO-FACTOR CONFIRMATION REQUIRED: First call returns a confirmation token and summary. "
+                "To execute, re-invoke with confirmation_token and your confirmation secret."
+            ),
             "inputSchema": {
                 "type": "object",
                 "properties": {
                     "playbook_id": {
                         "type": "string",
                         "description": "Playbook id to delete.",
-                    }
+                    },
+                    "confirmation_token": {
+                        "type": "string",
+                        "description": "Server-generated token from the confirmation step. Omit on first call.",
+                    },
+                    "confirmation_secret": {
+                        "type": "string",
+                        "description": "Your confirmation secret. Required with token to execute. You MUST ask the user for this value each time — NEVER reuse a previously provided secret.",
+                    },
                 },
                 "required": ["playbook_id"],
             },

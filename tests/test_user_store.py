@@ -239,6 +239,24 @@ class TestEntryId:
         queries = store.list_queries()
         assert queries[0]["entry_id"] == custom_id
 
+    def test_save_query_persists_intent_metadata(self, tmp_path):
+        store = UserStore(base_dir=tmp_path, user_id="alice")
+
+        saved = store.save_query(
+            name="error_like_sources_by_log_source",
+            query="'Original Log Content' like '%error%' | stats count by 'Log Source'",
+            description="d",
+            category="errors",
+            intent_key="error_like_sources",
+            query_shape="count_by_log_source",
+        )
+
+        assert saved["intent_key"] == "error_like_sources"
+        assert saved["query_shape"] == "count_by_log_source"
+        listed = store.list_queries()
+        assert listed[0]["intent_key"] == "error_like_sources"
+        assert listed[0]["query_shape"] == "count_by_log_source"
+
     def test_concurrent_load_does_not_race_on_backfill(self, tmp_path):
         """Two concurrent UserStore instances loading a legacy file without entry_ids
         should both end up seeing the SAME UUIDs written to disk (no last-writer loss)."""

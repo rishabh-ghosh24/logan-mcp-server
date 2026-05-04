@@ -159,10 +159,33 @@ class TestHandlerIntegration:
         assert all("name" in ex and "query" in ex for ex in data["examples"])
 
     @pytest.mark.asyncio
+    async def test_errors_category_includes_canonical_error_like_sources_query(self, _handlers):
+        result = await _handlers._get_query_examples({"category": "errors"})
+        data = json.loads(result[0]["text"])
+
+        query = next(
+            ex["query"]
+            for ex in data["examples"]
+            if ex["name"] == "error_like_sources_by_log_source"
+        )
+
+        assert "Severity in ('ERROR', 'CRITICAL', 'FATAL')" in query
+        assert "'Original Log Content' like '%error%'" in query
+        assert "'Original Log Content' like '%fail%'" in query
+        assert "'Original Log Content' like '%fatal%'" in query
+        assert "'Original Log Content' like '%critical%'" in query
+        assert "'Original Log Content' like '%exception%'" in query
+        assert "'Original Log Content' not like '%NOERROR%'" in query
+        assert "Message" not in query
+        assert "'Original Log Content' like '%ERROR%'" not in query
+        assert "'Original Log Content' like '%Error%'" not in query
+        assert "| stats count by 'Log Source'" in query
+        assert "| sort -count" in query
+
+    @pytest.mark.asyncio
     async def test_unknown_category(self, _handlers):
         """Unknown category should return error with available list."""
         result = await _handlers._get_query_examples({"category": "nonexistent"})
         data = json.loads(result[0]["text"])
         assert "error" in data
         assert "available" in data
-

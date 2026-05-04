@@ -6,11 +6,13 @@ import json
 import logging
 import os
 import threading
+import uuid
 from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any, Dict, Iterator, List
 
 from .file_lock import locked_file
+from .sanitize import redact_dict
 
 logger = logging.getLogger(__name__)
 
@@ -50,21 +52,56 @@ class AuditLogger:
         tool: str,
         args: Dict[str, Any],
         outcome: str,
-        result_summary: str = "",
+        result_summary: Any = "",
         error: str = "",
+        trace_id: str | None = None,
+        audit_ref: str | None = None,
+        blocked: bool | None = None,
+        block_reason: str | None = None,
+        audit_strictness: str | None = None,
+        event_type: str = "mcp_call",
+        actor_source: str = "logan_user",
+        client_metadata: Dict[str, Any] | None = None,
     ) -> None:
         """Append one audit entry as a JSON line."""
         clean_args = {k: v for k, v in args.items() if k not in _STRIP_KEYS}
+        timestamp = datetime.now(timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ")
+        if blocked is None:
+            blocked = outcome in {
+                "read_only_blocked",
+                "confirmation_unavailable",
+                "confirmation_failed",
+                "unknown_tool",
+                "audit_blocked",
+            }
         entry: Dict[str, Any] = {
-            "timestamp": datetime.now(timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ"),
+            # Legacy fields consumed by playbook/transcript code.
+            "timestamp": timestamp,
             "session_id": self._session_id,
             "user": user,
             "pid": os.getpid(),
             "tool": tool,
             "args": clean_args,
             "outcome": outcome,
+            # Enriched MCP audit fields used by Argus POC audit review.
+            "ts": timestamp,
+            "event_id": f"evt_{uuid.uuid4().hex}",
+            "trace_id": trace_id or f"trace_{uuid.uuid4().hex}",
+            "audit_ref": audit_ref,
+            "actor": user,
+            "actor_source": actor_source,
+            "client_metadata": client_metadata or {
+                "claimed_client": "unknown",
+                "claimed_version": "unknown",
+                "source_ip_truncated": None,
+            },
+            "event_type": event_type,
+            "args_redacted": redact_dict(clean_args),
+            "blocked": blocked,
+            "block_reason": block_reason,
+            "audit_strictness": audit_strictness or "best_effort",
         }
-        if result_summary:
+        if result_summary != "":
             entry["result_summary"] = result_summary
         if error:
             entry["error"] = error

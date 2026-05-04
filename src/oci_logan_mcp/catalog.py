@@ -45,6 +45,8 @@ class CatalogEntry:
     promoted_at: Optional[str] = None
     promotion_status: Optional[str] = None
     promotion_reason: Optional[str] = None
+    intent_key: Optional[str] = None
+    query_shape: Optional[str] = None
 
 
 class UnifiedCatalog:
@@ -143,6 +145,8 @@ class UnifiedCatalog:
                     promoted_at=q.get("promoted_at"),
                     promotion_status=q.get("promotion_status"),
                     promotion_reason=q.get("promotion_reason"),
+                    intent_key=q.get("intent_key"),
+                    query_shape=q.get("query_shape"),
                 )
             )
 
@@ -174,22 +178,57 @@ class UnifiedCatalog:
         """builtin > shared. Personal and starter excluded."""
         return self._merge_by_name([self.load_builtins(), self.load_shared()])
 
-    def for_onboarding(self, include_community_favorites: int = 5) -> List[CatalogEntry]:
-        """Starter entries plus top-N shared 'community favorites' by interest_score.
+    def for_onboarding(
+        self,
+        include_community_favorites: int = 5,
+        *,
+        user_id: Optional[str] = None,
+        include_personal: int = 0,
+        category: Optional[str] = None,
+    ) -> List[CatalogEntry]:
+        """Starter entries plus learned query examples for query construction.
 
-        Community favorites are clearly distinguishable by their source (SHARED).
+        Learned entries are clearly distinguishable by their source.
         Callers can filter by source if they want starters only.
-        Builtin and personal are excluded from onboarding.
+        Builtins are excluded from onboarding.
         """
         entries = self.load_starters()
+        category_filter = category if category and category != "all" else None
+        if user_id and include_personal > 0:
+            personal = self._rank_for_onboarding(
+                self.load_personal(user_id),
+                category=category_filter,
+            )
+            entries.extend(personal[:include_personal])
         if include_community_favorites > 0:
-            shared = sorted(
+            shared = self._rank_for_onboarding(
                 self.load_shared(),
-                key=lambda e: e.interest_score,
-                reverse=True,
+                category=category_filter,
             )
             entries.extend(shared[:include_community_favorites])
         return entries
+
+    def _rank_for_onboarding(
+        self,
+        entries: List[CatalogEntry],
+        *,
+        category: Optional[str] = None,
+    ) -> List[CatalogEntry]:
+        """Rank learned entries for examples without mutating stored metadata."""
+        if category:
+            entries = [e for e in entries if e.category == category]
+
+        def key(e: CatalogEntry) -> tuple[int, int, int, int, str]:
+            category_match = 1 if category and e.category == category else 0
+            return (
+                category_match,
+                int(e.success_count or 0),
+                int(e.use_count or 0),
+                int(e.interest_score or 0),
+                e.last_used or e.created_at or "",
+            )
+
+        return sorted(entries, key=key, reverse=True)
 
     def _merge_by_name(self, buckets: List[List[CatalogEntry]]) -> List[CatalogEntry]:
         """Merge entries across sources. Buckets are in priority order (highest first).

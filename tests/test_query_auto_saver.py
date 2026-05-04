@@ -170,6 +170,92 @@ class TestNameGeneration:
         assert name != base_name
         assert "_v2" in name
 
+    def test_error_like_sources_query_gets_semantic_name(self, auto_saver):
+        q = (
+            "(Severity in ('ERROR', 'CRITICAL', 'FATAL') "
+            "or 'Original Log Content' like '%error%' "
+            "or 'Original Log Content' like '%fail%' "
+            "or 'Original Log Content' like '%fatal%' "
+            "or 'Original Log Content' like '%critical%' "
+            "or 'Original Log Content' like '%exception%') "
+            "and 'Original Log Content' not like '%NOERROR%' "
+            "| stats count by 'Log Source' | sort -count"
+        )
+
+        saved = auto_saver.process_successful_query(q, DUMMY_RESULT)
+
+        assert saved is not None
+        assert saved["name"] == "error_like_sources_by_log_source"
+        assert saved["category"] == "errors"
+        assert saved["intent_key"] == "error_like_sources"
+        assert saved["query_shape"] == "count_by_log_source"
+
+    def test_legacy_generic_error_source_query_is_canonicalized(self, auto_saver, mock_user_store):
+        q = (
+            "(Severity in ('ERROR', 'CRITICAL', 'FATAL') "
+            "or 'Original Log Content' like '%error%' "
+            "or 'Original Log Content' like '%fail%' "
+            "or 'Original Log Content' like '%fatal%' "
+            "or 'Original Log Content' like '%critical%' "
+            "or 'Original Log Content' like '%exception%') "
+            "and 'Original Log Content' not like '%NOERROR%' "
+            "| stats count by 'Log Source' | sort -count"
+        )
+        mock_user_store.save_query(
+            name="count_by_log_source_v19",
+            query=q,
+            description="Legacy generic name",
+            category="general",
+            tags=["auto-saved"],
+        )
+
+        saved = auto_saver.process_successful_query(q, DUMMY_RESULT)
+
+        assert saved is not None
+        assert saved["name"] == "error_like_sources_by_log_source"
+        queries = mock_user_store.list_queries()
+        assert [query["name"] for query in queries] == ["error_like_sources_by_log_source"]
+        assert queries[0]["intent_key"] == "error_like_sources"
+        assert queries[0]["query_shape"] == "count_by_log_source"
+
+    def test_legacy_canonicalization_preserves_history_and_is_idempotent(self, auto_saver, mock_user_store):
+        q = (
+            "(Severity in ('ERROR', 'CRITICAL', 'FATAL') "
+            "or 'Original Log Content' like '%error%' "
+            "or 'Original Log Content' like '%fail%' "
+            "or 'Original Log Content' like '%fatal%' "
+            "or 'Original Log Content' like '%critical%' "
+            "or 'Original Log Content' like '%exception%') "
+            "and 'Original Log Content' not like '%NOERROR%' "
+            "| stats count by 'Log Source' | sort -count"
+        )
+        legacy = mock_user_store.save_query(
+            name="count_by_log_source_v19",
+            query=q,
+            description="Legacy generic name",
+            category="general",
+            tags=["auto-saved"],
+        )
+        data = mock_user_store._load()
+        data["queries"][0]["use_count"] = 7
+        data["queries"][0]["success_count"] = 4
+        data["queries"][0]["failure_count"] = 2
+        data["queries"][0]["created_at"] = "2026-04-01T00:00:00+00:00"
+        mock_user_store._save(data)
+
+        first = auto_saver.process_successful_query(q, DUMMY_RESULT)
+        second = auto_saver.process_successful_query(q, DUMMY_RESULT)
+
+        queries = mock_user_store.list_queries()
+        assert [query["name"] for query in queries] == ["error_like_sources_by_log_source"]
+        assert first["name"] == "error_like_sources_by_log_source"
+        assert second["name"] == "error_like_sources_by_log_source"
+        assert queries[0]["entry_id"] == legacy["entry_id"]
+        assert queries[0]["use_count"] >= 9
+        assert queries[0]["success_count"] == 4
+        assert queries[0]["failure_count"] == 2
+        assert queries[0]["created_at"] == "2026-04-01T00:00:00+00:00"
+
 
 # ================================================================
 # Category inference

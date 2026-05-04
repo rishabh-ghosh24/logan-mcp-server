@@ -230,14 +230,18 @@ async def test_delivery_attempts_are_audited(tmp_path):
 
 def test_rejects_report_without_markdown(tmp_path):
     svc, _ = make_service(tmp_path)
-    with pytest.raises(ReportDeliveryError, match="markdown"):
+    with pytest.raises(ReportDeliveryError, match="markdown") as exc:
         svc._validate_report({"title": "No body"})
 
+    assert exc.value.code == "missing_report"
 
-def test_report_id_is_not_accepted_in_p0(tmp_path):
+
+def test_deliver_report_rejects_missing_report_content(tmp_path):
     svc, _ = make_service(tmp_path)
-    with pytest.raises(ReportDeliveryError, match="markdown"):
-        svc._validate_report({"report_id": "r-123"})
+    with pytest.raises(ReportDeliveryError) as exc:
+        svc._validate_report({})
+
+    assert exc.value.code == "missing_report"
 
 
 def test_redact_recipient_masks_values():

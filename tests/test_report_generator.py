@@ -99,6 +99,16 @@ def test_generate_default_markdown_sections():
     assert report["artifacts"] == []
 
 
+def test_generate_uses_custom_title_when_provided():
+    report = ReportGenerator().generate(
+        _investigation(),
+        title="24-hour failures and issues report",
+    )
+
+    assert report["metadata"]["title"] == "24-hour failures and issues report"
+    assert report["markdown"].startswith("# 24-hour failures and issues report")
+
+
 def test_generate_renders_current_a1_timeline_clusters_and_entities():
     investigation = _investigation()
     investigation["cross_source_timeline"] = [
@@ -132,6 +142,31 @@ def test_generate_renders_current_a1_timeline_clusters_and_entities():
     assert "entity=unknown" not in markdown
 
 
+def test_generate_sanitizes_cluster_template_markup_and_long_samples():
+    investigation = _investigation()
+    investigation["anomalous_sources"][0]["top_error_clusters"] = [
+        {
+            "pattern": (
+                '{"metadata":{"name":"prometheus-'
+                '<#v t="v" id="1:0">7d7bc46676-xdmtm</#v>",'
+                '"managedFields":[{"manager":"kube-controller-manager",'
+                '"fieldsV1":{"f:metadata":{"f:labels":{"f:app.kubernetes.io/name":{}}}}}]}}'
+            ),
+            "count": 15384,
+        }
+    ]
+
+    report = ReportGenerator().generate(investigation)
+
+    markdown = report["markdown"]
+    assert "<#v" not in markdown
+    assert "</#v>" not in markdown
+    assert "prometheus-7d7bc46676-xdmtm" in markdown
+    assert "managedFields" not in markdown
+    cluster_line = next(line for line in markdown.splitlines() if "Cluster:" in line)
+    assert len(cluster_line) < 180
+
+
 def test_include_sections_filters_output():
     report = ReportGenerator().generate(
         _investigation(),
@@ -156,6 +191,25 @@ def test_html_format_returns_escaped_html_document():
     assert "<critical>" not in report["html"]
 
 
+def test_both_format_returns_markdown_and_html_document():
+    report = ReportGenerator().generate(_investigation(), output_format="both")
+
+    assert report["markdown"].startswith("# Incident Report")
+    assert report["html"].startswith("<!doctype html>")
+    assert "<h1>Incident Report</h1>" in report["html"]
+
+
+def test_html_format_uses_custom_title():
+    report = ReportGenerator().generate(
+        _investigation(),
+        output_format="html",
+        title="24-hour failures and issues report",
+    )
+
+    assert "<title>24-hour failures and issues report</title>" in report["html"]
+    assert "<h1>24-hour failures and issues report</h1>" in report["html"]
+
+
 def test_empty_investigation_produces_no_findings_report():
     report = ReportGenerator().generate({})
 
@@ -175,6 +229,14 @@ def test_short_summary_caps_sentences():
     assert "Two." in summary
     assert "Three." in summary
     assert "Four." not in summary
+
+
+@pytest.mark.parametrize("title", [123, ["Incident Report"], False])
+def test_invalid_title_type_raises_report_generation_error(title):
+    with pytest.raises(ReportGenerationError) as exc:
+        ReportGenerator().generate(_investigation(), title=title)
+
+    assert "title must be a string" in str(exc.value)
 
 
 @pytest.mark.parametrize(

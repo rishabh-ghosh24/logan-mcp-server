@@ -51,23 +51,24 @@ queries:
     category: security
 
   # --- errors ---
-  - name: All errors
-    query: "* | where Severity in ('ERROR', 'CRITICAL', 'FATAL')"
-    description: Find all error-level logs
+  - name: error_like_sources_by_log_source
+    query: >-
+      (Severity in ('ERROR', 'CRITICAL', 'FATAL') or 'Original Log Content' like '%error%' or 'Original Log Content' like '%fail%' or 'Original Log Content' like '%fatal%' or 'Original Log Content' like '%critical%' or 'Original Log Content' like '%exception%') and 'Original Log Content' not like '%NOERROR%' | stats count by 'Log Source' | sort -count
+    description: Count error-like activity per log source using case-insensitive stored message search
     category: errors
 
   - name: Errors by source
-    query: "* | where Severity = 'ERROR' | stats count by 'Log Source'"
+    query: "Severity = 'ERROR' | stats count by 'Log Source'"
     description: Count errors per log source
     category: errors
 
   - name: Error trends
-    query: "* | where Severity = 'ERROR' | timestats count by 'Log Source'"
+    query: "Severity = 'ERROR' | timestats count by 'Log Source'"
     description: Error count over time by source
     category: errors
 
   - name: Exception traces
-    query: "* | where Message contains 'Exception' or Message contains 'Traceback'"
+    query: "'Original Log Content' like '%exception%' or 'Original Log Content' like '%traceback%' | fields Time, 'Log Source', Severity, 'Original Log Content' | sort -Time | head 50"
     description: Find stack traces and exceptions
     category: errors
 

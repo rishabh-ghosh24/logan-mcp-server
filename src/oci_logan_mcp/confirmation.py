@@ -22,6 +22,7 @@ GUARDED_TOOLS = frozenset({
     "delete_alert",
     "delete_saved_search",
     "delete_dashboard",
+    "delete_playbook",
     "update_alert",
     "update_saved_search",
     "add_dashboard_tile",
@@ -35,10 +36,26 @@ GUARDED_TOOLS = frozenset({
     "create_log_source_from_sample",
 })
 
+NON_DESTRUCTIVE_MUTATION_EXEMPTIONS: dict[str, str] = {
+    "save_learned_query": "Additive learned-query state; overwrite paths require explicit force/rename behavior.",
+    "remember_preference": "Additive preference signal with no deletion of managed resources.",
+    "record_investigation": "Creates a fresh pb_<uuid> playbook record through PlaybookRecorder.",
+    "generate_incident_report": "Persists local report artifacts without deleting managed resources.",
+    "prepare_report_delivery": "Persists local report delivery confirmation state without publishing externally.",
+    "setup_confirmation_secret": "Bootstraps confirmation secret and refuses overwrite through the tool handler.",
+    "set_compartment": "Updates current session context only.",
+    "set_namespace": "Updates current session context only.",
+    "update_tenancy_context": "Updates local tenancy metadata; no deletion of managed resources.",
+    "deliver_report": "Outbound delivery is explicitly requested and does not mutate OCI/local persisted state destructively.",
+    "send_to_slack": "Outbound notification only.",
+    "send_to_telegram": "Outbound notification only.",
+}
+
 _SUMMARY_KEYS: Dict[str, list] = {
     "delete_alert": ["alert_id"],
     "delete_saved_search": ["saved_search_id"],
     "delete_dashboard": ["dashboard_id"],
+    "delete_playbook": ["playbook_id"],
     "update_alert": ["alert_id", "display_name", "severity", "query"],
     "update_saved_search": ["saved_search_id", "display_name", "query"],
     "add_dashboard_tile": ["dashboard_id", "title", "query", "visualization_type"],
@@ -63,6 +80,16 @@ _SUMMARY_KEYS: Dict[str, list] = {
         "estimated_bytes", "estimated_cost_usd", "estimate_confidence",
     ],
 }
+
+_COMMON_SCOPE_SUMMARY_KEYS = [
+    "compartment_id",
+    "namespace",
+    "log_group_id",
+    "target_ocid",
+    "audit_ref",
+    "argus_owned",
+    "argus_audit_ref",
+]
 
 
 class ConfirmationManager:
@@ -199,7 +226,11 @@ class ConfirmationManager:
         """Build a human-readable summary of the pending operation."""
         action = tool_name.replace("_", " ").upper()
         parts = [f"Action: {action}"]
-        for key in _SUMMARY_KEYS.get(tool_name, []):
+        summary_keys = dict.fromkeys([
+            *_SUMMARY_KEYS.get(tool_name, []),
+            *_COMMON_SCOPE_SUMMARY_KEYS,
+        ])
+        for key in summary_keys:
             if key in arguments:
                 val = str(arguments[key])
                 if key != "data_warning" and len(val) > 120:

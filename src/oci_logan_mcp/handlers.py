@@ -3,6 +3,9 @@
 import hashlib
 import json
 import logging
+import secrets
+import time
+from datetime import datetime, timezone
 from typing import TYPE_CHECKING, Any, Dict, List, Optional
 
 from .query_engine import QueryEngine
@@ -26,7 +29,7 @@ from .notification_service import NotificationService
 from .confirmation import ConfirmationManager
 from .secret_store import SecretStore
 from .audit import AuditLogger
-from .read_only_guard import ReadOnlyError, raise_if_read_only
+from .read_only_guard import MUTATING_TOOLS, ReadOnlyError, raise_if_read_only
 from .diff_tool import DiffTool
 from .pivot_tool import PivotTool
 from .ingestion_health import IngestionHealthTool
@@ -47,11 +50,27 @@ from .playbook_recorder import PlaybookRecorder
 from .playbook_store import PlaybookNotFoundError, PlaybookStore
 from .report_delivery import ReportDeliveryError, ReportDeliveryService
 from .report_generator import ReportGenerationError, ReportGenerator
+from .report_store import (
+    InvalidReportIdError,
+    ReportNotFoundError,
+    ReportStore,
+    ReportStoreCorruptError,
+    ReportStoreError,
+)
+from .sanitize import sanitize_query_text
 
 if TYPE_CHECKING:
     from .catalog import CatalogEntry
 
 logger = logging.getLogger(__name__)
+
+REPORT_EMAIL_TOPIC_PREFERENCE_KEY = "report.email_topic"
+REQUIRED_AUDIT_TOOLS = frozenset({
+    *MUTATING_TOOLS,
+    "export_results",
+    "export_transcript",
+    "investigate_and_generate_report",
+})
 
 
 class MCPHandlers:
@@ -132,6 +151,10 @@ class MCPHandlers:
         )
         self.find_rare_events_tool = RareEventsTool(self.query_engine)
         self.report_generator = ReportGenerator()
+        self.report_store = ReportStore(
+            self.settings.report_delivery.artifact_dir,
+            user_id=user_store.user_id,
+        )
         self.trace_request_id_tool = TraceRequestIdTool(self.pivot_tool)
         self.log_source_builder_tool = LogSourceFromSampleTool(
             oci_client=oci_client,
@@ -199,7 +222,13 @@ class MCPHandlers:
             "ingestion_health": self._ingestion_health,
             "parser_failure_triage": self._parser_failure_triage,
             "investigate_incident": self._investigate_incident,
+            "investigate_and_generate_report": self._investigate_and_generate_report,
             "generate_incident_report": self._generate_incident_report,
+            "get_report_delivery_options": self._get_report_delivery_options,
+            "prepare_report_delivery": self._prepare_report_delivery,
+            "list_notification_topics": self._list_notification_topics,
+            "get_incident_report": self._get_incident_report,
+            "list_incident_reports": self._list_incident_reports,
             "deliver_report": self._deliver_report,
             "why_did_this_fire": self._why_did_this_fire,
             "find_rare_events": self._find_rare_events,
@@ -256,34 +285,55 @@ class MCPHandlers:
             "delete_playbook": self._delete_playbook,
         }
 
-        handler = handlers.get(name)
-        if not handler:
-            return [{"type": "text", "text": f"Unknown tool: {name}"}]
-
         user_id = self.user_store.user_id
+        trace_id = f"trace_{secrets.token_hex(16)}"
+        audit_ref = self._extract_audit_ref(arguments)
+        audit_strictness = self._audit_strictness(name, arguments)
 
         # --- Invoked event (fires before every gate) ---
-        if self.audit_logger:
-            clean_args_for_invoked = self._clean_args_for_audit(name, arguments)
-            try:
-                self.audit_logger.log(
-                    user=user_id, tool=name, args=clean_args_for_invoked,
-                    outcome="invoked",
-                )
-            except Exception as e:
-                logger.warning("invoked audit entry failed: %s", e)
+        if not self._write_audit_event(
+            user=user_id,
+            tool=name,
+            args=arguments,
+            outcome="invoked",
+            trace_id=trace_id,
+            audit_ref=audit_ref,
+            audit_strictness=audit_strictness,
+        ) and audit_strictness == "required":
+            return self._audit_blocked_response(name, audit_strictness)
+
+        handler = handlers.get(name)
+        if not handler:
+            self._write_audit_event(
+                user=user_id,
+                tool=name,
+                args=arguments,
+                outcome="unknown_tool",
+                trace_id=trace_id,
+                audit_ref=audit_ref,
+                audit_strictness=audit_strictness,
+                result_summary={"success": False, "error": "Unknown tool"},
+                blocked=True,
+                block_reason="unknown_tool",
+            )
+            return [{"type": "text", "text": f"Unknown tool: {name}"}]
 
         # --- Read-only guard (runs BEFORE confirmation gate) ---
         try:
             raise_if_read_only(name, read_only=self.settings.read_only)
         except ReadOnlyError as e:
-            if self.audit_logger:
-                self.audit_logger.log(
-                    user=user_id,
-                    tool=name,
-                    args=self._clean_args_for_audit(name, arguments),
-                    outcome="read_only_blocked",
-                )
+            self._write_audit_event(
+                user=user_id,
+                tool=name,
+                args=arguments,
+                outcome="read_only_blocked",
+                trace_id=trace_id,
+                audit_ref=audit_ref,
+                audit_strictness=audit_strictness,
+                result_summary={"success": False, "error": str(e)},
+                blocked=True,
+                block_reason="read_only",
+            )
             return [{"type": "text", "text": json.dumps({
                 "status": "read_only_blocked",
                 "tool": name,
@@ -298,9 +348,17 @@ class MCPHandlers:
             if not self.confirmation_manager.is_available():
                 status = self.confirmation_manager.availability_status()
                 if self.audit_logger:
-                    self.audit_logger.log(
-                        user=user_id, tool=name, args=clean_args,
+                    self._write_audit_event(
+                        user=user_id,
+                        tool=name,
+                        args=clean_args,
                         outcome="confirmation_unavailable",
+                        trace_id=trace_id,
+                        audit_ref=audit_ref,
+                        audit_strictness=audit_strictness,
+                        result_summary={"success": False, "status": status},
+                        blocked=True,
+                        block_reason="confirmation_unavailable",
                     )
                 return [{"type": "text", "text": json.dumps(
                     self._build_confirmation_unavailable_response(status),
@@ -338,61 +396,222 @@ class MCPHandlers:
                         "data_warning": DATA_WARNING,
                         "sample_line_count": sample_line_count,
                     }
+                if not self._write_audit_event(
+                    user=user_id,
+                    tool=name,
+                    args=clean_args,
+                    outcome="confirmation_requested",
+                    trace_id=trace_id,
+                    audit_ref=audit_ref,
+                    audit_strictness=audit_strictness,
+                    result_summary={"success": True, "status": "confirmation_required"},
+                ) and audit_strictness == "required":
+                    return self._audit_blocked_response(name, audit_strictness)
                 confirmation = self.confirmation_manager.request_confirmation(
                     name, arguments, summary_extras=summary_extras,
                 )
-                if self.audit_logger:
-                    self.audit_logger.log(
-                        user=user_id, tool=name, args=clean_args,
-                        outcome="confirmation_requested",
-                    )
                 return [{"type": "text", "text": json.dumps(confirmation, indent=2)}]
 
             if not self.confirmation_manager.validate_confirmation(
                 token, secret, name, arguments
             ):
-                if self.audit_logger:
-                    self.audit_logger.log(
-                        user=user_id, tool=name, args=clean_args,
-                        outcome="confirmation_failed",
-                    )
+                self._write_audit_event(
+                    user=user_id,
+                    tool=name,
+                    args=clean_args,
+                    outcome="confirmation_failed",
+                    trace_id=trace_id,
+                    audit_ref=audit_ref,
+                    audit_strictness=audit_strictness,
+                    result_summary={"success": False, "status": "confirmation_failed"},
+                    blocked=True,
+                    block_reason="confirmation_failed",
+                )
                 return [{"type": "text", "text": json.dumps({
                     "status": "confirmation_failed",
                     "error": "Invalid/expired token, wrong secret, or arguments changed. "
                              "Request a new confirmation token.",
                 }, indent=2)}]
 
-            if self.audit_logger:
-                self.audit_logger.log(
-                    user=user_id, tool=name, args=clean_args,
-                    outcome="confirmed",
-                )
+            if not self._write_audit_event(
+                user=user_id,
+                tool=name,
+                args=clean_args,
+                outcome="confirmed",
+                trace_id=trace_id,
+                audit_ref=audit_ref,
+                audit_strictness=audit_strictness,
+                result_summary={"success": True, "status": "confirmed"},
+            ) and audit_strictness == "required":
+                return self._audit_blocked_response(name, audit_strictness)
 
             # Strip confirmation params before passing to handler while preserving
             # non-secret payloads that may be redacted in audit entries.
             arguments = self._strip_confirmation_args(arguments)
 
+        start = time.perf_counter()
         try:
             result = await handler(arguments)
-            if guarded_call and self.audit_logger:
-                summary = result[0]["text"][:200] if result else ""
-                self.audit_logger.log(
-                    user=user_id,
-                    tool=name,
-                    args=self._clean_args_for_audit(name, arguments),
-                    outcome="executed", result_summary=summary,
-                )
+            elapsed_ms = int((time.perf_counter() - start) * 1000)
+            self._write_audit_event(
+                user=user_id,
+                tool=name,
+                args=arguments,
+                outcome="executed",
+                trace_id=trace_id,
+                audit_ref=audit_ref,
+                audit_strictness=audit_strictness,
+                result_summary=self._summarize_tool_result(result, elapsed_ms),
+            )
             return result
         except Exception as e:
             logger.exception(f"Error in tool {name}")
-            if guarded_call and self.audit_logger:
-                self.audit_logger.log(
-                    user=user_id,
-                    tool=name,
-                    args=self._clean_args_for_audit(name, arguments),
-                    outcome="execution_failed", error=str(e),
-                )
+            elapsed_ms = int((time.perf_counter() - start) * 1000)
+            self._write_audit_event(
+                user=user_id,
+                tool=name,
+                args=arguments,
+                outcome="execution_failed",
+                trace_id=trace_id,
+                audit_ref=audit_ref,
+                audit_strictness=audit_strictness,
+                result_summary={
+                    "success": False,
+                    "execution_ms": elapsed_ms,
+                    "error_type": type(e).__name__,
+                },
+                error=str(e),
+            )
             return [{"type": "text", "text": f"Error executing {name}: {str(e)}"}]
+
+    def _json_response(self, payload: Any) -> List[Dict]:
+        return [{"type": "text", "text": json.dumps(payload, indent=2, default=str)}]
+
+    def _error_response(self, error_code: str, message: str, **extra: Any) -> List[Dict]:
+        payload = {"status": "error", "error_code": error_code, "error": message}
+        payload.update(extra)
+        return self._json_response(payload)
+
+    def _audit_strictness(self, tool_name: str, arguments: Dict[str, Any]) -> str:
+        if self.confirmation_manager.is_guarded_call(tool_name, arguments):
+            return "required"
+        if tool_name in REQUIRED_AUDIT_TOOLS:
+            return "required"
+        return "best_effort"
+
+    def _write_audit_event(
+        self,
+        *,
+        user: str,
+        tool: str,
+        args: Dict[str, Any],
+        outcome: str,
+        trace_id: str,
+        audit_ref: Optional[str],
+        audit_strictness: str,
+        result_summary: Any = "",
+        error: str = "",
+        blocked: Optional[bool] = None,
+        block_reason: Optional[str] = None,
+    ) -> bool:
+        if self.audit_logger is None:
+            if audit_strictness == "required":
+                logger.error(
+                    "Required audit logger unavailable for %s outcome=%s",
+                    tool,
+                    outcome,
+                )
+                return False
+            return True
+        try:
+            self.audit_logger.log(
+                user=user,
+                tool=tool,
+                args=self._clean_args_for_audit(tool, args),
+                outcome=outcome,
+                result_summary=result_summary,
+                error=error,
+                trace_id=trace_id,
+                audit_ref=audit_ref,
+                audit_strictness=audit_strictness,
+                blocked=blocked,
+                block_reason=block_reason,
+            )
+            return True
+        except Exception as e:
+            logger.warning("%s audit entry failed for %s: %s", outcome, tool, e)
+            return False
+
+    def _audit_blocked_response(
+        self, tool_name: str, audit_strictness: str
+    ) -> List[Dict[str, str]]:
+        return self._json_response({
+            "status": "audit_blocked",
+            "tool": tool_name,
+            "audit_strictness": audit_strictness,
+            "error": (
+                "Audit logging failed. This operation was not executed because "
+                "it requires a durable audit entry before side effects are allowed."
+            ),
+        })
+
+    @staticmethod
+    def _extract_audit_ref(arguments: Dict[str, Any]) -> Optional[str]:
+        value = arguments.get("audit_ref")
+        return value if isinstance(value, str) and value else None
+
+    @staticmethod
+    def _summarize_tool_result(
+        result: List[Dict[str, Any]], execution_ms: int
+    ) -> Dict[str, Any]:
+        summary: Dict[str, Any] = {
+            "success": True,
+            "execution_ms": execution_ms,
+            "item_count": len(result or []),
+        }
+        if not result:
+            return summary
+
+        first = result[0]
+        result_type = first.get("type")
+        summary["first_result_type"] = result_type
+        if result_type == "image":
+            data = first.get("data", "")
+            summary["mime_type"] = first.get("mimeType", "image/png")
+            summary["byte_length"] = len(data) if isinstance(data, str) else 0
+            return summary
+
+        text = first.get("text", "")
+        if not isinstance(text, str):
+            text = str(text)
+        summary["text_length"] = len(text)
+        if text:
+            sanitized_preview = sanitize_query_text(text[:200])
+            summary["preview"] = (
+                sanitized_preview if sanitized_preview is not None else "<redacted>"
+            )
+        try:
+            payload = json.loads(text)
+        except Exception:
+            return summary
+
+        if isinstance(payload, list):
+            summary["row_count"] = len(payload)
+            if payload and isinstance(payload[0], dict):
+                summary["first_keys"] = sorted(payload[0].keys())[:10]
+        elif isinstance(payload, dict):
+            summary["top_level_keys"] = sorted(payload.keys())[:20]
+            for key in (
+                "status",
+                "count",
+                "total_count",
+                "event_count",
+                "row_count",
+                "finding_count",
+            ):
+                if key in payload and isinstance(payload[key], (str, int, float, bool)):
+                    summary[key] = payload[key]
+        return summary
 
     def _clean_args_for_audit(self, tool_name: str, arguments: Dict[str, Any]) -> Dict[str, Any]:
         clean_args = self._strip_confirmation_args(arguments)
@@ -400,6 +619,10 @@ class MCPHandlers:
             clean_args = dict(clean_args)
             if "recipients" in clean_args:
                 clean_args["recipients"] = "<redacted>"
+            report = clean_args.get("report")
+            if isinstance(report, dict) and "markdown" in report:
+                clean_args["report"] = dict(report)
+                clean_args["report"]["markdown"] = "<redacted>"
         elif tool_name == "create_log_source_from_sample":
             clean_args = dict(clean_args)
             if "sample_logs" in clean_args:
@@ -597,11 +820,20 @@ class MCPHandlers:
         compartment_id, include_subs = self._resolve_scope(args)
         budget_override = bool(args.get("budget_override", False))
 
-        logger.info(f"run_query: include_subcompartments={include_subs}, compartment_id={compartment_id}, args={args}")
+        query_text = args["query"]
+        query_hash = hashlib.sha256(query_text.encode("utf-8")).hexdigest()[:12]
+        logger.info(
+            "run_query: include_subcompartments=%s, compartment_id=%s, "
+            "time_range=%s, query_hash=%s",
+            include_subs,
+            compartment_id,
+            args.get("time_range"),
+            query_hash,
+        )
 
         try:
             result = await self.query_engine.execute(
-                query=args["query"],
+                query=query_text,
                 time_range=args.get("time_range"),
                 time_start=args.get("time_start"),
                 time_end=args.get("time_end"),
@@ -612,33 +844,35 @@ class MCPHandlers:
             )
         except Exception:
             # Track failure before re-raising
-            try:
-                self.user_store.record_failure(args["query"])
-            except Exception:
-                pass
+            if not self.settings.read_only:
+                try:
+                    self.user_store.record_failure(query_text)
+                except Exception:
+                    pass
             raise
 
-        # Auto-save interesting queries / bump usage for existing ones
-        self.auto_saver.process_successful_query(args["query"], result)
+        if not self.settings.read_only:
+            # Auto-save interesting queries / bump usage for existing ones.
+            self.auto_saver.process_successful_query(query_text, result)
 
-        # Track success and preferences
-        try:
-            self.user_store.record_success(args["query"])
-        except Exception:
-            pass
-        if self.preference_store:
+            # Track success and preferences.
             try:
-                source = self.auto_saver._extract_source(args["query"])
-                groupby = self.auto_saver._extract_groupby(args["query"])
-                if source and groupby:
-                    self.preference_store.track_field_usage(source, groupby)
-                if source and args.get("time_range"):
-                    self.preference_store.track_time_range(source, args["time_range"])
+                self.user_store.record_success(query_text)
             except Exception:
                 pass
+            if self.preference_store:
+                try:
+                    source = self.auto_saver._extract_source(query_text)
+                    groupby = self.auto_saver._extract_groupby(query_text)
+                    if source and groupby:
+                        self.preference_store.track_field_usage(source, groupby)
+                    if source and args.get("time_range"):
+                        self.preference_store.track_time_range(source, args["time_range"])
+                except Exception:
+                    pass
 
         # Use compact formatter for cluster queries
-        if self._is_cluster_query(args["query"]):
+        if self._is_cluster_query(query_text):
             formatted = self._format_cluster_result(result)
             return [{"type": "text", "text": json.dumps(formatted, indent=2, default=str)}]
 
@@ -784,9 +1018,10 @@ class MCPHandlers:
             compartment_id=args.get("compartment_id"),
         )
         # Auto-save interesting queries from batch results
-        for q_spec, r in zip(args["queries"], results):
-            if isinstance(r, dict) and "error" not in r:
-                self.auto_saver.process_successful_query(q_spec["query"], r)
+        if not self.settings.read_only:
+            for q_spec, r in zip(args["queries"], results):
+                if isinstance(r, dict) and "error" not in r:
+                    self.auto_saver.process_successful_query(q_spec["query"], r)
         return [{"type": "text", "text": json.dumps(results, indent=2, default=str)}]
 
     async def _diff_time_windows(self, args: Dict) -> List[Dict]:
@@ -894,85 +1129,629 @@ class MCPHandlers:
         """Route to InvestigateIncidentTool. Partial reports forward verbatim;
         the orchestrator catches BudgetExceededError internally, so the handler
         does NOT wrap in the generic {status: "budget_exceeded"} shape."""
+        report, error = await self._run_investigation(args)
+        if error is not None:
+            return [{"type": "text", "text": json.dumps(error, indent=2)}]
+        return [{"type": "text", "text": json.dumps(report, indent=2, default=str)}]
+
+    async def _run_investigation(self, args: Dict) -> tuple[Optional[Dict[str, Any]], Optional[Dict[str, Any]]]:
         query = args.get("query")
         if not query or not isinstance(query, str):
-            return [{"type": "text", "text": json.dumps(
-                {"status": "error", "error": "query is required and must be a string"},
-                indent=2,
-            )}]
+            return None, {"status": "error", "error": "query is required and must be a string"}
         try:
             top_k = int(args.get("top_k", 3))
         except (TypeError, ValueError):
-            return [{"type": "text", "text": json.dumps(
-                {"status": "error", "error": "top_k must be an integer"}, indent=2,
-            )}]
-        if top_k < 1 or top_k > 3:
-            return [{"type": "text", "text": json.dumps(
-                {"status": "error", "error": "top_k must be between 1 and 3 (P0)"},
-                indent=2,
-            )}]
+            return None, {"status": "error", "error": "top_k must be an integer"}
+        if top_k < 1 or top_k > 10:
+            return None, {
+                "status": "error",
+                "error": "top_k must be between 1 and 10",
+            }
+        focus_sources = args.get("focus_sources")
+        if focus_sources is not None and (
+            not isinstance(focus_sources, list)
+            or any(not isinstance(source, str) for source in focus_sources)
+        ):
+            return None, {
+                "status": "error",
+                "error": "focus_sources must be a list of log source names",
+            }
+        mode = args.get("mode", "standard")
+        if mode not in ("quick", "standard", "deep"):
+            return None, {
+                "status": "error",
+                "error": "mode must be one of: quick, standard, deep",
+            }
         try:
             report = await self.investigate_tool.run(
                 query=query,
                 time_range=args.get("time_range", "last_1_hour"),
                 top_k=top_k,
                 compartment_id=args.get("compartment_id"),
+                focus_sources=focus_sources,
+                mode=mode,
             )
         except Exception as e:
-            return [{"type": "text", "text": json.dumps(
-                {"status": "error", "error": str(e)}, indent=2,
-            )}]
-        return [{"type": "text", "text": json.dumps(report, indent=2, default=str)}]
+            return None, {"status": "error", "error": str(e)}
+        return report, None
+
+    async def _investigate_and_generate_report(self, args: Dict) -> List[Dict]:
+        investigation, error = await self._run_investigation(args)
+        if error is not None:
+            return [{"type": "text", "text": json.dumps(error, indent=2)}]
+
+        try:
+            report = self.report_generator.generate(
+                investigation=investigation or {},
+                output_format=args.get("format", "both"),
+                include_sections=args.get("include_sections"),
+                summary_length=args.get("summary_length", "standard"),
+                title=args.get("title"),
+            )
+        except ReportGenerationError as e:
+            return self._error_response("invalid_report_options", str(e))
+
+        next_required_action = self._attach_report_delivery_state(report)
+        try:
+            stored = self.report_store.save(report)
+        except ReportStoreError as e:
+            return self._error_response("report_persistence_failed", str(e))
+
+        report["artifacts"] = stored["artifacts"]
+        report["metadata"] = stored["metadata"]
+        report["next_required_action"] = next_required_action
+
+        payload = {
+            "status": "report_generated",
+            "investigation": investigation,
+            "report": report,
+            "delivery_options": self._report_delivery_options_payload(),
+            "next_required_action": next_required_action,
+        }
+        return [{"type": "text", "text": json.dumps(payload, indent=2, default=str)}]
 
     async def _generate_incident_report(self, args: Dict) -> List[Dict]:
         investigation = args.get("investigation")
         if not isinstance(investigation, dict):
-            return [{"type": "text", "text": json.dumps({
-                "status": "error",
-                "error_code": "missing_investigation",
-                "error": "investigation is required and must be an object",
-            }, indent=2)}]
+            return self._error_response(
+                "missing_investigation",
+                "investigation is required and must be an object",
+            )
 
         try:
-            result = self.report_generator.generate(
+            report = self.report_generator.generate(
                 investigation=investigation,
-                output_format=args.get("format", "markdown"),
+                output_format=args.get("format", "both"),
                 include_sections=args.get("include_sections"),
                 summary_length=args.get("summary_length", "standard"),
+                title=args.get("title"),
             )
         except ReportGenerationError as e:
-            return [{"type": "text", "text": json.dumps({
-                "status": "error",
-                "error_code": "invalid_report_options",
-                "error": str(e),
-            }, indent=2)}]
-        return [{"type": "text", "text": json.dumps(result, indent=2, default=str)}]
+            return self._error_response("invalid_report_options", str(e))
+
+        next_required_action = self._attach_report_delivery_state(report)
+        try:
+            stored = self.report_store.save(report)
+        except ReportStoreError as e:
+            return self._error_response("report_persistence_failed", str(e))
+
+        report["artifacts"] = stored["artifacts"]
+        report["metadata"] = stored["metadata"]
+        payload = dict(report)
+        payload["delivery_options"] = self._report_delivery_options_payload()
+        payload["next_required_action"] = next_required_action
+        return self._json_response(payload)
+
+    def _attach_report_delivery_state(self, report: Dict[str, Any]) -> Dict[str, Any]:
+        metadata = report.setdefault("metadata", {})
+        if not isinstance(metadata, dict):
+            metadata = {}
+            report["metadata"] = metadata
+        topic = self._saved_report_email_topic() or self._configured_report_email_topic()
+        title = metadata.get("title") or report.get("title") or "Incident Report"
+        topic_label = None
+        if topic:
+            topic_label = topic.get("name") or topic.get("topic_id") or topic.get("id")
+        prompt = (
+            f"Send report '{title}' to OCI Notifications topic '{topic_label}'?"
+            if topic_label
+            else f"Choose an OCI Notifications topic before sending report '{title}'."
+        )
+        state = {
+            "status": "pending_user_confirmation",
+            "channel": "email",
+            "provider": "oci_notifications",
+            "suggested_topic": topic,
+            "last_delivery_attempt": None,
+        }
+        metadata["delivery_state"] = state
+        next_required_action = {
+            "status": "awaiting_delivery_decision",
+            "action": "confirm_or_skip_email_delivery",
+            "channel": "email",
+            "provider": "oci_notifications",
+            "confirmation_prompt": prompt,
+            "suggested_topic": topic,
+        }
+        metadata["next_required_action"] = next_required_action
+        return next_required_action
+
+    async def _get_incident_report(self, args: Dict) -> List[Dict]:
+        report_id = str(args.get("report_id", ""))
+        try:
+            report = self.report_store.get(report_id)
+        except InvalidReportIdError as e:
+            return self._error_response("invalid_report_id", str(e))
+        except ReportNotFoundError as e:
+            return self._error_response("report_not_found", str(e))
+        except ReportStoreCorruptError as e:
+            return self._error_response("report_store_corrupt", str(e))
+        except ReportStoreError as e:
+            return self._error_response("report_store_error", str(e))
+        return self._json_response(report)
+
+    async def _list_incident_reports(self, args: Dict) -> List[Dict]:
+        limit = args.get("limit", 20)
+        if isinstance(limit, bool) or not isinstance(limit, int):
+            return self._error_response(
+                "invalid_limit",
+                "limit must be an integer; valid values are clamped to 1..100",
+            )
+        try:
+            reports = self.report_store.list(limit=limit)
+        except ReportStoreError as e:
+            return self._error_response("report_store_error", str(e))
+        return self._json_response(reports)
+
+    async def _get_report_delivery_options(self, args: Dict) -> List[Dict]:
+        payload = {"status": "ok", **self._report_delivery_options_payload()}
+        return self._json_response(payload)
+
+    async def _prepare_report_delivery(self, args: Dict) -> List[Dict]:
+        report_id = str(args.get("report_id", ""))
+        channel = args.get("channel", "email")
+        if channel != "email":
+            return self._error_response(
+                "unsupported_delivery_channel",
+                "prepare_report_delivery currently supports only email",
+            )
+        try:
+            stored = self.report_store.get(report_id)
+        except InvalidReportIdError as e:
+            return self._error_response("invalid_report_id", str(e))
+        except ReportNotFoundError as e:
+            return self._error_response("report_not_found", str(e))
+        except ReportStoreCorruptError as e:
+            return self._error_response("report_store_corrupt", str(e))
+        except ReportStoreError as e:
+            return self._error_response("report_store_error", str(e))
+
+        recipients, topic = self._report_email_recipients(["email"], args.get("recipients"))
+        token = secrets.token_urlsafe(24)
+        metadata = stored.get("metadata") or {}
+        title = metadata.get("title") or "Incident Report"
+        topic_label = (topic or {}).get("name") or recipients.get("email_topic_ocid") or "configured email topic"
+        prompt = f"Send report '{title}' to OCI Notifications topic '{topic_label}'?"
+        delivery_state = {
+            "status": "awaiting_final_confirmation",
+            "channel": "email",
+            "provider": "oci_notifications",
+            "selected_topic": topic,
+            "recipients": {
+                "email_topic_ocid": recipients.get("email_topic_ocid"),
+                "email_topic_name": recipients.get("email_topic_name", ""),
+                "email_topic_compartment_id": recipients.get("email_topic_compartment_id", ""),
+            },
+            "confirmation_token": token,
+            "confirmation_prompt": prompt,
+            "prepared_at": datetime.now(timezone.utc).isoformat(),
+            "last_delivery_attempt": None,
+        }
+        next_required_action = {
+            "status": "awaiting_final_confirmation",
+            "action": "confirm_email_delivery",
+            "channel": "email",
+            "provider": "oci_notifications",
+            "confirmation_prompt": prompt,
+            "selected_topic": topic,
+        }
+        try:
+            updated = self.report_store.update_metadata(
+                report_id,
+                {
+                    "delivery_state": delivery_state,
+                    "next_required_action": next_required_action,
+                },
+            )
+        except ReportStoreError as e:
+            return self._error_response("report_store_error", str(e))
+
+        return self._json_response({
+            "status": "awaiting_final_confirmation",
+            "report_id": report_id,
+            "channel": "email",
+            "confirmation_token": token,
+            "confirmation_prompt": prompt,
+            "selected_topic": topic,
+            "metadata_path": updated["metadata_path"],
+        })
+
+    async def _list_notification_topics(self, args: Dict) -> List[Dict]:
+        try:
+            topics = await self.oci_client.list_notification_topics(
+                compartment_id=args.get("compartment_id"),
+                include_subcompartments=args.get("include_subcompartments", True),
+                lifecycle_state=args.get("lifecycle_state"),
+            )
+        except Exception as e:
+            return self._error_response("notification_topic_list_failed", str(e))
+
+        return self._json_response({
+            "status": "ok",
+            "count": len(topics),
+            "topics": topics,
+        })
+
+    def _resolve_report_for_delivery(
+        self,
+        report: Dict[str, Any],
+    ) -> tuple[Dict[str, Any] | None, str | None, str | None]:
+        has_markdown = bool(str(report.get("markdown") or "").strip())
+        has_report_id = bool(str(report.get("report_id") or "").strip())
+
+        if has_markdown and has_report_id:
+            return None, "conflicting_report_inputs", (
+                "Use either report.markdown or report.report_id, not both."
+            )
+        if not has_markdown and not has_report_id:
+            return None, "missing_report", (
+                "report.markdown or report.report_id is required."
+            )
+        if has_markdown:
+            return dict(report), None, None
+
+        report_id = str(report.get("report_id"))
+        try:
+            stored = self.report_store.get(report_id)
+        except InvalidReportIdError as e:
+            return None, "invalid_report_id", str(e)
+        except ReportNotFoundError as e:
+            return None, "report_not_found", str(e)
+        except ReportStoreCorruptError as e:
+            return None, "report_store_corrupt", str(e)
+        except ReportStoreError as e:
+            return None, "report_store_error", str(e)
+
+        resolved = dict(report)
+        resolved["markdown"] = stored["markdown"]
+        resolved["metadata"] = stored["metadata"]
+        resolved["markdown_path"] = stored["markdown_path"]
+        resolved["html_path"] = stored["html_path"]
+        resolved["metadata_path"] = stored["metadata_path"]
+        title = stored["metadata"].get("title")
+        current_title = resolved.get("title")
+        if (
+            (current_title is None or (isinstance(current_title, str) and not current_title.strip()))
+            and isinstance(title, str)
+            and title.strip()
+        ):
+            resolved["title"] = title
+        return resolved, None, None
 
     async def _deliver_report(self, args: Dict) -> List[Dict]:
-        report = args.get("report")
-        if not isinstance(report, dict) or not isinstance(report.get("markdown"), str):
-            return [{"type": "text", "text": json.dumps({
-                "status": "error",
-                "error_code": "missing_report_markdown",
-                "error": "report.markdown is required in P0; report_id lookup is deferred",
-            }, indent=2)}]
+        raw_report = args.get("report")
+        if not isinstance(raw_report, dict):
+            return self._error_response("missing_report", "report must be an object")
 
+        report, error_code, message = self._resolve_report_for_delivery(raw_report)
+        if error_code:
+            return self._error_response(error_code, message or "")
+
+        channels = args.get("channels", ["telegram"])
+        recipients_arg = args.get("recipients")
+        if self._email_channel_requested(channels):
+            error = self._validate_email_delivery_confirmation(
+                raw_report=raw_report,
+                resolved_report=report,
+                token=args.get("delivery_confirmation_token"),
+            )
+            if error:
+                return error
+            recipients_arg = self._recipients_from_delivery_state(report, recipients_arg)
+
+        recipients, email_topic = self._report_email_recipients(channels, recipients_arg)
+        email_report_id = (
+            str(raw_report["report_id"])
+            if self._email_channel_requested(channels) and raw_report.get("report_id")
+            else None
+        )
         try:
             result = await self.report_delivery_service.deliver(
                 report=report,
-                channels=args.get("channels", ["telegram"]),
-                recipients=args.get("recipients") or {},
+                channels=channels,
+                recipients=recipients,
                 output_format=args.get("format", "pdf"),
                 title=args.get("title"),
             )
         except ReportDeliveryError as e:
-            return [{"type": "text", "text": json.dumps({
-                "status": "error",
-                "error_code": "invalid_delivery_options",
-                "error": str(e),
-            }, indent=2)}]
+            if email_report_id:
+                self._record_email_delivery_attempt(
+                    email_report_id,
+                    {
+                        "status": "failed",
+                        "error_code": getattr(e, "code", "invalid_delivery_options"),
+                        "error": str(e),
+                    },
+                )
+            return self._error_response(
+                getattr(e, "code", "invalid_delivery_options"),
+                str(e),
+            )
 
-        return [{"type": "text", "text": json.dumps(result, indent=2, default=str)}]
+        saved_topic = await self._remember_report_email_topic_after_success(result, email_topic)
+        if email_topic or saved_topic:
+            result = dict(result)
+            result["delivery_preferences"] = {
+                "email_topic": saved_topic or email_topic,
+            }
+
+        if email_report_id:
+            self._record_email_delivery_attempt(email_report_id, result)
+
+        return self._json_response(result)
+
+    def _validate_email_delivery_confirmation(
+        self,
+        *,
+        raw_report: Dict[str, Any],
+        resolved_report: Dict[str, Any],
+        token: Any,
+    ) -> Optional[List[Dict]]:
+        report_id = raw_report.get("report_id")
+        if not isinstance(report_id, str) or not report_id.strip():
+            return self._error_response(
+                "email_delivery_requires_stored_report",
+                "Email delivery requires a stored report_id prepared with prepare_report_delivery.",
+            )
+        expected = (
+            (resolved_report.get("metadata") or {})
+            .get("delivery_state", {})
+            .get("confirmation_token")
+        )
+        status = (
+            (resolved_report.get("metadata") or {})
+            .get("delivery_state", {})
+            .get("status")
+        )
+        if not expected or status != "awaiting_final_confirmation":
+            return self._error_response(
+                "email_delivery_confirmation_required",
+                "Call prepare_report_delivery first and ask the user for final confirmation.",
+            )
+        if not isinstance(token, str) or token != expected:
+            return self._error_response(
+                "email_delivery_confirmation_required",
+                "Valid delivery_confirmation_token from prepare_report_delivery is required.",
+            )
+        return None
+
+    def _recipients_from_delivery_state(
+        self,
+        report: Dict[str, Any],
+        recipients: Optional[Dict[str, str]],
+    ) -> Optional[Dict[str, str]]:
+        merged = dict(recipients or {})
+        state = (report.get("metadata") or {}).get("delivery_state") or {}
+        stored_recipients = state.get("recipients") or {}
+        for key in ("email_topic_ocid", "email_topic_name", "email_topic_compartment_id"):
+            if stored_recipients.get(key) and not merged.get(key):
+                merged[key] = stored_recipients[key]
+        selected_topic = state.get("selected_topic") or {}
+        if selected_topic.get("source") and not merged.get("email_topic_source"):
+            merged["email_topic_source"] = selected_topic["source"]
+        if selected_topic.get("topic_id") and not merged.get("email_topic_ocid"):
+            merged["email_topic_ocid"] = selected_topic["topic_id"]
+        if selected_topic.get("name") and not merged.get("email_topic_name"):
+            merged["email_topic_name"] = selected_topic["name"]
+        if selected_topic.get("compartment_id") and not merged.get("email_topic_compartment_id"):
+            merged["email_topic_compartment_id"] = selected_topic["compartment_id"]
+        return merged
+
+    def _record_email_delivery_attempt(self, report_id: str, result: Dict[str, Any]) -> None:
+        status = "sent" if self._email_delivery_sent(result) else "failed"
+        last_attempt = {
+            "status": result.get("status"),
+            "attempted_at": datetime.now(timezone.utc).isoformat(),
+        }
+        if result.get("error_code"):
+            last_attempt["error_code"] = result["error_code"]
+        if result.get("error"):
+            last_attempt["error"] = result["error"]
+        delivery_state = {
+            "status": status,
+            "channel": "email",
+            "provider": "oci_notifications",
+            "confirmation_token": None,
+            "last_delivery_attempt": last_attempt,
+        }
+        next_required_action = {
+            "status": "completed",
+            "action": "none",
+            "channel": "email",
+            "provider": "oci_notifications",
+        }
+        if status == "failed":
+            next_required_action = {
+                "status": "delivery_failed",
+                "action": "prepare_report_delivery",
+                "channel": "email",
+                "provider": "oci_notifications",
+                "message": (
+                    "Email delivery failed. Call prepare_report_delivery to create a new "
+                    "confirmation token before retrying."
+                ),
+            }
+            if result.get("error_code"):
+                next_required_action["error_code"] = result["error_code"]
+            if result.get("error"):
+                next_required_action["error"] = result["error"]
+        try:
+            self.report_store.update_metadata(
+                report_id,
+                {
+                    "delivery_state": delivery_state,
+                    "next_required_action": next_required_action,
+                },
+            )
+        except ReportStoreError:
+            logger.warning("failed to update report delivery state", exc_info=True)
+
+    def _report_delivery_options_payload(self) -> Dict[str, Any]:
+        return {
+            "email": {
+                "provider": "oci_notifications",
+                "channel": "email",
+                "requires_user_confirmation": True,
+                "saved_topic": self._saved_report_email_topic(),
+                "configured_default": self._configured_report_email_topic(),
+                "workflow": [
+                    "Ask the user whether to deliver the report by OCI Notifications email.",
+                    "If a saved topic exists, ask whether to reuse it.",
+                    "If the user wants a different topic, call list_notification_topics and ask which topic to use.",
+                    "Before sending, ask: Send report <title> to OCI Notifications topic <topic name>?",
+                    "Only after confirmation, call deliver_report with channel email.",
+                ],
+            }
+        }
+
+    def _saved_report_email_topic(self) -> Optional[Dict[str, Any]]:
+        if not self.preference_store:
+            return None
+        pref = self.preference_store.get(REPORT_EMAIL_TOPIC_PREFERENCE_KEY)
+        if not pref:
+            return None
+        raw = pref.get("resolved_value")
+        data: Dict[str, Any]
+        try:
+            loaded = json.loads(raw) if isinstance(raw, str) else raw
+        except (TypeError, ValueError):
+            loaded = raw
+        if isinstance(loaded, dict):
+            data = dict(loaded)
+        elif isinstance(loaded, str) and loaded:
+            data = {"topic_id": loaded}
+        else:
+            return None
+        topic = self._normalize_report_email_topic(data, source="user_preference")
+        if topic:
+            topic["last_used"] = pref.get("last_used")
+        return topic
+
+    def _configured_report_email_topic(self) -> Optional[Dict[str, Any]]:
+        topic_id = self.settings.notifications.ons.default_topic_ocid
+        if not topic_id:
+            return None
+        return {
+            "topic_id": topic_id,
+            "name": "",
+            "compartment_id": "",
+            "lifecycle_state": "",
+            "source": "server_config",
+        }
+
+    def _report_email_recipients(
+        self,
+        channels: Any,
+        recipients: Optional[Dict[str, str]],
+    ) -> tuple[Dict[str, str], Optional[Dict[str, Any]]]:
+        effective_recipients = dict(recipients or {})
+        if not self._email_channel_requested(channels):
+            return effective_recipients, None
+
+        explicit_topic = effective_recipients.get("email_topic_ocid")
+        if explicit_topic:
+            return effective_recipients, {
+                "topic_id": explicit_topic,
+                "name": effective_recipients.get("email_topic_name", ""),
+                "compartment_id": effective_recipients.get("email_topic_compartment_id", ""),
+                "lifecycle_state": "",
+                "source": effective_recipients.get("email_topic_source", "explicit"),
+            }
+
+        saved = self._saved_report_email_topic()
+        if saved:
+            effective_recipients["email_topic_ocid"] = saved["topic_id"]
+            return effective_recipients, saved
+
+        configured = self._configured_report_email_topic()
+        if configured:
+            effective_recipients["email_topic_ocid"] = configured["topic_id"]
+            return effective_recipients, configured
+
+        return effective_recipients, None
+
+    def _email_channel_requested(self, channels: Any) -> bool:
+        if channels is None:
+            channels = ["telegram"]
+        return isinstance(channels, list) and "email" in channels
+
+    async def _remember_report_email_topic_after_success(
+        self,
+        result: Dict[str, Any],
+        topic: Optional[Dict[str, Any]],
+    ) -> Optional[Dict[str, Any]]:
+        if not topic or not self.preference_store or not self._email_delivery_sent(result):
+            return None
+        topic_id = topic.get("topic_id")
+        if not topic_id:
+            return None
+
+        details = dict(topic)
+        get_topic = getattr(self.oci_client, "get_topic", None)
+        if get_topic is not None:
+            try:
+                fetched = await get_topic(topic_id)
+                if isinstance(fetched, dict):
+                    details.update(fetched)
+            except Exception as e:
+                logger.debug("Could not fetch ONS topic details for preference: %s", e)
+
+        details["last_success_at"] = datetime.now(timezone.utc).isoformat()
+        normalized = self._normalize_report_email_topic(
+            details,
+            source=topic.get("source", "delivery_success"),
+        )
+        if not normalized:
+            return None
+        normalized["last_success_at"] = details["last_success_at"]
+        self.preference_store.remember(
+            REPORT_EMAIL_TOPIC_PREFERENCE_KEY,
+            json.dumps(normalized, sort_keys=True),
+        )
+        return normalized
+
+    def _email_delivery_sent(self, result: Dict[str, Any]) -> bool:
+        for row in result.get("delivered", []):
+            if row.get("channel") == "email" and row.get("status") == "sent":
+                return True
+        return False
+
+    def _normalize_report_email_topic(
+        self,
+        data: Dict[str, Any],
+        *,
+        source: str,
+    ) -> Optional[Dict[str, Any]]:
+        topic_id = data.get("topic_id") or data.get("id") or data.get("topic_ocid")
+        if not topic_id:
+            return None
+        return {
+            "topic_id": topic_id,
+            "name": data.get("name", ""),
+            "compartment_id": data.get("compartment_id", ""),
+            "lifecycle_state": data.get("lifecycle_state", ""),
+            "source": source,
+        }
 
     async def _why_did_this_fire(self, args: Dict) -> List[Dict]:
         """Run why_did_this_fire with structured validation and budget errors."""
@@ -1217,7 +1996,8 @@ class MCPHandlers:
         logger.info(f"Visualize: Query returned {row_count} rows, {col_count} columns")
 
         # Auto-save interesting queries
-        self.auto_saver.process_successful_query(args["query"], query_result)
+        if not self.settings.read_only:
+            self.auto_saver.process_successful_query(args["query"], query_result)
 
         chart_type = ChartType(args["chart_type"])
         viz_result = self.visualization.generate(
@@ -1253,7 +2033,8 @@ class MCPHandlers:
         )
 
         # Auto-save interesting queries
-        self.auto_saver.process_successful_query(args["query"], result)
+        if not self.settings.read_only:
+            self.auto_saver.process_successful_query(args["query"], result)
 
         exported = self.export_service.export(
             data=result["data"], format=args["format"]
@@ -1436,14 +2217,27 @@ class MCPHandlers:
     async def _get_query_examples(self, args: Dict) -> List[Dict]:
         """Get example queries for common use cases (onboarding surface)."""
         category = args.get("category", "all")
+        include_personal = args.get("include_personal", True)
+        include_shared = args.get("include_shared", True)
+        try:
+            limit_per_source = int(args.get("limit_per_source", 5))
+        except (TypeError, ValueError):
+            limit_per_source = 5
+        limit_per_source = max(0, min(limit_per_source, 20))
 
-        entries = self.catalog.for_onboarding()
+        entries = self.catalog.for_onboarding(
+            include_community_favorites=limit_per_source if include_shared else 0,
+            user_id=self.user_store.user_id if include_personal else None,
+            include_personal=limit_per_source if include_personal else 0,
+            category=category,
+        )
         examples: Dict[str, List[Dict[str, Any]]] = {}
         for e in entries:
             examples.setdefault(e.category, []).append({
                 "name": e.name,
                 "query": e.query,
                 "description": e.description,
+                "source": e.source.value,
             })
 
         if category == "all":

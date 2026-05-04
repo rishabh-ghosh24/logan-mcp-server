@@ -1122,9 +1122,47 @@ class TestAlertClientMethods:
     @pytest.mark.asyncio
     async def test_get_topic_calls_ons(self, mock_client):
         mock_client._ons_client = MagicMock()
-        mock_client._ons_client.get_topic.return_value = MagicMock(data=MagicMock(topic_id="ocid1.topic.1", name="test", lifecycle_state="ACTIVE"))
+        mock_client._ons_client.get_topic.return_value = MagicMock(data=MagicMock(
+            topic_id="ocid1.topic.1",
+            name="test",
+            compartment_id="ocid1.compartment.default",
+            lifecycle_state="ACTIVE",
+        ))
         result = await mock_client.get_topic("ocid1.topic.1")
         mock_client._ons_client.get_topic.assert_called_once_with(topic_id="ocid1.topic.1")
+        assert result["compartment_id"] == "ocid1.compartment.default"
+
+    @pytest.mark.asyncio
+    async def test_list_notification_topics_calls_ons_for_compartment(self, mock_client):
+        topic = MagicMock()
+        topic.topic_id = "ocid1.onstopic.oc1..abc"
+        topic.name = "Incident Email"
+        topic.compartment_id = "ocid1.compartment.default"
+        topic.lifecycle_state = "ACTIVE"
+        topic.description = "ops list"
+        topic.time_created = "2026-04-29T00:00:00Z"
+
+        response = _make_paginated_response([topic])
+        mock_client._ons_client = MagicMock()
+
+        with patch("oci_logan_mcp.client.list_call_get_all_results", return_value=response) as mock_list:
+            result = await mock_client.list_notification_topics(
+                compartment_id="ocid1.compartment.default",
+                include_subcompartments=False,
+            )
+
+        mock_list.assert_called_once_with(
+            mock_client._ons_client.list_topics,
+            compartment_id="ocid1.compartment.default",
+        )
+        assert result == [{
+            "topic_id": "ocid1.onstopic.oc1..abc",
+            "name": "Incident Email",
+            "compartment_id": "ocid1.compartment.default",
+            "lifecycle_state": "ACTIVE",
+            "description": "ops list",
+            "time_created": "2026-04-29T00:00:00Z",
+        }]
 
     @pytest.mark.asyncio
     async def test_create_alarm_calls_monitoring(self, mock_client):
