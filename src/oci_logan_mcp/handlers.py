@@ -4,6 +4,7 @@ import hashlib
 import json
 import logging
 import secrets
+import time
 from datetime import datetime, timezone
 from typing import TYPE_CHECKING, Any, Dict, List, Optional
 
@@ -28,7 +29,7 @@ from .notification_service import NotificationService
 from .confirmation import ConfirmationManager
 from .secret_store import SecretStore
 from .audit import AuditLogger
-from .read_only_guard import ReadOnlyError, raise_if_read_only
+from .read_only_guard import MUTATING_TOOLS, ReadOnlyError, raise_if_read_only
 from .diff_tool import DiffTool
 from .pivot_tool import PivotTool
 from .ingestion_health import IngestionHealthTool
@@ -63,6 +64,12 @@ if TYPE_CHECKING:
 logger = logging.getLogger(__name__)
 
 REPORT_EMAIL_TOPIC_PREFERENCE_KEY = "report.email_topic"
+REQUIRED_AUDIT_TOOLS = frozenset({
+    *MUTATING_TOOLS,
+    "export_results",
+    "export_transcript",
+    "investigate_and_generate_report",
+})
 
 
 class MCPHandlers:
@@ -277,34 +284,55 @@ class MCPHandlers:
             "delete_playbook": self._delete_playbook,
         }
 
-        handler = handlers.get(name)
-        if not handler:
-            return [{"type": "text", "text": f"Unknown tool: {name}"}]
-
         user_id = self.user_store.user_id
+        trace_id = f"trace_{secrets.token_hex(16)}"
+        audit_ref = self._extract_audit_ref(arguments)
+        audit_strictness = self._audit_strictness(name, arguments)
 
         # --- Invoked event (fires before every gate) ---
-        if self.audit_logger:
-            clean_args_for_invoked = self._clean_args_for_audit(name, arguments)
-            try:
-                self.audit_logger.log(
-                    user=user_id, tool=name, args=clean_args_for_invoked,
-                    outcome="invoked",
-                )
-            except Exception as e:
-                logger.warning("invoked audit entry failed: %s", e)
+        if not self._write_audit_event(
+            user=user_id,
+            tool=name,
+            args=arguments,
+            outcome="invoked",
+            trace_id=trace_id,
+            audit_ref=audit_ref,
+            audit_strictness=audit_strictness,
+        ) and audit_strictness == "required":
+            return self._audit_blocked_response(name, audit_strictness)
+
+        handler = handlers.get(name)
+        if not handler:
+            self._write_audit_event(
+                user=user_id,
+                tool=name,
+                args=arguments,
+                outcome="unknown_tool",
+                trace_id=trace_id,
+                audit_ref=audit_ref,
+                audit_strictness=audit_strictness,
+                result_summary={"success": False, "error": "Unknown tool"},
+                blocked=True,
+                block_reason="unknown_tool",
+            )
+            return [{"type": "text", "text": f"Unknown tool: {name}"}]
 
         # --- Read-only guard (runs BEFORE confirmation gate) ---
         try:
             raise_if_read_only(name, read_only=self.settings.read_only)
         except ReadOnlyError as e:
-            if self.audit_logger:
-                self.audit_logger.log(
-                    user=user_id,
-                    tool=name,
-                    args=self._clean_args_for_audit(name, arguments),
-                    outcome="read_only_blocked",
-                )
+            self._write_audit_event(
+                user=user_id,
+                tool=name,
+                args=arguments,
+                outcome="read_only_blocked",
+                trace_id=trace_id,
+                audit_ref=audit_ref,
+                audit_strictness=audit_strictness,
+                result_summary={"success": False, "error": str(e)},
+                blocked=True,
+                block_reason="read_only",
+            )
             return [{"type": "text", "text": json.dumps({
                 "status": "read_only_blocked",
                 "tool": name,
@@ -319,9 +347,17 @@ class MCPHandlers:
             if not self.confirmation_manager.is_available():
                 status = self.confirmation_manager.availability_status()
                 if self.audit_logger:
-                    self.audit_logger.log(
-                        user=user_id, tool=name, args=clean_args,
+                    self._write_audit_event(
+                        user=user_id,
+                        tool=name,
+                        args=clean_args,
                         outcome="confirmation_unavailable",
+                        trace_id=trace_id,
+                        audit_ref=audit_ref,
+                        audit_strictness=audit_strictness,
+                        result_summary={"success": False, "status": status},
+                        blocked=True,
+                        block_reason="confirmation_unavailable",
                     )
                 return [{"type": "text", "text": json.dumps(
                     self._build_confirmation_unavailable_response(status),
@@ -362,57 +398,89 @@ class MCPHandlers:
                 confirmation = self.confirmation_manager.request_confirmation(
                     name, arguments, summary_extras=summary_extras,
                 )
-                if self.audit_logger:
-                    self.audit_logger.log(
-                        user=user_id, tool=name, args=clean_args,
-                        outcome="confirmation_requested",
-                    )
+                if not self._write_audit_event(
+                    user=user_id,
+                    tool=name,
+                    args=clean_args,
+                    outcome="confirmation_requested",
+                    trace_id=trace_id,
+                    audit_ref=audit_ref,
+                    audit_strictness=audit_strictness,
+                    result_summary={"success": True, "status": "confirmation_required"},
+                ) and audit_strictness == "required":
+                    return self._audit_blocked_response(name, audit_strictness)
                 return [{"type": "text", "text": json.dumps(confirmation, indent=2)}]
 
             if not self.confirmation_manager.validate_confirmation(
                 token, secret, name, arguments
             ):
-                if self.audit_logger:
-                    self.audit_logger.log(
-                        user=user_id, tool=name, args=clean_args,
-                        outcome="confirmation_failed",
-                    )
+                self._write_audit_event(
+                    user=user_id,
+                    tool=name,
+                    args=clean_args,
+                    outcome="confirmation_failed",
+                    trace_id=trace_id,
+                    audit_ref=audit_ref,
+                    audit_strictness=audit_strictness,
+                    result_summary={"success": False, "status": "confirmation_failed"},
+                    blocked=True,
+                    block_reason="confirmation_failed",
+                )
                 return [{"type": "text", "text": json.dumps({
                     "status": "confirmation_failed",
                     "error": "Invalid/expired token, wrong secret, or arguments changed. "
                              "Request a new confirmation token.",
                 }, indent=2)}]
 
-            if self.audit_logger:
-                self.audit_logger.log(
-                    user=user_id, tool=name, args=clean_args,
-                    outcome="confirmed",
-                )
+            if not self._write_audit_event(
+                user=user_id,
+                tool=name,
+                args=clean_args,
+                outcome="confirmed",
+                trace_id=trace_id,
+                audit_ref=audit_ref,
+                audit_strictness=audit_strictness,
+                result_summary={"success": True, "status": "confirmed"},
+            ) and audit_strictness == "required":
+                return self._audit_blocked_response(name, audit_strictness)
 
             # Strip confirmation params before passing to handler while preserving
             # non-secret payloads that may be redacted in audit entries.
             arguments = self._strip_confirmation_args(arguments)
 
+        start = time.perf_counter()
         try:
             result = await handler(arguments)
-            if guarded_call and self.audit_logger:
-                summary = result[0]["text"][:200] if result else ""
-                self.audit_logger.log(
-                    user=user_id,
-                    tool=name,
-                    args=self._clean_args_for_audit(name, arguments),
-                    outcome="executed", result_summary=summary,
-                )
+            elapsed_ms = int((time.perf_counter() - start) * 1000)
+            self._write_audit_event(
+                user=user_id,
+                tool=name,
+                args=arguments,
+                outcome="executed",
+                trace_id=trace_id,
+                audit_ref=audit_ref,
+                audit_strictness=audit_strictness,
+                result_summary=self._summarize_tool_result(result, elapsed_ms),
+            )
             return result
         except Exception as e:
             logger.exception(f"Error in tool {name}")
-            if guarded_call and self.audit_logger:
-                self.audit_logger.log(
-                    user=user_id,
-                    tool=name,
-                    args=self._clean_args_for_audit(name, arguments),
-                    outcome="execution_failed", error=str(e),
-                )
+            elapsed_ms = int((time.perf_counter() - start) * 1000)
+            self._write_audit_event(
+                user=user_id,
+                tool=name,
+                args=arguments,
+                outcome="execution_failed",
+                trace_id=trace_id,
+                audit_ref=audit_ref,
+                audit_strictness=audit_strictness,
+                result_summary={
+                    "success": False,
+                    "execution_ms": elapsed_ms,
+                    "error_type": type(e).__name__,
+                },
+                error=str(e),
+            )
             return [{"type": "text", "text": f"Error executing {name}: {str(e)}"}]
 
     def _json_response(self, payload: Any) -> List[Dict]:
@@ -422,6 +490,121 @@ class MCPHandlers:
         payload = {"status": "error", "error_code": error_code, "error": message}
         payload.update(extra)
         return self._json_response(payload)
+
+    def _audit_strictness(self, tool_name: str, arguments: Dict[str, Any]) -> str:
+        if self.confirmation_manager.is_guarded_call(tool_name, arguments):
+            return "required"
+        if tool_name in REQUIRED_AUDIT_TOOLS:
+            return "required"
+        return "best_effort"
+
+    def _write_audit_event(
+        self,
+        *,
+        user: str,
+        tool: str,
+        args: Dict[str, Any],
+        outcome: str,
+        trace_id: str,
+        audit_ref: Optional[str],
+        audit_strictness: str,
+        result_summary: Any = "",
+        error: str = "",
+        blocked: Optional[bool] = None,
+        block_reason: Optional[str] = None,
+    ) -> bool:
+        if self.audit_logger is None:
+            return True
+        try:
+            self.audit_logger.log(
+                user=user,
+                tool=tool,
+                args=self._clean_args_for_audit(tool, args),
+                outcome=outcome,
+                result_summary=result_summary,
+                error=error,
+                trace_id=trace_id,
+                audit_ref=audit_ref,
+                audit_strictness=audit_strictness,
+                blocked=blocked,
+                block_reason=block_reason,
+            )
+            return True
+        except Exception as e:
+            logger.warning("%s audit entry failed for %s: %s", outcome, tool, e)
+            return False
+
+    def _audit_blocked_response(
+        self, tool_name: str, audit_strictness: str
+    ) -> List[Dict[str, str]]:
+        return self._json_response({
+            "status": "audit_blocked",
+            "tool": tool_name,
+            "audit_strictness": audit_strictness,
+            "error": (
+                "Audit logging failed. This operation was not executed because "
+                "it requires a durable audit entry before side effects are allowed."
+            ),
+        })
+
+    @staticmethod
+    def _extract_audit_ref(arguments: Dict[str, Any]) -> Optional[str]:
+        value = arguments.get("audit_ref")
+        return value if isinstance(value, str) and value else None
+
+    @staticmethod
+    def _summarize_tool_result(
+        result: List[Dict[str, Any]], execution_ms: int
+    ) -> Dict[str, Any]:
+        summary: Dict[str, Any] = {
+            "success": True,
+            "execution_ms": execution_ms,
+            "item_count": len(result or []),
+        }
+        if not result:
+            return summary
+
+        first = result[0]
+        result_type = first.get("type")
+        summary["first_result_type"] = result_type
+        if result_type == "image":
+            data = first.get("data", "")
+            summary["mime_type"] = first.get("mimeType", "image/png")
+            summary["byte_length"] = len(data) if isinstance(data, str) else 0
+            return summary
+
+        text = first.get("text", "")
+        if not isinstance(text, str):
+            text = str(text)
+        summary["text_length"] = len(text)
+        if text:
+            from .sanitize import sanitize_query_text
+            sanitized_preview = sanitize_query_text(text[:200])
+            summary["preview"] = (
+                sanitized_preview if sanitized_preview is not None else "<redacted>"
+            )
+        try:
+            payload = json.loads(text)
+        except Exception:
+            return summary
+
+        if isinstance(payload, list):
+            summary["row_count"] = len(payload)
+            if payload and isinstance(payload[0], dict):
+                summary["first_keys"] = sorted(payload[0].keys())[:10]
+        elif isinstance(payload, dict):
+            summary["top_level_keys"] = sorted(payload.keys())[:20]
+            for key in (
+                "status",
+                "count",
+                "total_count",
+                "event_count",
+                "row_count",
+                "finding_count",
+            ):
+                if key in payload and isinstance(payload[key], (str, int, float, bool)):
+                    summary[key] = payload[key]
+        return summary
 
     def _clean_args_for_audit(self, tool_name: str, arguments: Dict[str, Any]) -> Dict[str, Any]:
         clean_args = self._strip_confirmation_args(arguments)

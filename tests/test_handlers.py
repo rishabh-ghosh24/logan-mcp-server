@@ -1578,6 +1578,111 @@ async def test_invoked_event_fires_for_non_guarded_tool(handlers, tmp_path):
 
 
 @pytest.mark.asyncio
+async def test_non_guarded_success_logs_terminal_executed(handlers, tmp_path):
+    """A successful non-guarded tool call produces exactly one terminal event."""
+    audit_dir = tmp_path / "audit_non_guarded_success"
+    audit = AuditLogger(audit_dir)
+    handlers.audit_logger = audit
+
+    await handlers.handle_tool_call("get_current_context", {})
+
+    entries = [
+        json.loads(ln)
+        for ln in (audit_dir / "audit.log").read_text().strip().splitlines()
+    ]
+    outcomes = [entry["outcome"] for entry in entries]
+    assert outcomes == ["invoked", "executed"]
+    assert entries[0]["trace_id"] == entries[1]["trace_id"]
+    assert entries[1]["result_summary"]["success"] is True
+    assert entries[1]["audit_strictness"] == "best_effort"
+
+
+@pytest.mark.asyncio
+async def test_non_guarded_failure_logs_terminal_execution_failed(handlers, tmp_path):
+    """A failing non-guarded tool call produces an execution_failed terminal event."""
+    audit_dir = tmp_path / "audit_non_guarded_failure"
+    audit = AuditLogger(audit_dir)
+    handlers.audit_logger = audit
+    handlers.schema_manager.get_log_sources = AsyncMock(side_effect=Exception("boom"))
+
+    await handlers.handle_tool_call("list_log_sources", {})
+
+    entries = [
+        json.loads(ln)
+        for ln in (audit_dir / "audit.log").read_text().strip().splitlines()
+    ]
+    assert [entry["outcome"] for entry in entries] == ["invoked", "execution_failed"]
+    assert entries[0]["trace_id"] == entries[1]["trace_id"]
+    assert entries[1]["result_summary"]["success"] is False
+    assert entries[1]["error"] == "boom"
+
+
+@pytest.mark.asyncio
+async def test_unknown_tool_logs_invoked_and_unknown_terminal(handlers, tmp_path):
+    """Unknown tools are still audited with a terminal unknown_tool outcome."""
+    audit_dir = tmp_path / "audit_unknown_tool"
+    audit = AuditLogger(audit_dir)
+    handlers.audit_logger = audit
+
+    result = await handlers.handle_tool_call("not_a_tool", {"x": 1})
+
+    assert "Unknown tool" in result[0]["text"]
+    entries = [
+        json.loads(ln)
+        for ln in (audit_dir / "audit.log").read_text().strip().splitlines()
+    ]
+    assert [entry["outcome"] for entry in entries] == ["invoked", "unknown_tool"]
+    assert entries[1]["blocked"] is True
+    assert entries[1]["block_reason"] == "unknown_tool"
+
+
+@pytest.mark.asyncio
+async def test_audit_write_failure_does_not_block_best_effort_read(handlers):
+    """Best-effort read tools should still execute if audit logging is unavailable."""
+    handlers.audit_logger.log = MagicMock(side_effect=Exception("disk full"))
+
+    result = await handlers.handle_tool_call("get_current_context", {})
+
+    payload = json.loads(result[0]["text"])
+    assert payload["namespace"] == "testns"
+    assert payload["compartment_id"] == "ocid1.compartment.default"
+
+
+@pytest.mark.asyncio
+async def test_audit_write_failure_blocks_required_tool_before_execution(handlers):
+    """Required-audit tools must not create side effects if the audit write fails."""
+    handlers.audit_logger.log = MagicMock(side_effect=Exception("disk full"))
+    handlers.report_delivery_service.deliver = AsyncMock(
+        return_value={"status": "sent", "delivered": ["telegram"]}
+    )
+
+    result = await handlers.handle_tool_call(
+        "deliver_report",
+        {"report": {"markdown": "# Report"}, "channels": ["telegram"]},
+    )
+
+    payload = json.loads(result[0]["text"])
+    assert payload["status"] == "audit_blocked"
+    assert payload["tool"] == "deliver_report"
+    handlers.report_delivery_service.deliver.assert_not_called()
+
+
+def test_result_summary_preview_redacts_sensitive_text():
+    """Result previews should stay useful without preserving raw sensitive text."""
+    summary = MCPHandlers._summarize_tool_result(
+        [{
+            "type": "text",
+            "text": "user alice@example.com token=secret-value ip=192.0.2.10",
+        }],
+        execution_ms=3,
+    )
+
+    assert summary["preview"] == "<redacted>"
+    assert "alice@example.com" not in str(summary)
+    assert "secret-value" not in str(summary)
+
+
+@pytest.mark.asyncio
 async def test_invoked_event_fires_before_read_only_block(handlers, settings, tmp_path):
     """A read-only-blocked tool produces both 'invoked' and 'read_only_blocked', in that order."""
     audit_dir = tmp_path / "audit_ro_invoked"

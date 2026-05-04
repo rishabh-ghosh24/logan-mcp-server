@@ -40,6 +40,37 @@ class TestAuditLogger:
             for key in ("timestamp", "user", "pid", "tool", "args", "outcome"):
                 assert key in entry, f"Missing key: {key}"
 
+    def test_log_includes_enriched_mcp_audit_fields(
+        self, logger: AuditLogger, log_dir: Path
+    ) -> None:
+        logger.log(
+            user="alice",
+            tool="run_query",
+            args={"query": "* | stats count"},
+            outcome="executed",
+            trace_id="trace_test",
+            audit_ref="argus-action-test",
+            result_summary={"success": True, "row_count": 1},
+            audit_strictness="best_effort",
+            blocked=False,
+            block_reason=None,
+        )
+
+        entry = json.loads((log_dir / "audit.log").read_text().strip())
+        assert entry["ts"] == entry["timestamp"]
+        assert entry["event_id"].startswith("evt_")
+        assert entry["trace_id"] == "trace_test"
+        assert entry["audit_ref"] == "argus-action-test"
+        assert entry["actor"] == "alice"
+        assert entry["actor_source"] == "logan_user"
+        assert entry["event_type"] == "mcp_call"
+        assert entry["args_redacted"] == {"query": "* | stats count"}
+        assert entry["result_summary"] == {"success": True, "row_count": 1}
+        assert entry["blocked"] is False
+        assert entry["block_reason"] is None
+        assert entry["audit_strictness"] == "best_effort"
+        assert entry["audit_write_status"] == "ok"
+
     def test_result_summary_and_error_fields(self, logger: AuditLogger, log_dir: Path) -> None:
         logger.log(
             user="alice", tool="delete_dashboard", args={}, outcome="error",
