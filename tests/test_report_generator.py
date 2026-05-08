@@ -276,11 +276,14 @@ def test_generate_vcn_flow_report_includes_operator_assessment_and_actions():
             "suggested_args": {"query": query, "time_range": "last_15_min"},
         }
     ]
+    investigation["partial"] = False
+    investigation["partial_reasons"] = []
 
     report = ReportGenerator().generate(investigation, summary_length="short")
 
     markdown = report["markdown"]
     assert "Assessment: high-volume rejected VCN traffic" in markdown
+    assert "49,537 blocked network events" in markdown
     assert "Why it matters:" in markdown
     assert "blocked network traffic" in markdown
     assert "not automatically an application failure" in markdown

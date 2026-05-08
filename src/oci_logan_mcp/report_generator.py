@@ -149,7 +149,7 @@ class ReportGenerator:
                 sentences.append(
                     "Assessment: high-volume "
                     f"{action} VCN traffic represents {total_text}blocked network "
-                    "traffic, not automatically an application failure."
+                    "events, not automatically an application failure."
                 )
 
         failures = investigation.get("parser_failures") or {}
