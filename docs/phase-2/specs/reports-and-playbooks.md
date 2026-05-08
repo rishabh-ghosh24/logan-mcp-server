@@ -24,7 +24,7 @@ Close the investigation loop. After A1 produces a first-cut investigation, turn 
 
 - `record_investigation(name, since, until)` captures the current process's N6 audit events in the given time window and persists them as a named, listable playbook (catalogue only — no replay in P0).
 - `generate_incident_report(investigation)` takes an A1 `InvestigationReport` and produces a structured Markdown report.
-- `deliver_report(report, channels=["telegram", "email"])` generates a PDF, sends it to Telegram via `sendDocument`, and publishes an inline-Markdown summary (no attachment, no link) to ONS email.
+- `prepare_report_delivery(report_id, channel="email", recipients=...)` binds a stored report to an OCI Notifications topic and returns a final-confirmation token; `deliver_report(report, channels=["telegram", "email"], delivery_confirmation_token=...)` generates a PDF, sends it to Telegram via `sendDocument`, and publishes an inline-Markdown summary (no attachment, no link) to ONS email.
 - Stretch: PII redaction policy, when enabled via config, masks matching fields on outbound.
 - All existing tests pass.
 
@@ -184,6 +184,7 @@ deliver_report(
   } = {},
   format: "pdf" | "markdown" | "both" = "pdf",
   title: str | None = None,
+  delivery_confirmation_token: str | None = None,
 ) -> {
   status: "sent" | "partial" | "failed" | "error",
   delivered: list[{channel, status, message_id, artifact, recipient, error?}],
@@ -196,6 +197,11 @@ deliver_report(
 `conflicting_report_inputs`; if neither is supplied it fails with `missing_report`.
 Delivery remains explicit: the MCP server does not automatically chain report
 generation into notification delivery.
+
+Email delivery requires a stored `report.report_id` prepared through
+`prepare_report_delivery`. The final `deliver_report` call must pass the
+returned `delivery_confirmation_token`, and the token is valid only for the
+prepared OCI Notifications topic.
 
 ### Acceptance contract (PDF)
 - Produces a valid PDF for any Markdown report N3 emits.
@@ -293,7 +299,7 @@ redaction:
 ## Branch merge criteria
 
 - All new and existing tests pass.
-- End-to-end demo works: alarm OCID → `investigate_incident` → `generate_incident_report` → `deliver_report(channels=["telegram", "email"])` lands PDF in Telegram and email notification.
+- End-to-end demo works: alarm OCID → `investigate_incident` → `generate_incident_report` → `prepare_report_delivery(channel="email")` → `deliver_report(channels=["telegram", "email"], delivery_confirmation_token=...)` lands PDF in Telegram and email notification.
 - Playbook record → list → get → delete roundtrip works against captured audit events (no replay — replay is P1).
 - Stretch G1 either shipped (with documented config examples in README) or deferred with PR-description rationale.
 - README updated with: investigation workflow guide, sample Telegram/email config, G1 config example (if shipped).

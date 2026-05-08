@@ -4,7 +4,7 @@ import hashlib
 import json
 import pytest
 from pathlib import Path
-from unittest.mock import MagicMock, AsyncMock, patch
+from unittest.mock import MagicMock, AsyncMock
 
 from oci_logan_mcp.handlers import MCPHandlers, REPORT_EMAIL_TOPIC_PREFERENCE_KEY
 from oci_logan_mcp.config import Settings
@@ -591,7 +591,7 @@ class TestResourceRead:
         settings.query.max_results = 1000
         settings.query.default_time_range = "last_1_hour"
 
-        from unittest.mock import MagicMock, AsyncMock
+        from unittest.mock import MagicMock
         oci_client = MagicMock()
         oci_client.namespace = "testns"
         oci_client.compartment_id = "ocid1.compartment.default"
@@ -3125,6 +3125,9 @@ class TestDeliverReportHandler:
         assert payload["email"]["saved_topic"]["name"] == "Ops Email"
         assert payload["email"]["configured_default"]["topic_id"] == "ocid1.onstopic.oc1..configured"
         assert payload["email"]["requires_user_confirmation"] is True
+        workflow_text = " ".join(payload["email"]["workflow"])
+        assert "prepare_report_delivery" in workflow_text
+        assert "delivery_confirmation_token" in workflow_text
 
     @pytest.mark.asyncio
     async def test_list_notification_topics_routes_to_client(self, handlers):
@@ -3309,6 +3312,40 @@ class TestDeliverReportHandler:
         assert payload["channels"] == ["email"]
         assert delivered_reports[0]["markdown"].startswith("#")
         assert delivered_reports[0]["report_id"] == generated["report_id"]
+
+    @pytest.mark.asyncio
+    async def test_deliver_report_rejects_changed_email_topic_after_prepare(self, handlers):
+        generated_result = await handlers.handle_tool_call(
+            "generate_incident_report",
+            {"investigation": {"summary": "Parser failures increased"}},
+        )
+        generated = json.loads(generated_result[0]["text"])
+        prepared_result = await handlers.handle_tool_call(
+            "prepare_report_delivery",
+            {
+                "report_id": generated["report_id"],
+                "channel": "email",
+                "recipients": {"email_topic_ocid": "ocid1.onstopic.oc1..prepared"},
+            },
+        )
+        prepared = json.loads(prepared_result[0]["text"])
+        handlers.report_delivery_service.deliver = AsyncMock(return_value={"status": "sent"})
+
+        response = await handlers.handle_tool_call(
+            "deliver_report",
+            {
+                "report": {"report_id": generated["report_id"]},
+                "channels": ["email"],
+                "recipients": {"email_topic_ocid": "ocid1.onstopic.oc1..changed"},
+                "delivery_confirmation_token": prepared["confirmation_token"],
+            },
+        )
+
+        payload = json.loads(response[0]["text"])
+        assert payload["status"] == "error"
+        assert payload["error_code"] == "email_delivery_recipient_mismatch"
+        assert "Call prepare_report_delivery again" in payload["error"]
+        handlers.report_delivery_service.deliver.assert_not_awaited()
 
     @pytest.mark.asyncio
     async def test_deliver_report_consumes_confirmation_token_on_email_delivery_error(self, handlers):
