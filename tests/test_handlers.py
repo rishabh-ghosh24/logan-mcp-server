@@ -1776,14 +1776,15 @@ def test_result_summary_preview_redacts_sensitive_text():
 
 def test_result_summary_preview_redacts_jwt_like_tokens():
     """Result previews should not expose JWT-like bearer tokens."""
+    jwt_like_token = ".".join((
+        "eyJhbGciOiJIUzI1NiJ9",
+        "eyJzdWIiOiIxMjM0NTY3ODkwIn0",
+        "SflKxwRJSMeKKF2QT4fwpMeJf36POk6yJV_adQssw5c",
+    ))
     summary = MCPHandlers._summarize_tool_result(
         [{
             "type": "text",
-            "text": (
-                "session id "
-                "eyJhbGciOiJIUzI1NiJ9.eyJzdWIiOiIxMjM0NTY3ODkwIn0."
-                "SflKxwRJSMeKKF2QT4fwpMeJf36POk6yJV_adQssw5c"
-            ),
+            "text": f"session id {jwt_like_token}",
         }],
         execution_ms=3,
     )
