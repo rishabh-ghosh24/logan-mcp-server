@@ -222,6 +222,77 @@ def test_generate_humanizes_query_summary_and_vcn_flow_clusters():
     assert '"oracle"' not in markdown
 
 
+def test_generate_vcn_flow_report_includes_operator_assessment_and_actions():
+    investigation = _investigation()
+    query = (
+        "'Log Source' in ('OCI VCN Flow Unified Schema Logs', 'ExaWatcher Top Logs', "
+        "'Kubernetes Core DNS Logs') and ('Original Log Content' like '%REJECT%')"
+    )
+    investigation["summary"] = (
+        f"Investigated {query} over last_15_min. "
+        "1 anomalous source(s) (top: OCI VCN Flow Unified Schema Logs pct_change=None)."
+    )
+    investigation["seed"] = {
+        "query": query,
+        "time_range": "last_15_min",
+        "seed_filter_degraded": False,
+    }
+    investigation["anomalous_sources"] = [
+        {
+            "source": "OCI VCN Flow Unified Schema Logs",
+            "pct_change": None,
+            "top_error_clusters": [
+                {
+                    "pattern": (
+                        '{"time":"2026-05-08T23:44:01Z",'
+                        '"oracle":{"resourceType":"loadbalancer"},'
+                        '"data":{"sourceAddress":"161.118.254.28",'
+                        '"destinationAddress":"10.0.3.23","sourcePort":43327,'
+                        '"destinationPort":5522,"protocolName":"TCP",'
+                        '"action":"REJECT"}}'
+                    ),
+                    "count": 46495,
+                },
+                {
+                    "pattern": (
+                        '{"time":"2026-05-08T23:44:58Z",'
+                        '"oracle":{"resourceType":"instance"},'
+                        '"data":{"sourceAddress":"162.216.150.241",'
+                        '"destinationAddress":"10.0.10.31","sourcePort":53032,'
+                        '"destinationPort":5518,"protocolName":"TCP",'
+                        '"action":"REJECT"}}'
+                    ),
+                    "count": 3042,
+                },
+            ],
+            "top_entities": [],
+            "errors": [],
+        }
+    ]
+    investigation["next_steps"] = [
+        {
+            "tool_name": "run_query",
+            "reason": "Result has 1000 rows - try a tighter/narrower time window.",
+            "suggested_args": {"query": query, "time_range": "last_15_min"},
+        }
+    ]
+
+    report = ReportGenerator().generate(investigation, summary_length="short")
+
+    markdown = report["markdown"]
+    assert "Assessment: high-volume rejected VCN traffic" in markdown
+    assert "Why it matters:" in markdown
+    assert "blocked network traffic" in markdown
+    assert "not automatically an application failure" in markdown
+    assert "Scope:" in markdown
+    assert "49,537 rejected TCP flow events" in markdown
+    assert "destination ports 5522, 5518" in markdown
+    assert "Recommended action:" in markdown
+    assert "security lists, NSGs, route tables, and load balancer/backend health" in markdown
+    assert "Rank rejected VCN flows by source IP, destination IP, and port" in markdown
+    assert "Decide whether the rejected traffic is expected policy enforcement" in markdown
+
+
 def test_include_sections_filters_output():
     report = ReportGenerator().generate(
         _investigation(),

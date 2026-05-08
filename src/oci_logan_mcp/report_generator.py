@@ -139,6 +139,18 @@ class ReportGenerator:
             sentences.append(
                 f"Top anomalous source: {top.get('source', 'unknown')}{pct_text}."
             )
+            vcn_observations = _collect_vcn_flow_observations(top)
+            if vcn_observations:
+                action = _dominant_flow_action(vcn_observations)
+                total = _total_observed_events(vcn_observations)
+                total_text = (
+                    f"{_format_event_count(total)} " if total is not None else ""
+                )
+                sentences.append(
+                    "Assessment: high-volume "
+                    f"{action} VCN traffic represents {total_text}blocked network "
+                    "traffic, not automatically an application failure."
+                )
 
         failures = investigation.get("parser_failures") or {}
         failure_count = failures.get("total_failure_count")
@@ -172,13 +184,20 @@ class ReportGenerator:
             pct = source.get("pct_change")
             pct_text = f" ({pct:+.1f}%)" if isinstance(pct, (int, float)) else ""
             lines.append(f"- **{source.get('source', 'unknown source')}**{pct_text}")
-            for cluster in (source.get("top_error_clusters") or [])[:2]:
-                sample = _first_present(cluster, ["Cluster Sample", "pattern", "sample", "message"])
-                count = _first_present(cluster, ["Count", "count"])
-                lines.append(
-                    f"  - Cluster: {_clean_cluster_sample(sample or cluster)} "
-                    f"({_format_event_count(count)} events)"
-                )
+            vcn_observations = _collect_vcn_flow_observations(source)
+            if vcn_observations:
+                lines.extend(_render_vcn_flow_finding(vcn_observations))
+            else:
+                for cluster in (source.get("top_error_clusters") or [])[:2]:
+                    sample = _first_present(
+                        cluster,
+                        ["Cluster Sample", "pattern", "sample", "message"],
+                    )
+                    count = _first_present(cluster, ["Count", "count"])
+                    lines.append(
+                        f"  - Cluster: {_clean_cluster_sample(sample or cluster)} "
+                        f"({_format_event_count(count)} events)"
+                    )
             for entity in (source.get("top_entities") or [])[:2]:
                 field = (
                     entity.get("field")
@@ -228,10 +247,13 @@ class ReportGenerator:
 
     def _next_steps(self, investigation: Dict[str, Any]) -> List[str]:
         steps = investigation.get("next_steps") or []
-        if not steps:
+        operator_steps = _operator_next_steps(investigation)
+        if not steps and not operator_steps:
             return ["No next-step suggestions were produced."]
-        lines = []
+        lines = list(operator_steps)
         for step in steps[:10]:
+            if operator_steps and _is_low_value_row_limit_step(step):
+                continue
             tool = step.get("tool_name", "unknown_tool")
             reason = step.get("reason", "No reason provided.")
             args = step.get("suggested_args", {})
@@ -370,10 +392,7 @@ def _format_event_count(count: Any) -> str:
 
 
 def _clean_cluster_sample(sample: Any, max_len: int = 120) -> str:
-    text = str(sample or "")
-    text = re.sub(r"<#v[^>]*>", "", text)
-    text = text.replace("</#v>", "")
-    text = " ".join(text.split())
+    text = _strip_cluster_markup(sample)
 
     try:
         obj = json.loads(text)
@@ -394,6 +413,13 @@ def _clean_cluster_sample(sample: Any, max_len: int = 120) -> str:
     if len(text) > max_len:
         return text[:max_len].rstrip() + "..."
     return text
+
+
+def _strip_cluster_markup(sample: Any) -> str:
+    text = str(sample or "")
+    text = re.sub(r"<#v[^>]*>", "", text)
+    text = text.replace("</#v>", "")
+    return " ".join(text.split())
 
 
 def _summarize_vcn_flow_cluster(obj: Dict[str, Any]) -> str | None:
@@ -428,6 +454,178 @@ def _summarize_vcn_flow_cluster(obj: Dict[str, Any]) -> str | None:
     if resource_type:
         parts.append(f"resource={resource_type}")
     return " ".join(parts)
+
+
+def _collect_vcn_flow_observations(source: Dict[str, Any]) -> List[Dict[str, Any]]:
+    observations: List[Dict[str, Any]] = []
+    for cluster in source.get("top_error_clusters") or []:
+        sample = _first_present(cluster, ["Cluster Sample", "pattern", "sample", "message"])
+        obj = _load_cluster_json(sample)
+        if not isinstance(obj, dict):
+            continue
+
+        data = obj.get("data")
+        if not isinstance(data, dict):
+            continue
+        summary = _summarize_vcn_flow_cluster(obj)
+        if not summary:
+            continue
+
+        oracle = obj.get("oracle")
+        resource_type = oracle.get("resourceType") if isinstance(oracle, dict) else None
+        observations.append(
+            {
+                "summary": summary,
+                "count": _coerce_int(_first_present(cluster, ["Count", "count"])),
+                "action": str(data.get("action") or "").strip().upper(),
+                "protocol": str(data.get("protocolName") or data.get("protocol") or ""),
+                "source": _format_endpoint(
+                    data.get("sourceAddress"),
+                    data.get("sourcePort"),
+                ),
+                "destination": _format_endpoint(
+                    data.get("destinationAddress"),
+                    data.get("destinationPort"),
+                ),
+                "destination_port": data.get("destinationPort"),
+                "resource_type": resource_type,
+            }
+        )
+    return observations
+
+
+def _load_cluster_json(sample: Any) -> Dict[str, Any] | None:
+    text = _strip_cluster_markup(sample)
+    try:
+        obj = json.loads(text)
+    except (TypeError, ValueError):
+        return None
+    return obj if isinstance(obj, dict) else None
+
+
+def _render_vcn_flow_finding(observations: List[Dict[str, Any]]) -> List[str]:
+    total = _total_observed_events(observations)
+    total_text = _format_event_count(total) if total is not None else "unknown"
+    action = _dominant_flow_action(observations)
+    protocol = _dominant_protocol(observations)
+    ports = _join_unique(
+        str(obs["destination_port"])
+        for obs in observations
+        if obs.get("destination_port") not in (None, "")
+    )
+    destinations = _join_unique(obs["destination"] for obs in observations if obs.get("destination"))
+    resources = _join_unique(
+        obs["resource_type"] for obs in observations if obs.get("resource_type")
+    )
+
+    action_phrase = f"{action} {protocol} flow events" if protocol else f"{action} flow events"
+    scope_parts = [f"{total_text} {action_phrase} in the top clusters"]
+    if ports:
+        scope_parts.append(f"destination ports {ports}")
+    if destinations:
+        scope_parts.append(f"top destinations {destinations}")
+    if resources:
+        scope_parts.append(f"resources {resources}")
+
+    lines = [
+        f"  - Assessment: high-volume {action} VCN traffic.",
+        (
+            "  - Why it matters: these are blocked network traffic events, "
+            "not automatically an application failure; the volume can indicate "
+            "internet scanning, misrouted clients, or denied dependency traffic."
+        ),
+        f"  - Scope: {'; '.join(scope_parts)}.",
+        (
+            "  - Recommended action: decide whether these rejects are expected "
+            "policy enforcement; review security lists, NSGs, route tables, "
+            "and load balancer/backend health for the affected destinations."
+        ),
+    ]
+    for observation in observations[:2]:
+        count = _format_event_count(observation.get("count"))
+        lines.append(f"  - Evidence: {observation['summary']} ({count} events)")
+    return lines
+
+
+def _operator_next_steps(investigation: Dict[str, Any]) -> List[str]:
+    seed = investigation.get("seed") or {}
+    time_range = seed.get("time_range") or "the selected window"
+    observations: List[Dict[str, Any]] = []
+    for source in investigation.get("anomalous_sources") or []:
+        observations.extend(_collect_vcn_flow_observations(source))
+    if not observations:
+        return []
+
+    ports = _join_unique(
+        str(obs["destination_port"])
+        for obs in observations
+        if obs.get("destination_port") not in (None, "")
+    )
+    port_text = f" Focus first on destination ports {ports}." if ports else ""
+    return [
+        (
+            "- Decide whether the rejected traffic is expected policy enforcement "
+            "or an unintended connectivity break. Review security lists, NSGs, "
+            "route tables, and load balancer/backend health for the affected "
+            "destinations."
+        ),
+        (
+            "- Rank rejected VCN flows by source IP, destination IP, and port "
+            f"for `{time_range}`.{port_text}"
+        ),
+        (
+            "- If those ports are supposed to be reachable, treat this as a "
+            "connectivity incident; if they are not supposed to be reachable, "
+            "document it as blocked exposure/noise and consider upstream controls."
+        ),
+    ]
+
+
+def _is_low_value_row_limit_step(step: Dict[str, Any]) -> bool:
+    reason = str(step.get("reason") or "").lower()
+    return "1000 rows" in reason or "tighter/narrower" in reason
+
+
+def _total_observed_events(observations: List[Dict[str, Any]]) -> int | None:
+    counts = [obs["count"] for obs in observations if isinstance(obs.get("count"), int)]
+    return sum(counts) if counts else None
+
+
+def _coerce_int(value: Any) -> int | None:
+    if value in (None, ""):
+        return None
+    try:
+        return int(value)
+    except (TypeError, ValueError):
+        return None
+
+
+def _dominant_flow_action(observations: List[Dict[str, Any]]) -> str:
+    actions = [str(obs.get("action") or "").upper() for obs in observations]
+    if "REJECT" in actions:
+        return "rejected"
+    if "ACCEPT" in actions:
+        return "accepted"
+    return "observed"
+
+
+def _dominant_protocol(observations: List[Dict[str, Any]]) -> str:
+    protocols = [str(obs.get("protocol") or "").upper() for obs in observations]
+    for protocol in protocols:
+        if protocol:
+            return protocol
+    return ""
+
+
+def _join_unique(values: Iterable[Any], limit: int = 4) -> str:
+    seen = []
+    for value in values:
+        text = str(value).strip()
+        if text and text not in seen:
+            seen.append(text)
+    if len(seen) > limit:
+        return ", ".join(seen[:limit]) + f", +{len(seen) - limit} more"
+    return ", ".join(seen)
 
 
 def _format_endpoint(address: Any, port: Any) -> str:
