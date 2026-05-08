@@ -255,7 +255,14 @@ def get_tools() -> List[Dict[str, Any]]:
         },
         {
             "name": "run_query",
-            "description": "Execute a Log Analytics query and return results.",
+            "description": (
+                "Execute a specific Log Analytics query and return results. "
+                "Do not use this as the first tool for investigate, RCA, root "
+                "cause, diagnose, troubleshoot, what happened, or error-like "
+                "activity requests; start those workflows with "
+                "investigate_incident, then use run_query only to deepen "
+                "specific evidence."
+            ),
             "inputSchema": {
                 "type": "object",
                 "properties": {
@@ -441,7 +448,10 @@ def get_tools() -> List[Dict[str, Any]]:
                 "probe query and classifies each source as healthy (emitted recently), "
                 "stopped (last record older than threshold), or unknown (no records in "
                 "probe window). Answers 'is ingestion even working right now?' and is "
-                "a foundational input to investigate_incident."
+                "a foundational input to investigate_incident. Do not use this as "
+                "the first tool for investigate, RCA, root cause, diagnose, "
+                "troubleshoot, what happened, or error-like activity requests; "
+                "start with investigate_incident."
             ),
             "inputSchema": {
                 "type": "object",
@@ -471,7 +481,10 @@ def get_tools() -> List[Dict[str, Any]]:
                 "failure_count, first/last seen timestamps, and up to 3 "
                 "sample raw lines that failed to parse. Each source in OCI "
                 "Log Analytics has one parser configured, so this tells you "
-                "which parser needs fixing."
+                "which parser needs fixing. Do not use this as the first tool "
+                "for investigate, RCA, root cause, diagnose, troubleshoot, what "
+                "happened, or error-like activity requests; start with "
+                "investigate_incident."
             ),
             "inputSchema": {
                 "type": "object",
@@ -1268,7 +1281,10 @@ def get_tools() -> List[Dict[str, Any]]:
             "description": (
                 "Get a summary of available log data - which log sources have data and "
                 "approximate counts. Use this to understand what data is available before "
-                "constructing queries. Helps avoid querying empty log sources."
+                "constructing queries. Helps avoid querying empty log sources. "
+                "Do not use this as the first tool for investigate, RCA, root "
+                "cause, diagnose, troubleshoot, what happened, or error-like "
+                "activity requests; start with investigate_incident."
             ),
             "inputSchema": {
                 "type": "object",

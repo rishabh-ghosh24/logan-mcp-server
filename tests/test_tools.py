@@ -216,6 +216,16 @@ def test_investigation_intent_tooling_guides_full_workflow():
     assert "oci notifications" in desc
 
 
+def test_manual_query_tools_defer_investigation_intent_to_investigate_incident():
+    tools = {t["name"]: t for t in get_tools()}
+
+    for name in ("run_query", "get_log_summary", "ingestion_health", "parser_failure_triage"):
+        desc = tools[name]["description"].lower()
+        assert "investigate_incident" in desc
+        assert "investigate" in desc
+        assert "rca" in desc
+
+
 def test_investigate_and_generate_report_schema():
     tools = {t["name"]: t for t in get_tools()}
     spec = tools["investigate_and_generate_report"]
