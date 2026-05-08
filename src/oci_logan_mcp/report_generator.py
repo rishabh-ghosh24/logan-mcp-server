@@ -121,6 +121,7 @@ class ReportGenerator:
     ) -> List[str]:
         sentences = []
         summary = str(investigation.get("summary") or "").strip()
+        summary = _humanize_query_heavy_summary(investigation, summary)
         if summary:
             sentences.extend(_split_sentences(summary))
         else:
@@ -176,7 +177,7 @@ class ReportGenerator:
                 count = _first_present(cluster, ["Count", "count"])
                 lines.append(
                     f"  - Cluster: {_clean_cluster_sample(sample or cluster)} "
-                    f"({count or 'unknown'} events)"
+                    f"({_format_event_count(count)} events)"
                 )
             for entity in (source.get("top_entities") or [])[:2]:
                 field = (
@@ -304,6 +305,70 @@ def _first_present(row: Dict[str, Any], keys: Iterable[str]) -> Any:
     return None
 
 
+def _humanize_query_heavy_summary(investigation: Dict[str, Any], summary: str) -> str:
+    seed = investigation.get("seed") or {}
+    query = str(seed.get("query") or "")
+    if not summary or not query:
+        return summary
+    if not summary.startswith("Investigated "):
+        return summary
+    if query not in summary and "'Log Source'" not in summary:
+        return summary
+
+    time_range = seed.get("time_range") or _extract_summary_time_range(summary) or "the selected window"
+    sources = _extract_log_sources(query)
+    activity = _describe_query_activity(query)
+    if sources:
+        source_word = "log source" if len(sources) == 1 else "log sources"
+        return f"Investigated {activity} across {len(sources)} {source_word} over {time_range}."
+    return f"Investigated {activity} over {time_range}."
+
+
+def _extract_summary_time_range(summary: str) -> str | None:
+    match = re.search(r"\bover\s+([A-Za-z0-9_ -]+?)(?:\.|$)", summary)
+    if not match:
+        return None
+    return match.group(1).strip()
+
+
+def _extract_log_sources(query: str) -> List[str]:
+    match = re.search(r"'Log Source'\s+in\s*\((.*?)\)", query, flags=re.IGNORECASE | re.DOTALL)
+    if match:
+        return [value.strip() for value in re.findall(r"'([^']+)'", match.group(1))]
+    match = re.search(r"'Log Source'\s*=\s*'([^']+)'", query, flags=re.IGNORECASE)
+    return [match.group(1).strip()] if match else []
+
+
+def _describe_query_activity(query: str) -> str:
+    lowered = query.lower()
+    error_terms = (
+        "error",
+        "fail",
+        "fatal",
+        "critical",
+        "exception",
+        "timeout",
+        "reject",
+        "deny",
+        "drop",
+        "nxdomain",
+        "servfail",
+        "refused",
+    )
+    if any(term in lowered for term in error_terms):
+        return "error-like activity"
+    return "log activity"
+
+
+def _format_event_count(count: Any) -> str:
+    if count in (None, ""):
+        return "unknown"
+    try:
+        return f"{int(count):,}"
+    except (TypeError, ValueError):
+        return str(count)
+
+
 def _clean_cluster_sample(sample: Any, max_len: int = 120) -> str:
     text = str(sample or "")
     text = re.sub(r"<#v[^>]*>", "", text)
@@ -315,10 +380,74 @@ def _clean_cluster_sample(sample: Any, max_len: int = 120) -> str:
     except (TypeError, ValueError):
         obj = None
     if isinstance(obj, dict):
+        flow_summary = _summarize_vcn_flow_cluster(obj)
+        if flow_summary:
+            return flow_summary
         metadata = obj.get("metadata")
         if isinstance(metadata, dict) and metadata.get("name"):
             return f"Kubernetes object metadata: {metadata['name']}"
 
+    dns_summary = _summarize_coredns_cluster(text)
+    if dns_summary:
+        return dns_summary
+
     if len(text) > max_len:
         return text[:max_len].rstrip() + "..."
     return text
+
+
+def _summarize_vcn_flow_cluster(obj: Dict[str, Any]) -> str | None:
+    data = obj.get("data")
+    if not isinstance(data, dict):
+        return None
+    if not any(
+        key in data
+        for key in ("sourceAddress", "destinationAddress", "action", "protocolName")
+    ):
+        return None
+
+    action = str(data.get("action") or "").strip().upper()
+    verb = {"REJECT": "Rejected", "ACCEPT": "Accepted"}.get(
+        action,
+        action.title() if action else "Observed",
+    )
+    protocol = data.get("protocolName") or data.get("protocol")
+    flow = f"{verb} {protocol} flow" if protocol else f"{verb} flow"
+    src = _format_endpoint(data.get("sourceAddress"), data.get("sourcePort"))
+    dst = _format_endpoint(data.get("destinationAddress"), data.get("destinationPort"))
+    parts = [flow]
+    if src and dst:
+        parts.append(f"{src} -> {dst}")
+    elif src:
+        parts.append(f"from {src}")
+    elif dst:
+        parts.append(f"to {dst}")
+
+    oracle = obj.get("oracle")
+    resource_type = oracle.get("resourceType") if isinstance(oracle, dict) else None
+    if resource_type:
+        parts.append(f"resource={resource_type}")
+    return " ".join(parts)
+
+
+def _format_endpoint(address: Any, port: Any) -> str:
+    if not address:
+        return ""
+    if port in (None, ""):
+        return str(address)
+    return f"{address}:{port}"
+
+
+def _summarize_coredns_cluster(text: str) -> str | None:
+    match = re.search(
+        r"(?P<client>\d+\.\d+\.\d+\.\d+):\d+\s+-\s+\d+\s+"
+        r'"(?P<qtype>[A-Z]+)\s+IN\s+(?P<name>[^"]+?)\.\s+\w+[^"]*"\s+'
+        r"(?P<rcode>NOERROR|NXDOMAIN|SERVFAIL|REFUSED)",
+        text,
+    )
+    if not match:
+        return None
+    return (
+        f"DNS {match.group('rcode')} for {match.group('qtype')} "
+        f"{match.group('name')} from {match.group('client')}"
+    )

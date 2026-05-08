@@ -167,6 +167,61 @@ def test_generate_sanitizes_cluster_template_markup_and_long_samples():
     assert len(cluster_line) < 180
 
 
+def test_generate_humanizes_query_summary_and_vcn_flow_clusters():
+    investigation = _investigation()
+    query = (
+        "'Log Source' in ('OCI VCN Flow Unified Schema Logs', 'ExaWatcher Top Logs', "
+        "'Kubernetes Core DNS Logs') and ('Original Log Content' like '%error%' or "
+        "'Original Log Content' like '%REJECT%' or 'Original Log Content' like '%NXDOMAIN%')"
+    )
+    investigation["summary"] = (
+        f"Investigated {query} over last_15_min. "
+        "1 anomalous source(s) (top: OCI VCN Flow Unified Schema Logs pct_change=None)."
+    )
+    investigation["seed"] = {
+        "query": query,
+        "time_range": "last_15_min",
+        "seed_filter_degraded": False,
+    }
+    investigation["anomalous_sources"] = [
+        {
+            "source": "OCI VCN Flow Unified Schema Logs",
+            "pct_change": None,
+            "top_error_clusters": [
+                {
+                    "pattern": (
+                        '{"id":"<#v t="v" id="1:0">3170112b</#v>",'
+                        '"time":"2026-05-08T23:34:49Z",'
+                        '"oracle":{"compartmentid":"ocid1.compartment.oc1..aaaa",'
+                        '"resourceType":"<#v t="v" id="1:1">OKE</#v>"},'
+                        '"data":{"sourceAddress":"139.87.113.253",'
+                        '"destinationAddress":"10.0.0.11","sourcePort":61875,'
+                        '"destinationPort":217,"protocolName":"TCP",'
+                        '"action":"REJECT"}}'
+                    ),
+                    "count": 31311,
+                }
+            ],
+            "top_entities": [],
+            "errors": [],
+        }
+    ]
+
+    report = ReportGenerator().generate(investigation, summary_length="short")
+
+    markdown = report["markdown"]
+    summary = markdown.split("## Timeline", 1)[0]
+    assert "'Log Source' in" not in summary
+    assert "Investigated error-like activity across 3 log sources over last_15_min." in summary
+    assert "Top anomalous source: OCI VCN Flow Unified Schema Logs." in summary
+    assert "Rejected TCP flow 139.87.113.253:61875 -> 10.0.0.11:217" in markdown
+    assert "resource=OKE" in markdown
+    assert "(31,311 events)" in markdown
+    assert "<#v" not in markdown
+    assert "compartmentid" not in markdown
+    assert '"oracle"' not in markdown
+
+
 def test_include_sections_filters_output():
     report = ReportGenerator().generate(
         _investigation(),
