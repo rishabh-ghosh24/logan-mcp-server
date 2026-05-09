@@ -178,6 +178,66 @@ def _rank_anomalous_sources(
     return out
 
 
+def _merge_chronic_with_anomalous(
+    anomalous_sources: List[Dict[str, Any]],
+    chronic_sources: List[Dict[str, Any]],
+) -> List[Dict[str, Any]]:
+    """Merge anomaly and chronic-baseline candidate lists per spec §3.4.
+
+    Order: anomaly entries first (preserving incoming order), then chronic-only
+    entries sorted by `error_like_count` desc.
+
+    Reason semantics:
+      - If an anomaly entry already carries a `reasons` list (e.g. the
+        focus_sources overwrite path tags entries `["focus_source"]`), that
+        list is preserved as-is and only EXTENDED with `"chronic_baseline"`
+        on overlap. Merge never clobbers a caller-set reason.
+      - If `reasons` is absent or empty, default to `["anomaly"]`.
+
+    Sources appearing in both lists yield a single entry placed at the
+    anomaly source's position, with the chronic numerics merged in.
+    """
+    chronic_by_source = {c["source"]: c for c in chronic_sources}
+    seen_anomaly_sources = set()
+    merged: List[Dict[str, Any]] = []
+
+    for a in anomalous_sources:
+        src = a["source"]
+        seen_anomaly_sources.add(src)
+        chronic_match = chronic_by_source.get(src)
+        entry = dict(a)
+        existing_reasons = list(entry.get("reasons") or [])
+        if not existing_reasons:
+            existing_reasons = ["anomaly"]
+        if chronic_match is not None:
+            if "chronic_baseline" not in existing_reasons:
+                existing_reasons.append("chronic_baseline")
+            entry["error_like_count"] = chronic_match["error_like_count"]
+            entry["error_like_share_of_seed"] = chronic_match["error_like_share_of_seed"]
+        else:
+            entry.setdefault("error_like_count", None)
+            entry.setdefault("error_like_share_of_seed", None)
+        entry["reasons"] = existing_reasons
+        merged.append(entry)
+
+    chronic_only = [
+        c for c in chronic_sources if c["source"] not in seen_anomaly_sources
+    ]
+    chronic_only.sort(key=lambda c: c["error_like_count"], reverse=True)
+    for c in chronic_only:
+        merged.append({
+            "source": c["source"],
+            "current_count": None,
+            "comparison_count": None,
+            "pct_change": None,
+            "reasons": ["chronic_baseline"],
+            "error_like_count": c["error_like_count"],
+            "error_like_share_of_seed": c["error_like_share_of_seed"],
+        })
+
+    return merged
+
+
 def _normalize_focus_sources(sources: Optional[List[Any]], top_k: int) -> Optional[List[str]]:
     """Normalize caller-provided source focus list, preserving order."""
     if sources is None:

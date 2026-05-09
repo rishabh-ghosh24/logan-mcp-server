@@ -299,6 +299,131 @@ class TestParseChronicResponse:
         assert out[0]["error_like_share_of_seed"] is None
 
 
+class TestMergeChronicWithAnomalous:
+    def _anomaly(self, source, pct=10.0, current=100, comparison=50):
+        return {
+            "source": source,
+            "current_count": current,
+            "comparison_count": comparison,
+            "pct_change": pct,
+        }
+
+    def _chronic(self, source, count=5000, share=None):
+        return {
+            "source": source,
+            "error_like_count": count,
+            "error_like_share_of_seed": share,
+        }
+
+    def test_anomaly_only(self):
+        from oci_logan_mcp.investigate import _merge_chronic_with_anomalous
+        merged = _merge_chronic_with_anomalous(
+            anomalous_sources=[self._anomaly("Apache")],
+            chronic_sources=[],
+        )
+        assert len(merged) == 1
+        assert merged[0]["source"] == "Apache"
+        assert merged[0]["reasons"] == ["anomaly"]
+        assert merged[0]["error_like_count"] is None
+        assert merged[0]["error_like_share_of_seed"] is None
+
+    def test_chronic_only(self):
+        from oci_logan_mcp.investigate import _merge_chronic_with_anomalous
+        merged = _merge_chronic_with_anomalous(
+            anomalous_sources=[],
+            chronic_sources=[self._chronic("OKE", 34000)],
+        )
+        assert len(merged) == 1
+        assert merged[0]["source"] == "OKE"
+        assert merged[0]["reasons"] == ["chronic_baseline"]
+        assert merged[0]["error_like_count"] == 34000
+        assert merged[0]["current_count"] is None
+        assert merged[0]["comparison_count"] is None
+        assert merged[0]["pct_change"] is None
+
+    def test_overlap_single_entry_combined_reasons(self):
+        from oci_logan_mcp.investigate import _merge_chronic_with_anomalous
+        merged = _merge_chronic_with_anomalous(
+            anomalous_sources=[self._anomaly("X", pct=200)],
+            chronic_sources=[self._chronic("X", count=8000)],
+        )
+        assert len(merged) == 1
+        assert merged[0]["source"] == "X"
+        assert merged[0]["reasons"] == ["anomaly", "chronic_baseline"]
+        assert merged[0]["pct_change"] == 200
+        assert merged[0]["error_like_count"] == 8000
+
+    def test_anomaly_first_then_chronic_only(self):
+        from oci_logan_mcp.investigate import _merge_chronic_with_anomalous
+        merged = _merge_chronic_with_anomalous(
+            anomalous_sources=[self._anomaly("A"), self._anomaly("B")],
+            chronic_sources=[self._chronic("C", 9000), self._chronic("D", 3000)],
+        )
+        sources = [e["source"] for e in merged]
+        assert sources == ["A", "B", "C", "D"]
+
+    def test_chronic_only_sorted_by_count_desc(self):
+        from oci_logan_mcp.investigate import _merge_chronic_with_anomalous
+        merged = _merge_chronic_with_anomalous(
+            anomalous_sources=[],
+            chronic_sources=[
+                self._chronic("Low", 1500),
+                self._chronic("High", 9000),
+                self._chronic("Mid", 3000),
+            ],
+        )
+        assert [e["source"] for e in merged] == ["High", "Mid", "Low"]
+
+    def test_empty_inputs(self):
+        from oci_logan_mcp.investigate import _merge_chronic_with_anomalous
+        assert _merge_chronic_with_anomalous([], []) == []
+
+    def test_overlap_preserves_anomaly_position(self):
+        from oci_logan_mcp.investigate import _merge_chronic_with_anomalous
+        merged = _merge_chronic_with_anomalous(
+            anomalous_sources=[
+                self._anomaly("A"), self._anomaly("B"), self._anomaly("C"),
+            ],
+            chronic_sources=[self._chronic("B", 7000), self._chronic("D", 5000)],
+        )
+        assert [e["source"] for e in merged] == ["A", "B", "C", "D"]
+        b = next(e for e in merged if e["source"] == "B")
+        assert b["reasons"] == ["anomaly", "chronic_baseline"]
+        assert b["error_like_count"] == 7000
+
+    def test_preset_reasons_preserved(self):
+        from oci_logan_mcp.investigate import _merge_chronic_with_anomalous
+        focus_entry = {
+            "source": "Foo",
+            "current_count": None,
+            "comparison_count": None,
+            "pct_change": None,
+            "reasons": ["focus_source"],
+        }
+        merged = _merge_chronic_with_anomalous(
+            anomalous_sources=[focus_entry],
+            chronic_sources=[],
+        )
+        assert merged[0]["reasons"] == ["focus_source"]
+        assert merged[0]["error_like_count"] is None
+
+    def test_preset_focus_source_extends_with_chronic_on_overlap(self):
+        from oci_logan_mcp.investigate import _merge_chronic_with_anomalous
+        focus_entry = {
+            "source": "Foo",
+            "current_count": None,
+            "comparison_count": None,
+            "pct_change": None,
+            "reasons": ["focus_source"],
+        }
+        merged = _merge_chronic_with_anomalous(
+            anomalous_sources=[focus_entry],
+            chronic_sources=[self._chronic("Foo", 9000)],
+        )
+        assert merged[0]["reasons"] == ["focus_source", "chronic_baseline"]
+        assert merged[0]["error_like_count"] == 9000
+
+
 class TestComputeWindows:
     def test_equal_length_and_zero_gap_adjacency(self):
         anchor = datetime(2026, 4, 22, 10, 0, 0, tzinfo=timezone.utc)
