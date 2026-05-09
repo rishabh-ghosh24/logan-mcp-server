@@ -922,6 +922,333 @@ class TestTemplatedSummaryChronicSentence:
         _templated_summary(acc)
 
 
+class TestChronicBaselineOKEScenario:
+    @pytest.mark.asyncio
+    async def test_oke_style_chronic_only_drill_down_runs(self):
+        """Primary bug fix: chronic-only sources go through drill-down.
+
+        Anomaly track returns no entries (steady-state). Chronic ranking
+        returns OKE Control Plane Logs over threshold. Drill-down (cluster /
+        entity / timeline) MUST run for it.
+        """
+        cluster_resp = {
+            "data": {
+                "columns": [{"name": "Cluster Sample"}, {"name": "Count"}],
+                "rows": [
+                    ["kube-apiserver dial tcp 168.254.5.3:2379: connection refused", 1440],
+                ],
+            }
+        }
+        entity_resp = {
+            "data": {
+                "columns": [{"name": "Host Name (Server)"}, {"name": "n"}],
+                "rows": [["kube-apiserver-0", 800]],
+            }
+        }
+        timeline_resp = {
+            "data": {
+                "columns": [{"name": "Time"}, {"name": "Severity"}, {"name": "Original Log Content"}],
+                "rows": [["2026-05-09T10:00:00+00:00", "ERROR", "dial tcp ..."]],
+            }
+        }
+        chronic_resp = {
+            "data": {
+                "columns": [{"name": "Log Source"}, {"name": "n"}],
+                "rows": [["OKE Control Plane Logs", 34475]],
+            }
+        }
+
+        async def fake_execute(*, query, **kwargs):
+            if "'Original Log Content' like" in query and "by 'Log Source'" in query:
+                return chronic_resp
+            if "| cluster" in query:
+                return cluster_resp
+            if "stats count as n by 'Host Name" in query:
+                return entity_resp
+            if "fields Time, Severity, 'Original Log Content'" in query:
+                return timeline_resp
+            return {"data": {"columns": [], "rows": []}}
+
+        engine = _make_engine()
+        engine.execute = AsyncMock(side_effect=fake_execute)
+        schema, ih, j2, diff = _make_deps()
+        diff.run = AsyncMock(return_value={
+            "current": {}, "comparison": {}, "delta": [], "summary": "no change",
+        })
+        tool = InvestigateIncidentTool(
+            query_engine=engine, schema_manager=schema,
+            ingestion_health_tool=ih, parser_triage_tool=j2, diff_tool=diff,
+            settings=_make_settings(), budget_tracker=_make_budget(),
+        )
+        report = await tool.run(
+            query="*", time_range="last_24_hours", top_k=3, mode="standard",
+        )
+
+        sources = [s["source"] for s in report["anomalous_sources"]]
+        assert "OKE Control Plane Logs" in sources
+        oke = next(s for s in report["anomalous_sources"] if s["source"] == "OKE Control Plane Logs")
+        assert oke["reasons"] == ["chronic_baseline"]
+        assert oke["error_like_count"] == 34475
+        assert oke["pct_change"] is None
+        assert oke["current_count"] is None
+        assert oke["comparison_count"] is None
+
+        assert oke["top_error_clusters"], "drill-down clusters missing — chronic source bypassed _drill_down_one_source"
+        assert oke["top_entities"], "drill-down entities missing"
+        assert oke["timeline"], "drill-down timeline missing"
+
+        assert report["chronic_baseline_sources"] == [
+            {
+                "source": "OKE Control Plane Logs",
+                "error_like_count": 34475,
+                "error_like_share_of_seed": None,
+            }
+        ]
+
+        assert "Chronic baseline" in report["summary"]
+        assert "OKE Control Plane Logs" in report["summary"]
+
+
+class TestChronicBaselineOverlap:
+    @pytest.mark.asyncio
+    async def test_overlap_single_drilldown_combined_reasons(self):
+        cluster_resp = {
+            "data": {
+                "columns": [{"name": "Cluster Sample"}, {"name": "Count"}],
+                "rows": [["sample log", 100]],
+            }
+        }
+        chronic_resp = {
+            "data": {
+                "columns": [{"name": "Log Source"}, {"name": "n"}],
+                "rows": [["Apache", 5000]],
+            }
+        }
+        cluster_calls = []
+
+        async def fake_execute(*, query, **kwargs):
+            if "'Original Log Content' like" in query and "by 'Log Source'" in query:
+                return chronic_resp
+            if "| cluster" in query:
+                cluster_calls.append(query)
+                return cluster_resp
+            return {"data": {"columns": [], "rows": []}}
+
+        engine = _make_engine()
+        engine.execute = AsyncMock(side_effect=fake_execute)
+        schema, ih, j2, diff = _make_deps()
+        diff.run = AsyncMock(return_value={
+            "current": {}, "comparison": {}, "summary": "",
+            "delta": [{"dimension": "Apache", "current": 100, "comparison": 50, "pct_change": 100.0}],
+        })
+        tool = InvestigateIncidentTool(
+            query_engine=engine, schema_manager=schema,
+            ingestion_health_tool=ih, parser_triage_tool=j2, diff_tool=diff,
+            settings=_make_settings(), budget_tracker=_make_budget(),
+        )
+        report = await tool.run(query="*", time_range="last_1_hour", top_k=3)
+
+        apache_entries = [s for s in report["anomalous_sources"] if s["source"] == "Apache"]
+        assert len(apache_entries) == 1
+        a = apache_entries[0]
+        assert a["reasons"] == ["anomaly", "chronic_baseline"]
+        assert a["pct_change"] == 100.0
+        assert a["error_like_count"] == 5000
+
+        apache_cluster_calls = [q for q in cluster_calls if "'Apache'" in q]
+        assert len(apache_cluster_calls) == 1
+
+
+class TestChronicBaselineQuickMode:
+    @pytest.mark.asyncio
+    async def test_quick_mode_does_not_run_chronic_query(self):
+        seen_queries = []
+
+        async def fake_execute(*, query, **kwargs):
+            seen_queries.append(query)
+            return {"data": {"columns": [], "rows": []}}
+
+        engine = _make_engine()
+        engine.execute = AsyncMock(side_effect=fake_execute)
+        schema, ih, j2, diff = _make_deps()
+        tool = InvestigateIncidentTool(
+            query_engine=engine, schema_manager=schema,
+            ingestion_health_tool=ih, parser_triage_tool=j2, diff_tool=diff,
+            settings=_make_settings(), budget_tracker=_make_budget(),
+        )
+        report = await tool.run(query="*", time_range="last_1_hour", top_k=3, mode="quick")
+
+        chronic_qs = [
+            q for q in seen_queries
+            if "'Original Log Content' like" in q and "by 'Log Source'" in q
+        ]
+        assert chronic_qs == []
+        assert report["chronic_baseline_sources"] == []
+        assert "Chronic baseline" not in report["summary"]
+
+
+class TestChronicBaselineThreshold:
+    @pytest.mark.asyncio
+    async def test_below_threshold_sources_dropped_before_merge(self):
+        chronic_resp = {
+            "data": {
+                "columns": [{"name": "Log Source"}, {"name": "n"}],
+                "rows": [
+                    ["Loud", 5000],
+                    ["Quiet1", 50],
+                    ["Quiet2", 100],
+                    ["Quiet3", 200],
+                    ["Quiet4", 999],
+                ],
+            }
+        }
+
+        async def fake_execute(*, query, **kwargs):
+            if "'Original Log Content' like" in query and "by 'Log Source'" in query:
+                return chronic_resp
+            return {"data": {"columns": [], "rows": []}}
+
+        engine = _make_engine()
+        engine.execute = AsyncMock(side_effect=fake_execute)
+        schema, ih, j2, diff = _make_deps()
+        tool = InvestigateIncidentTool(
+            query_engine=engine, schema_manager=schema,
+            ingestion_health_tool=ih, parser_triage_tool=j2, diff_tool=diff,
+            settings=_make_settings(),
+            budget_tracker=_make_budget(),
+        )
+        report = await tool.run(query="*", time_range="last_1_hour", top_k=10)
+
+        chronic_sources = [s["source"] for s in report["chronic_baseline_sources"]]
+        assert chronic_sources == ["Loud"]
+        merged_chronic = [
+            s for s in report["anomalous_sources"]
+            if "chronic_baseline" in s.get("reasons", [])
+        ]
+        assert [s["source"] for s in merged_chronic] == ["Loud"]
+
+
+class TestChronicBaselineFailureModes:
+    @pytest.mark.asyncio
+    async def test_timeout_yields_chronic_baseline_timeout_partial_reason(self):
+        async def fake_execute(*, query, **kwargs):
+            if "'Original Log Content' like" in query and "by 'Log Source'" in query:
+                raise asyncio.TimeoutError()
+            return {"data": {"columns": [], "rows": []}}
+        engine = _make_engine()
+        engine.execute = AsyncMock(side_effect=fake_execute)
+        schema, ih, j2, diff = _make_deps()
+        diff.run = AsyncMock(return_value={
+            "current": {}, "comparison": {}, "summary": "",
+            "delta": [{"dimension": "Apache", "current": 100, "comparison": 50, "pct_change": 100.0}],
+        })
+        tool = InvestigateIncidentTool(
+            query_engine=engine, schema_manager=schema,
+            ingestion_health_tool=ih, parser_triage_tool=j2, diff_tool=diff,
+            settings=_make_settings(), budget_tracker=_make_budget(),
+        )
+        report = await tool.run(query="*", time_range="last_1_hour", top_k=3)
+
+        assert "chronic_baseline_timeout" in report["partial_reasons"]
+        assert report["chronic_baseline_sources"] == []
+        assert any(s["source"] == "Apache" for s in report["anomalous_sources"])
+
+    @pytest.mark.asyncio
+    async def test_generic_exception_yields_chronic_baseline_errors_partial_reason(self):
+        async def fake_execute(*, query, **kwargs):
+            if "'Original Log Content' like" in query and "by 'Log Source'" in query:
+                raise RuntimeError("boom")
+            return {"data": {"columns": [], "rows": []}}
+        engine = _make_engine()
+        engine.execute = AsyncMock(side_effect=fake_execute)
+        schema, ih, j2, diff = _make_deps()
+        diff.run = AsyncMock(return_value={
+            "current": {}, "comparison": {}, "summary": "",
+            "delta": [{"dimension": "Apache", "current": 100, "comparison": 50, "pct_change": 100.0}],
+        })
+        tool = InvestigateIncidentTool(
+            query_engine=engine, schema_manager=schema,
+            ingestion_health_tool=ih, parser_triage_tool=j2, diff_tool=diff,
+            settings=_make_settings(), budget_tracker=_make_budget(),
+        )
+        report = await tool.run(query="*", time_range="last_1_hour", top_k=3)
+
+        assert "chronic_baseline_errors" in report["partial_reasons"]
+        assert report["chronic_baseline_sources"] == []
+        assert any(s["source"] == "Apache" for s in report["anomalous_sources"])
+
+    @pytest.mark.asyncio
+    async def test_budget_exceeded_yields_budget_exceeded_partial_reason(self):
+        from oci_logan_mcp.budget_tracker import BudgetExceededError
+
+        async def fake_execute(*, query, **kwargs):
+            if "'Original Log Content' like" in query and "by 'Log Source'" in query:
+                raise BudgetExceededError("budget exhausted")
+            return {"data": {"columns": [], "rows": []}}
+        engine = _make_engine()
+        engine.execute = AsyncMock(side_effect=fake_execute)
+        schema, ih, j2, diff = _make_deps()
+        diff.run = AsyncMock(return_value={
+            "current": {}, "comparison": {}, "summary": "",
+            "delta": [{"dimension": "Apache", "current": 100, "comparison": 50, "pct_change": 100.0}],
+        })
+        tool = InvestigateIncidentTool(
+            query_engine=engine, schema_manager=schema,
+            ingestion_health_tool=ih, parser_triage_tool=j2, diff_tool=diff,
+            settings=_make_settings(), budget_tracker=_make_budget(),
+        )
+        report = await tool.run(query="*", time_range="last_1_hour", top_k=3)
+
+        assert "budget_exceeded" in report["partial_reasons"]
+        assert report["chronic_baseline_sources"] == []
+
+
+class TestChronicBaselineFocusSources:
+    @pytest.mark.asyncio
+    async def test_focus_sources_restricts_chronic_query_and_post_filter(self):
+        composed_chronic_query = {"q": None}
+        chronic_resp = {
+            "data": {
+                "columns": [{"name": "Log Source"}, {"name": "n"}],
+                "rows": [
+                    ["Apache", 5000],
+                    ["Outsider", 9000],
+                ],
+            }
+        }
+
+        async def fake_execute(*, query, **kwargs):
+            if "'Original Log Content' like" in query and "by 'Log Source'" in query:
+                composed_chronic_query["q"] = query
+                return chronic_resp
+            return {"data": {"columns": [], "rows": []}}
+
+        engine = _make_engine()
+        engine.execute = AsyncMock(side_effect=fake_execute)
+        schema, ih, j2, diff = _make_deps()
+        tool = InvestigateIncidentTool(
+            query_engine=engine, schema_manager=schema,
+            ingestion_health_tool=ih, parser_triage_tool=j2, diff_tool=diff,
+            settings=_make_settings(), budget_tracker=_make_budget(),
+        )
+        report = await tool.run(
+            query="*",
+            time_range="last_1_hour",
+            top_k=5,
+            focus_sources=["Apache", "Nginx"],
+        )
+
+        assert composed_chronic_query["q"] is not None
+        assert "and 'Log Source' in ('Apache', 'Nginx')" in composed_chronic_query["q"]
+
+        chronic_sources = [s["source"] for s in report["chronic_baseline_sources"]]
+        assert "Outsider" not in chronic_sources
+        assert chronic_sources == ["Apache"]
+
+        merged_sources = [s["source"] for s in report["anomalous_sources"]]
+        assert "Outsider" not in merged_sources
+
+
 class TestChronicBaselineSourcesInFinalReport:
     @pytest.mark.asyncio
     async def test_chronic_baseline_sources_propagates_from_track(self):
