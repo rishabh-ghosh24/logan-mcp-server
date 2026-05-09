@@ -60,7 +60,12 @@ Notes:
 
 ### 3.3 Parser and threshold
 
-`_parse_chronic_response(response, threshold)` reads the `Log Source` and `n` columns. The threshold is applied **defensively in Python** even though `head` already caps results — entries with `n < threshold` are dropped here. The parser never emits below-threshold rows. Output shape per entry:
+`_parse_chronic_response(response, threshold, focus_sources=None)` reads the `Log Source` and `n` columns. Two defensive filters are applied **in Python**, independent of the query's own filters:
+
+1. **Threshold filter** — entries with `n < threshold` are dropped here even though `head` already caps results. The parser never emits below-threshold rows.
+2. **`focus_sources` filter** — when `focus_sources` is set, any returned source not in that list is dropped, even if the query's `'Log Source' in (...)` clause would have already filtered it. Belt-and-braces against a misbehaving engine or future query-composition regression.
+
+Output shape per entry:
 
 ```python
 {
@@ -136,11 +141,15 @@ In all failure cases, `chronic_baseline_sources = []` and the anomaly-track flow
 `_templated_summary` gains one appended sentence when **any** merged entry has `"chronic_baseline"` in its `reasons` list — including overlap entries. Counting only chronic-only entries would hide cases where a source is both anomalous *and* operationally heavy:
 
 ```python
-chronic_count = sum(1 for s in merged if "chronic_baseline" in s["reasons"])
-if chronic_count:
-    top = next(s for s in merged if "chronic_baseline" in s["reasons"])
+chronic_entries = [s for s in merged if "chronic_baseline" in s["reasons"]]
+if chronic_entries:
+    # "Top" is the highest-volume chronic source, NOT the first merged entry.
+    # Merged ordering is anomaly-first, so the first chronic-tagged entry in
+    # `merged` is often an anomaly+chronic overlap, not the loudest chronic
+    # finding. Sort by error_like_count desc, treating None as 0 defensively.
+    top = max(chronic_entries, key=lambda s: s.get("error_like_count") or 0)
     parts.append(
-        f"Chronic baseline: {chronic_count} source(s) with high error-like volume "
+        f"Chronic baseline: {len(chronic_entries)} source(s) with high error-like volume "
         f"(top: {top['source']} {top['error_like_count']} events)."
     )
 ```
