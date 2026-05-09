@@ -843,6 +843,42 @@ class TestRunChronicBaselineTrack:
             )
 
 
+class TestChronicBaselineSourcesInFinalReport:
+    @pytest.mark.asyncio
+    async def test_chronic_baseline_sources_propagates_from_track(self):
+        """When the chronic track returns sources, they appear in the final report."""
+        engine = _make_engine()
+        chronic_resp = {
+            "data": {
+                "columns": [{"name": "Log Source"}, {"name": "n"}],
+                "rows": [["OKE Control Plane Logs", 34000]],
+            }
+        }
+        empty_resp = {"data": {"columns": [], "rows": []}}
+
+        async def fake_execute(*, query, **kwargs):
+            if "'Original Log Content' like" in query and "by 'Log Source'" in query:
+                return chronic_resp
+            return empty_resp
+        engine.execute = AsyncMock(side_effect=fake_execute)
+
+        schema, ih, j2, diff = _make_deps()
+        tool = InvestigateIncidentTool(
+            query_engine=engine, schema_manager=schema,
+            ingestion_health_tool=ih, parser_triage_tool=j2, diff_tool=diff,
+            settings=_make_settings(), budget_tracker=_make_budget(),
+        )
+        report = await tool.run(query="*", time_range="last_1_hour", top_k=3)
+
+        assert report["chronic_baseline_sources"] == [
+            {
+                "source": "OKE Control Plane Logs",
+                "error_like_count": 34000,
+                "error_like_share_of_seed": None,
+            }
+        ]
+
+
 class TestChronicTrackWiring:
     @pytest.mark.asyncio
     async def test_report_includes_chronic_baseline_sources_key(self):

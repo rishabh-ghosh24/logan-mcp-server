@@ -1307,6 +1307,7 @@ def _finalize(acc: Dict[str, Any], budget_tracker) -> Dict[str, Any]:
         "ingestion_health": acc["ingestion_health"],
         "parser_failures": acc["parser_failures"],
         "anomalous_sources": anomalous_list,
+        "chronic_baseline_sources": acc.get("chronic_baseline_sources") or [],
         "cross_source_timeline": cross_source,
         "next_steps": acc.get("next_steps") or [],
         "recommended_parallel_tasks": acc.get("recommended_parallel_tasks") or [],
