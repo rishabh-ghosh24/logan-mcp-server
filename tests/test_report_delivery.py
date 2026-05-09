@@ -116,6 +116,40 @@ async def test_email_and_slack_receive_inline_summary(tmp_path):
 
 
 @pytest.mark.asyncio
+async def test_email_body_includes_recommended_next_steps(tmp_path):
+    """The operator playbook (Recommended Next Steps) is the most actionable
+    section of the report. It must reach the inbox; previously the email body
+    only included Executive Summary + Top Findings."""
+    svc, notifications = make_service(tmp_path)
+    report = {
+        "title": "Incident Report",
+        "markdown": (
+            "# Incident Report\n\n"
+            "## Executive Summary\nOne source showed elevated rejects.\n\n"
+            "## Top Findings\n- VCN flow rejects spiked.\n\n"
+            "## Recommended Next Steps\n"
+            "- Decide whether the rejected traffic is expected policy enforcement.\n"
+            "- Rank rejected VCN flows by source IP, destination IP, and port.\n\n"
+            "## Appendix\n- Investigation keys: foo.\n"
+        ),
+    }
+
+    await svc.deliver(
+        report=report,
+        channels=["email"],
+        recipients={"email_topic_ocid": "ocid1.onstopic.oc1..topic"},
+        output_format="pdf",
+        title=None,
+    )
+
+    body = notifications.send_to_ons_email.await_args.kwargs["body"]
+    assert "Recommended Next Steps" in body
+    assert "Decide whether the rejected traffic is expected policy enforcement" in body
+    assert "Rank rejected VCN flows" in body
+    assert "Appendix" not in body  # Appendix still excluded
+
+
+@pytest.mark.asyncio
 async def test_both_format_sends_pdf_to_telegram_and_summaries_elsewhere(tmp_path):
     svc, notifications = make_service(tmp_path)
 

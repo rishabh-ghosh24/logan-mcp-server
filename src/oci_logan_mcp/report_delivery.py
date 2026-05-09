@@ -187,7 +187,10 @@ class ReportDeliveryService:
         )
 
     def _summary_markdown(self, markdown: str) -> str:
-        sections = _extract_sections(markdown, {"Executive Summary", "Top Findings"})
+        sections = _extract_sections(
+            markdown,
+            {"Executive Summary", "Top Findings", "Recommended Next Steps"},
+        )
         if sections:
             return "\n\n".join(sections)
         return markdown.strip()[:4000]

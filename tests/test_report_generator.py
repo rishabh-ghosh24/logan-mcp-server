@@ -214,9 +214,10 @@ def test_generate_humanizes_query_summary_and_vcn_flow_clusters():
     assert "'Log Source' in" not in summary
     assert "Investigated error-like activity across 3 log sources over last_15_min." in summary
     assert "Top anomalous source: OCI VCN Flow Unified Schema Logs." in summary
-    assert "Rejected TCP flow 139.87.113.253:61875 -> 10.0.0.11:217" in markdown
-    assert "resource=OKE" in markdown
-    assert "(31,311 events)" in markdown
+    # Evidence is now aggregated per-destination (not per ephemeral source-port row).
+    assert "10.0.0.11:217 (OKE):" in markdown
+    assert "31,311 reject TCP events" in markdown
+    assert "139.87.113.253" in markdown
     assert "<#v" not in markdown
     assert "compartmentid" not in markdown
     assert '"oracle"' not in markdown
@@ -282,11 +283,14 @@ def test_generate_vcn_flow_report_includes_operator_assessment_and_actions():
     report = ReportGenerator().generate(investigation, summary_length="short")
 
     markdown = report["markdown"]
+    # Top Findings still names the assessment in the legacy bullet form.
     assert "Assessment: high-volume rejected VCN traffic" in markdown
-    assert "49,537 blocked network events" in markdown
+    # Executive-summary Assessment now leads with the count + action + protocol
+    # and explicitly names top destinations so the punch line is in inbox view.
+    assert "Assessment: 49,537 rejected TCP flow events in the top clusters" in markdown
+    assert "Top destinations: 10.0.3.23:5522, 10.0.10.31:5518" in markdown
+    assert "blocked network events, not automatically an application failure" in markdown
     assert "Why it matters:" in markdown
-    assert "blocked network traffic" in markdown
-    assert "not automatically an application failure" in markdown
     assert "Scope:" in markdown
     assert "49,537 rejected TCP flow events" in markdown
     assert "destination ports 5522, 5518" in markdown
@@ -294,6 +298,157 @@ def test_generate_vcn_flow_report_includes_operator_assessment_and_actions():
     assert "security lists, NSGs, route tables, and load balancer/backend health" in markdown
     assert "Rank rejected VCN flows by source IP, destination IP, and port" in markdown
     assert "Decide whether the rejected traffic is expected policy enforcement" in markdown
+    # Per-destination evidence: aggregates by dst:port + resource_type, leads with destination.
+    assert "10.0.3.23:5522 (loadbalancer):" in markdown
+    assert "46,495 reject TCP events" in markdown
+    assert "161.118.254.28" in markdown
+
+
+def test_executive_summary_marks_volume_drop_when_pct_change_negative():
+    """A `top anomalous source` with a large negative pct_change is a *drop*,
+    not a spike. The Assessment line should say so explicitly so the reader
+    isn't misled by phrasing like 'high-volume rejected traffic'."""
+    investigation = _investigation()
+    query = "'Log Source' = 'OCI VCN Flow Unified Schema Logs' and Action = 'REJECT'"
+    investigation["seed"] = {
+        "query": query,
+        "time_range": "last_15_min",
+        "seed_filter_degraded": False,
+    }
+    investigation["summary"] = (
+        f"Investigated {query} over last_15_min. "
+        "1 anomalous source(s) (top: OCI VCN Flow Unified Schema Logs pct_change=-85.6)."
+    )
+    investigation["partial"] = False
+    investigation["partial_reasons"] = []
+    investigation["anomalous_sources"] = [
+        {
+            "source": "OCI VCN Flow Unified Schema Logs",
+            "pct_change": -85.6,
+            "current_count": 7884,
+            "comparison_count": 54994,
+            "top_error_clusters": [
+                {
+                    "pattern": (
+                        '{"oracle":{"resourceType":"loadbalancer"},'
+                        '"data":{"sourceAddress":"147.185.133.101",'
+                        '"destinationAddress":"10.0.3.13","sourcePort":50701,'
+                        '"destinationPort":3915,"protocolName":"TCP",'
+                        '"action":"REJECT"}}'
+                    ),
+                    "count": 4493,
+                }
+            ],
+            "top_entities": [],
+            "errors": [],
+        }
+    ]
+
+    report = ReportGenerator().generate(investigation, summary_length="standard")
+
+    summary = report["markdown"].split("## Timeline", 1)[0]
+    assert "(-85.6%)" in summary  # signed pct still shown for precision
+    assert "volume down 86% vs prior window" in summary
+
+
+def test_timeline_drops_unrenderable_vcn_rows():
+    """When OCI LA's 1000-char truncation falls inside the oracle.* OCID
+    metadata, the data block (sourceAddress, action, etc.) is gone — neither
+    json.loads nor regex can recover it. The timeline should drop those rows
+    rather than dumping the OCID-only prefix, since the cluster section in
+    Top Findings already captured the destination patterns."""
+    investigation = _investigation()
+    truncated_oracle_only = (
+        '{"id":"4726e0da","time":"2026-05-09T00:36:45Z",'
+        '"oracle":{"compartmentid":"ocid1.compartment.oc1..aaaaaaaa4yj2x6hjxntcf5vydrdvsm",'
+        '"vcnOcid":"ocid1.vcn.oc1.phx.amaaaaaaagwiusqaqg4tl7yixg7kc547eekygznkw2xim7u4oswjcaw3a",'
+        '"vnicocid":"ocid1.vnic.oc1.phx.abyhqljrxnjquhbssh7j24b6eao653mm7a6cxef63tsxzxarol5vv4n5vxzq",'
+        '"loggroupid":"ocid1.loggroup.oc1.phx.amaaaaaaqgp2krias7btx4lmcfku7mlskzmpxx4yglvqargckiljw3apsyna",'
+        '"vniccompartmentocid":"ocid1.compartment.oc1..aaaaaaaa4yj2x6hjxntcf5vydrdvsm3trgblkmwgcmvxiar2miklv'
+    )
+    investigation["cross_source_timeline"] = [
+        {
+            "time": "2026-05-09T00:36:45+00:00",
+            "source": "OCI VCN Flow Unified Schema Logs",
+            "message": truncated_oracle_only,
+        },
+        {
+            "time": "2026-05-09T00:36:46+00:00",
+            "source": "OCI VCN Flow Unified Schema Logs",
+            "message": truncated_oracle_only,
+        },
+    ]
+
+    report = ReportGenerator().generate(investigation)
+
+    timeline = report["markdown"].split("## Timeline", 1)[1].split("## ", 1)[0]
+    assert "compartmentid" not in timeline
+    assert '"oracle"' not in timeline
+    assert "ocid1." not in timeline
+    # Surfaces what was dropped so the reader knows the section isn't broken.
+    assert "2 VCN flow row(s)" in timeline
+
+
+def test_timeline_summarizes_truncated_vcn_flow_json():
+    """OCI LA truncates `Original Log Content` at 1000 chars; the OCID-heavy
+    `oracle` field comes before `data`, so the closing braces are clipped and
+    a strict `json.loads` fails. Timeline must still render a useful summary
+    via regex fallback rather than dumping the truncated JSON."""
+    investigation = _investigation()
+    truncated = (
+        '{"id":"4726e0da","time":"2026-05-09T00:36:45Z",'
+        '"oracle":{"compartmentid":"ocid1.compartment.oc1..aaaaaaaa4yj2x6hjxntcf5vydrdvsm",'
+        '"ingestedtime":"2026-05-09T00:37:43Z",'
+        '"resourceType":"loadbalancer"},'
+        '"data":{"sourceAddress":"35.203.211.83","sourcePort":51710,'
+        '"destinationAddress":"10.0.3.103","destinationPort":8383,'
+        '"protocolName":"TCP","action":"REJECT"'
+        # Missing closing braces: simulates Logan's 1000-char clip.
+    )
+    investigation["cross_source_timeline"] = [
+        {
+            "time": "2026-05-09T00:36:45+00:00",
+            "source": "OCI VCN Flow Unified Schema Logs",
+            "message": truncated,
+        }
+    ]
+
+    report = ReportGenerator().generate(investigation)
+
+    timeline = report["markdown"].split("## Timeline", 1)[1].split("## ", 1)[0]
+    assert "Rejected TCP flow 35.203.211.83:51710 -> 10.0.3.103:8383" in timeline
+    assert "resource=loadbalancer" in timeline
+    assert '"oracle"' not in timeline
+    assert "compartmentid" not in timeline
+
+
+def test_timeline_renders_vcn_flow_json_as_one_line_summary():
+    """Raw VCN flow log content is multi-KB JSON — without summarization the
+    timeline section dominates the saved report and breaks email rendering."""
+    investigation = _investigation()
+    investigation["cross_source_timeline"] = [
+        {
+            "time": "2026-05-09T00:02:51+00:00",
+            "source": "OCI VCN Flow Unified Schema Logs",
+            "message": (
+                '{"id":"5dd2ea3e","time":"2026-05-09T00:02:51Z",'
+                '"oracle":{"compartmentid":"ocid1.compartment.oc1..aaaaaaaaeue3gtyu",'
+                '"resourceType":"loadbalancer"},'
+                '"data":{"sourceAddress":"147.185.133.101","sourcePort":50701,'
+                '"destinationAddress":"10.0.3.13","destinationPort":3915,'
+                '"protocolName":"TCP","action":"REJECT"}}'
+            ),
+        }
+    ]
+
+    report = ReportGenerator().generate(investigation)
+
+    markdown = report["markdown"]
+    timeline = markdown.split("## Timeline", 1)[1].split("## ", 1)[0]
+    assert "Rejected TCP flow 147.185.133.101:50701 -> 10.0.3.13:3915" in timeline
+    assert "resource=loadbalancer" in timeline
+    assert "compartmentid" not in timeline
+    assert '"oracle"' not in timeline
 
 
 def test_include_sections_filters_output():
