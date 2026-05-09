@@ -108,6 +108,82 @@ class TestComposeSourceScopedQuery:
         assert q == "('Log Source' = 'Y') and 'Log Source' = 'X' | cluster"
 
 
+class TestComposeChronicBaselineQuery:
+    DEFAULT_TERMS = ("error", "fail")
+
+    def test_wildcard_seed_omits_seed_clause(self):
+        from oci_logan_mcp.investigate import _compose_chronic_baseline_query
+        q = _compose_chronic_baseline_query(
+            seed_filter="*",
+            terms=self.DEFAULT_TERMS,
+            top_k=3,
+            focus_sources=None,
+        )
+        assert q == (
+            "('Original Log Content' like '%error%' or 'Original Log Content' like '%fail%')"
+            " | stats count as n by 'Log Source' | sort -n | head 3"
+        )
+
+    def test_simple_seed_wraps_in_parens(self):
+        from oci_logan_mcp.investigate import _compose_chronic_baseline_query
+        q = _compose_chronic_baseline_query(
+            seed_filter="'Event' = 'error'",
+            terms=self.DEFAULT_TERMS,
+            top_k=5,
+            focus_sources=None,
+        )
+        assert q.startswith("('Event' = 'error') and (")
+        assert q.endswith("| stats count as n by 'Log Source' | sort -n | head 5")
+        assert "'Original Log Content' like '%error%'" in q
+        assert "'Original Log Content' like '%fail%'" in q
+
+    def test_focus_sources_appends_in_clause(self):
+        from oci_logan_mcp.investigate import _compose_chronic_baseline_query
+        q = _compose_chronic_baseline_query(
+            seed_filter="*",
+            terms=self.DEFAULT_TERMS,
+            top_k=3,
+            focus_sources=["Apache Access", "OKE Control Plane Logs"],
+        )
+        assert "and 'Log Source' in ('Apache Access', 'OKE Control Plane Logs')" in q
+
+    def test_focus_source_with_embedded_quote_escaped(self):
+        from oci_logan_mcp.investigate import _compose_chronic_baseline_query
+        q = _compose_chronic_baseline_query(
+            seed_filter="*",
+            terms=self.DEFAULT_TERMS,
+            top_k=3,
+            focus_sources=["Bob's Logs"],
+        )
+        assert "'Bob''s Logs'" in q
+
+    def test_custom_terms_render_literally(self):
+        from oci_logan_mcp.investigate import _compose_chronic_baseline_query
+        q = _compose_chronic_baseline_query(
+            seed_filter="*",
+            terms=("xyz", "abc"),
+            top_k=3,
+            focus_sources=None,
+        )
+        assert "'Original Log Content' like '%xyz%'" in q
+        assert "'Original Log Content' like '%abc%'" in q
+        assert "%xyz%" in q
+
+    def test_seed_with_focus_and_custom_top_k(self):
+        from oci_logan_mcp.investigate import _compose_chronic_baseline_query
+        q = _compose_chronic_baseline_query(
+            seed_filter="'Severity' = 'ERROR'",
+            terms=("error",),
+            top_k=10,
+            focus_sources=["X"],
+        )
+        assert q == (
+            "('Severity' = 'ERROR') and ('Original Log Content' like '%error%')"
+            " and 'Log Source' in ('X')"
+            " | stats count as n by 'Log Source' | sort -n | head 10"
+        )
+
+
 class TestComputeWindows:
     def test_equal_length_and_zero_gap_adjacency(self):
         anchor = datetime(2026, 4, 22, 10, 0, 0, tzinfo=timezone.utc)

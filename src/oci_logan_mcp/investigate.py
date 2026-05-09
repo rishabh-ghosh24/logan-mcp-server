@@ -83,6 +83,38 @@ def _compose_source_scoped_query(seed_filter: str, source: str, tail: str) -> st
     return f"{base} | {tail}"
 
 
+def _compose_chronic_baseline_query(
+    seed_filter: str,
+    terms: Tuple[str, ...],
+    top_k: int,
+    focus_sources: Optional[List[str]],
+) -> str:
+    """Compose the chronic-baseline ranking query.
+
+    Counts events per source matching any error-like substring over the
+    current investigation window. Per spec §3.2:
+      - terms are validated upstream (config load) and rendered literally
+      - source names are escaped via single-quote-doubling
+      - wildcard seed omits the seed clause entirely
+    """
+    error_clause = "(" + " or ".join(
+        f"'Original Log Content' like '%{t}%'" for t in terms
+    ) + ")"
+
+    if seed_filter == "*":
+        head = error_clause
+    else:
+        head = f"({seed_filter}) and {error_clause}"
+
+    if focus_sources:
+        escaped = ", ".join(
+            f"'{name.replace(chr(39), chr(39) * 2)}'" for name in focus_sources
+        )
+        head = f"{head} and 'Log Source' in ({escaped})"
+
+    return f"{head} | stats count as n by 'Log Source' | sort -n | head {top_k}"
+
+
 def _compute_windows(
     time_range: str, anchor: datetime,
 ) -> Tuple[Dict[str, str], Dict[str, str]]:
