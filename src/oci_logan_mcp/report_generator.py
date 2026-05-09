@@ -142,14 +142,26 @@ class ReportGenerator:
             vcn_observations = _collect_vcn_flow_observations(top)
             if vcn_observations:
                 action = _dominant_flow_action(vcn_observations)
+                protocol = _dominant_protocol(vcn_observations)
                 total = _total_observed_events(vcn_observations)
                 total_text = (
-                    f"{_format_event_count(total)} " if total is not None else ""
+                    _format_event_count(total) if total is not None else "blocked"
                 )
+                proto_part = f"{protocol} " if protocol else ""
+                trend = _direction_phrase(pct)
+                aggregated = _aggregate_vcn_observations_by_destination(vcn_observations)
+                dst_phrase = ""
+                if aggregated:
+                    top_dsts = _join_unique(
+                        bucket["destination"] for bucket in aggregated[:3]
+                    )
+                    if top_dsts:
+                        dst_phrase = f" Top destinations: {top_dsts}."
                 sentences.append(
-                    "Assessment: high-volume "
-                    f"{action} VCN traffic represents {total_text}blocked network "
-                    "events, not automatically an application failure."
+                    f"Assessment: {total_text} {action} {proto_part}flow events in the top clusters"
+                    f"{trend}; these are blocked network events, not automatically an "
+                    "application failure."
+                    f"{dst_phrase}"
                 )
 
         failures = investigation.get("parser_failures") or {}
@@ -164,14 +176,37 @@ class ReportGenerator:
         timeline = investigation.get("cross_source_timeline") or []
         if not timeline:
             return ["No cross-source timeline events were included."]
-        lines = []
+        lines: List[str] = []
+        skipped_unreadable = 0
         for row in timeline[:10]:
             ts = _first_present(row, ["timestamp", "time", "Time", "Datetime", "datetime"])
             source = _first_present(row, ["source", "Log Source", "log_source"])
             message = _first_present(row, ["message", "Message", "Event", "Summary"])
+            rendered = _humanize_timeline_message(message) if message else ""
+            if rendered is None:
+                # Unreadable VCN-shape JSON whose `data` block was clipped by
+                # OCI LA's 1000-char Original-Log-Content truncation. The
+                # cluster section already captured the destination patterns;
+                # echoing OCID metadata here would only add noise.
+                skipped_unreadable += 1
+                continue
             lines.append(
                 f"- `{ts or 'unknown time'}` **{source or 'unknown source'}** - "
-                f"{message or row}"
+                f"{rendered or row}"
+            )
+        if not lines:
+            note = (
+                "No timeline events could be rendered "
+                f"({skipped_unreadable} VCN flow row(s) had truncated payloads — "
+                "see Top Findings for the destination breakdown)."
+                if skipped_unreadable
+                else "No cross-source timeline events were included."
+            )
+            return [note]
+        if skipped_unreadable:
+            lines.append(
+                f"- _(omitted {skipped_unreadable} VCN flow row(s) with truncated "
+                "payload — see Top Findings)_"
             )
         return lines
 
@@ -508,14 +543,17 @@ def _render_vcn_flow_finding(observations: List[Dict[str, Any]]) -> List[str]:
     total_text = _format_event_count(total) if total is not None else "unknown"
     action = _dominant_flow_action(observations)
     protocol = _dominant_protocol(observations)
+    aggregated = _aggregate_vcn_observations_by_destination(observations)
     ports = _join_unique(
         str(obs["destination_port"])
         for obs in observations
         if obs.get("destination_port") not in (None, "")
     )
-    destinations = _join_unique(obs["destination"] for obs in observations if obs.get("destination"))
+    destinations = _join_unique(
+        bucket["destination"] for bucket in aggregated if bucket.get("destination")
+    )
     resources = _join_unique(
-        obs["resource_type"] for obs in observations if obs.get("resource_type")
+        bucket["resource_type"] for bucket in aggregated if bucket.get("resource_type")
     )
 
     action_phrase = f"{action} {protocol} flow events" if protocol else f"{action} flow events"
@@ -541,10 +579,170 @@ def _render_vcn_flow_finding(observations: List[Dict[str, Any]]) -> List[str]:
             "and load balancer/backend health for the affected destinations."
         ),
     ]
-    for observation in observations[:2]:
-        count = _format_event_count(observation.get("count"))
-        lines.append(f"  - Evidence: {observation['summary']} ({count} events)")
+    for bucket in aggregated[:3]:
+        lines.append(f"  - Evidence: {_format_destination_bucket(bucket)}")
     return lines
+
+
+def _aggregate_vcn_observations_by_destination(
+    observations: List[Dict[str, Any]],
+) -> List[Dict[str, Any]]:
+    """Group VCN flow observations by destination, summing counts and unique source IPs.
+
+    Groups by (destination endpoint, resource_type, action, protocol). Source ports
+    in OCI VCN flow logs are ephemeral and split otherwise-identical traffic into
+    many distinct OCI LA cluster rows; aggregating by destination front-loads the
+    actually-actionable info ("what's being targeted") instead of one src:sport row.
+    """
+    buckets: Dict[tuple, Dict[str, Any]] = {}
+    for obs in observations:
+        dst = obs.get("destination") or "unknown"
+        resource = obs.get("resource_type") or ""
+        action = obs.get("action") or ""
+        protocol = obs.get("protocol") or ""
+        key = (dst, resource, action, protocol)
+        bucket = buckets.setdefault(key, {
+            "destination": dst,
+            "resource_type": resource,
+            "action": action,
+            "protocol": protocol,
+            "count": 0,
+            "source_ips": [],
+        })
+        bucket["count"] += int(obs.get("count") or 0)
+        src = obs.get("source") or ""
+        src_ip = src.split(":")[0] if src else ""
+        if src_ip and src_ip not in bucket["source_ips"]:
+            bucket["source_ips"].append(src_ip)
+    return sorted(buckets.values(), key=lambda b: b["count"], reverse=True)
+
+
+def _format_destination_bucket(bucket: Dict[str, Any]) -> str:
+    resource = bucket.get("resource_type") or ""
+    resource_text = f" ({resource})" if resource else ""
+    action = (bucket.get("action") or "").lower() or "observed"
+    protocol = bucket.get("protocol") or ""
+    proto_part = f"{protocol} " if protocol else ""
+    count_text = _format_event_count(bucket.get("count"))
+    sources = bucket.get("source_ips") or []
+    if sources:
+        sample = ", ".join(sources[:3])
+        more = f" (+{len(sources) - 3} more)" if len(sources) > 3 else ""
+        src_text = f" from {len(sources)} source IP(s); examples: {sample}{more}"
+    else:
+        src_text = ""
+    return (
+        f"{bucket.get('destination', 'unknown')}{resource_text}: "
+        f"{count_text} {action} {proto_part}events{src_text}"
+    )
+
+
+_VCN_OCI_METADATA_MARKERS = ("vnicocid", "vcnOcid", "loggroupid", "compartmentid")
+
+
+def _humanize_timeline_message(message: Any, max_len: int = 200) -> Optional[str]:
+    """Summarize a timeline row's message into one line.
+
+    Returns:
+      - the summary string when renderable
+      - the truncated original when it isn't VCN-shaped (other log sources)
+      - None when the row is a VCN-shaped JSON whose actionable `data` block
+        was clipped by OCI LA's 1000-char truncation. The caller drops these
+        rather than dumping OCID metadata into the report.
+
+    Why VCN flow logs are special: `Original Log Content` is a JSON blob
+    dominated by ``oracle.*`` OCID metadata that comes BEFORE the `data`
+    block. The truncation often cuts the message inside `oracle.*`, so neither
+    `json.loads` nor regex extraction can recover sourceAddress / action.
+    """
+    if message in (None, ""):
+        return ""
+    text = str(message)
+    obj = _load_cluster_json(text)
+    if isinstance(obj, dict):
+        flow_summary = _summarize_vcn_flow_cluster(obj)
+        if flow_summary:
+            return flow_summary
+    fallback = _summarize_vcn_flow_text(text)
+    if fallback:
+        return fallback
+    if text.startswith("{") and any(marker in text for marker in _VCN_OCI_METADATA_MARKERS):
+        return None
+    if len(text) > max_len:
+        return text[:max_len].rstrip() + "..."
+    return text
+
+
+_VCN_FIELD_PATTERNS = {
+    "src_addr": re.compile(r'"sourceAddress"\s*:\s*"([^"]+)"'),
+    "dst_addr": re.compile(r'"destinationAddress"\s*:\s*"([^"]+)"'),
+    "src_port": re.compile(r'"sourcePort"\s*:\s*(\d+)'),
+    "dst_port": re.compile(r'"destinationPort"\s*:\s*(\d+)'),
+    "protocol": re.compile(r'"protocolName"\s*:\s*"([^"]+)"'),
+    "action":   re.compile(r'"action"\s*:\s*"([^"]+)"'),
+    "resource": re.compile(r'"resourceType"\s*:\s*"([^"]+)"'),
+}
+
+
+def _summarize_vcn_flow_text(text: str) -> str | None:
+    """Regex-based VCN flow summary that survives truncation / template markup.
+
+    Required: at least one of sourceAddress, destinationAddress, action.
+    Used as a fallback when `json.loads` rejects the row.
+    """
+    if not isinstance(text, str) or not text:
+        return None
+    matches = {
+        name: pattern.search(text)
+        for name, pattern in _VCN_FIELD_PATTERNS.items()
+    }
+    if not (matches["src_addr"] or matches["dst_addr"] or matches["action"]):
+        return None
+
+    action = matches["action"].group(1).strip().upper() if matches["action"] else ""
+    verb = {"REJECT": "Rejected", "ACCEPT": "Accepted"}.get(
+        action,
+        action.title() if action else "Observed",
+    )
+    protocol = matches["protocol"].group(1) if matches["protocol"] else ""
+    flow = f"{verb} {protocol} flow" if protocol else f"{verb} flow"
+
+    def endpoint(addr_match, port_match):
+        if not addr_match:
+            return ""
+        addr = addr_match.group(1)
+        if port_match:
+            return f"{addr}:{port_match.group(1)}"
+        return addr
+
+    src = endpoint(matches["src_addr"], matches["src_port"])
+    dst = endpoint(matches["dst_addr"], matches["dst_port"])
+    parts = [flow]
+    if src and dst:
+        parts.append(f"{src} -> {dst}")
+    elif src:
+        parts.append(f"from {src}")
+    elif dst:
+        parts.append(f"to {dst}")
+    if matches["resource"]:
+        parts.append(f"resource={matches['resource'].group(1)}")
+    return " ".join(parts)
+
+
+def _direction_phrase(pct: Any) -> str:
+    """Render a short trend clause for an Assessment sentence.
+
+    Returns a leading-space string ready to splice in (e.g. " (volume down 86% vs prior window)")
+    or an empty string when pct_change is unavailable.
+    """
+    if not isinstance(pct, (int, float)):
+        return ""
+    threshold = 10
+    if pct < -threshold:
+        return f" (volume down {abs(pct):.0f}% vs prior window)"
+    if pct > threshold:
+        return f" (volume up {pct:.0f}% vs prior window)"
+    return ""
 
 
 def _operator_next_steps(investigation: Dict[str, Any]) -> List[str]:

@@ -297,3 +297,147 @@ def test_ingestion_health_roundtrip(tmp_path):
 
     assert loaded.ingestion_health.stoppage_threshold_seconds == 120
     assert loaded.ingestion_health.freshness_probe_window == "last_4_hours"
+
+
+class TestChronicBaselineConfig:
+    def test_defaults(self):
+        from oci_logan_mcp.config import ChronicBaselineConfig
+        c = ChronicBaselineConfig()
+        assert c.enabled is True
+        assert c.count_threshold == 1000
+        assert c.error_like_terms == (
+            "error", "fail", "fatal", "critical", "exception", "timeout",
+            "reject", "deny", "drop", "nxdomain", "servfail", "refused",
+        )
+
+    def test_default_terms_pass_validation(self):
+        from oci_logan_mcp.config import ChronicBaselineConfig, _validate_chronic_baseline_terms
+        c = ChronicBaselineConfig()
+        _validate_chronic_baseline_terms(c.error_like_terms)
+
+    def test_uppercase_term_rejected(self):
+        from oci_logan_mcp.config import _validate_chronic_baseline_terms
+        with pytest.raises(ValueError, match="lowercase ASCII alpha"):
+            _validate_chronic_baseline_terms(("Error",))
+
+    def test_term_with_quote_rejected(self):
+        from oci_logan_mcp.config import _validate_chronic_baseline_terms
+        with pytest.raises(ValueError, match="lowercase ASCII alpha"):
+            _validate_chronic_baseline_terms(("err'or",))
+
+    def test_term_with_double_quote_rejected(self):
+        from oci_logan_mcp.config import _validate_chronic_baseline_terms
+        with pytest.raises(ValueError, match="lowercase ASCII alpha"):
+            _validate_chronic_baseline_terms(('err"or',))
+
+    def test_term_with_percent_wildcard_rejected(self):
+        from oci_logan_mcp.config import _validate_chronic_baseline_terms
+        with pytest.raises(ValueError, match="lowercase ASCII alpha"):
+            _validate_chronic_baseline_terms(("er%or",))
+
+    def test_term_with_underscore_wildcard_rejected(self):
+        from oci_logan_mcp.config import _validate_chronic_baseline_terms
+        with pytest.raises(ValueError, match="lowercase ASCII alpha"):
+            _validate_chronic_baseline_terms(("er_or",))
+
+    def test_term_with_digit_rejected(self):
+        from oci_logan_mcp.config import _validate_chronic_baseline_terms
+        with pytest.raises(ValueError, match="lowercase ASCII alpha"):
+            _validate_chronic_baseline_terms(("err0r",))
+
+    def test_term_with_whitespace_rejected(self):
+        from oci_logan_mcp.config import _validate_chronic_baseline_terms
+        with pytest.raises(ValueError, match="lowercase ASCII alpha"):
+            _validate_chronic_baseline_terms(("er ror",))
+
+    def test_empty_term_rejected(self):
+        from oci_logan_mcp.config import _validate_chronic_baseline_terms
+        with pytest.raises(ValueError, match="lowercase ASCII alpha"):
+            _validate_chronic_baseline_terms(("",))
+
+    def test_no_terms_rejected(self):
+        from oci_logan_mcp.config import _validate_chronic_baseline_terms
+        with pytest.raises(ValueError, match="at least one"):
+            _validate_chronic_baseline_terms(())
+
+    def test_negative_threshold_rejected(self):
+        from oci_logan_mcp.config import _validate_chronic_baseline_threshold
+        with pytest.raises(ValueError, match="non-negative"):
+            _validate_chronic_baseline_threshold(-1)
+
+    def test_settings_includes_chronic_baseline_default(self):
+        from oci_logan_mcp.config import Settings, ChronicBaselineConfig
+        s = Settings()
+        assert isinstance(s.chronic_baseline, ChronicBaselineConfig)
+        assert s.chronic_baseline.enabled is True
+
+    def test_to_dict_includes_chronic_baseline(self):
+        from oci_logan_mcp.config import Settings
+        s = Settings()
+        d = s.to_dict()
+        assert "chronic_baseline" in d
+        assert d["chronic_baseline"]["enabled"] is True
+        assert d["chronic_baseline"]["count_threshold"] == 1000
+        assert "error" in d["chronic_baseline"]["error_like_terms"]
+
+    def test_load_config_parses_chronic_baseline(self, tmp_path):
+        import yaml
+        from oci_logan_mcp.config import load_config
+        cfg_path = tmp_path / "config.yaml"
+        cfg_path.write_text(yaml.safe_dump({
+            "chronic_baseline": {
+                "enabled": False,
+                "error_like_terms": ["error", "fail"],
+                "count_threshold": 500,
+            }
+        }))
+        s = load_config(cfg_path)
+        assert s.chronic_baseline.enabled is False
+        assert s.chronic_baseline.error_like_terms == ("error", "fail")
+        assert s.chronic_baseline.count_threshold == 500
+
+    def test_load_config_rejects_invalid_term(self, tmp_path):
+        import yaml
+        from oci_logan_mcp.config import load_config
+        cfg_path = tmp_path / "config.yaml"
+        cfg_path.write_text(yaml.safe_dump({
+            "chronic_baseline": {"error_like_terms": ["Error"]}
+        }))
+        with pytest.raises(ValueError, match="lowercase ASCII alpha"):
+            load_config(cfg_path)
+
+    def test_scalar_string_terms_rejected_directly(self):
+        # Regression: a bare string is iterable and would silently split into
+        # single-char "terms" that all pass the lowercase-alpha check, producing
+        # a chronic-baseline query of `like '%e%' or '%r%' or ...` — far too
+        # broad. Reject the input shape outright.
+        from oci_logan_mcp.config import ChronicBaselineConfig
+        with pytest.raises(ValueError, match="list or tuple"):
+            ChronicBaselineConfig(error_like_terms="error")
+
+    def test_scalar_string_terms_in_yaml_rejected(self):
+        # Same regression at the YAML loader. `error_like_terms: error` (no
+        # list syntax) must raise, not silently become ('e','r','r','o','r').
+        import yaml
+        from oci_logan_mcp.config import load_config
+        import tempfile, pathlib
+        with tempfile.TemporaryDirectory() as d:
+            cfg_path = pathlib.Path(d) / "config.yaml"
+            cfg_path.write_text(yaml.safe_dump({
+                "chronic_baseline": {"error_like_terms": "error"}
+            }))
+            with pytest.raises(ValueError, match="list or tuple"):
+                load_config(cfg_path)
+
+    def test_list_terms_accepted_and_normalized_to_tuple(self):
+        # Lists are valid input from YAML; the stored field must be a tuple
+        # (frozen-by-convention contract for the dataclass field).
+        from oci_logan_mcp.config import ChronicBaselineConfig
+        c = ChronicBaselineConfig(error_like_terms=["error", "fail"])
+        assert c.error_like_terms == ("error", "fail")
+        assert isinstance(c.error_like_terms, tuple)
+
+    def test_int_terms_rejected(self):
+        from oci_logan_mcp.config import ChronicBaselineConfig
+        with pytest.raises(ValueError, match="list or tuple"):
+            ChronicBaselineConfig(error_like_terms=42)

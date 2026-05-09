@@ -83,6 +83,38 @@ def _compose_source_scoped_query(seed_filter: str, source: str, tail: str) -> st
     return f"{base} | {tail}"
 
 
+def _compose_chronic_baseline_query(
+    seed_filter: str,
+    terms: Tuple[str, ...],
+    top_k: int,
+    focus_sources: Optional[List[str]],
+) -> str:
+    """Compose the chronic-baseline ranking query.
+
+    Counts events per source matching any error-like substring over the
+    current investigation window. Per spec §3.2:
+      - terms are validated upstream (config load) and rendered literally
+      - source names are escaped via single-quote-doubling
+      - wildcard seed omits the seed clause entirely
+    """
+    error_clause = "(" + " or ".join(
+        f"'Original Log Content' like '%{t}%'" for t in terms
+    ) + ")"
+
+    if seed_filter == "*":
+        head = error_clause
+    else:
+        head = f"({seed_filter}) and {error_clause}"
+
+    if focus_sources:
+        escaped = ", ".join(
+            f"'{name.replace(chr(39), chr(39) * 2)}'" for name in focus_sources
+        )
+        head = f"{head} and 'Log Source' in ({escaped})"
+
+    return f"{head} | stats count as n by 'Log Source' | sort -n | head {top_k}"
+
+
 def _compute_windows(
     time_range: str, anchor: datetime,
 ) -> Tuple[Dict[str, str], Dict[str, str]]:
@@ -144,6 +176,66 @@ def _rank_anomalous_sources(
             "pct_change": e.get("pct_change"),
         })
     return out
+
+
+def _merge_chronic_with_anomalous(
+    anomalous_sources: List[Dict[str, Any]],
+    chronic_sources: List[Dict[str, Any]],
+) -> List[Dict[str, Any]]:
+    """Merge anomaly and chronic-baseline candidate lists per spec §3.4.
+
+    Order: anomaly entries first (preserving incoming order), then chronic-only
+    entries sorted by `error_like_count` desc.
+
+    Reason semantics:
+      - If an anomaly entry already carries a `reasons` list (e.g. the
+        focus_sources overwrite path tags entries `["focus_source"]`), that
+        list is preserved as-is and only EXTENDED with `"chronic_baseline"`
+        on overlap. Merge never clobbers a caller-set reason.
+      - If `reasons` is absent or empty, default to `["anomaly"]`.
+
+    Sources appearing in both lists yield a single entry placed at the
+    anomaly source's position, with the chronic numerics merged in.
+    """
+    chronic_by_source = {c["source"]: c for c in chronic_sources}
+    seen_anomaly_sources = set()
+    merged: List[Dict[str, Any]] = []
+
+    for a in anomalous_sources:
+        src = a["source"]
+        seen_anomaly_sources.add(src)
+        chronic_match = chronic_by_source.get(src)
+        entry = dict(a)
+        existing_reasons = list(entry.get("reasons") or [])
+        if not existing_reasons:
+            existing_reasons = ["anomaly"]
+        if chronic_match is not None:
+            if "chronic_baseline" not in existing_reasons:
+                existing_reasons.append("chronic_baseline")
+            entry["error_like_count"] = chronic_match["error_like_count"]
+            entry["error_like_share_of_seed"] = chronic_match["error_like_share_of_seed"]
+        else:
+            entry.setdefault("error_like_count", None)
+            entry.setdefault("error_like_share_of_seed", None)
+        entry["reasons"] = existing_reasons
+        merged.append(entry)
+
+    chronic_only = [
+        c for c in chronic_sources if c["source"] not in seen_anomaly_sources
+    ]
+    chronic_only.sort(key=lambda c: c["error_like_count"], reverse=True)
+    for c in chronic_only:
+        merged.append({
+            "source": c["source"],
+            "current_count": None,
+            "comparison_count": None,
+            "pct_change": None,
+            "reasons": ["chronic_baseline"],
+            "error_like_count": c["error_like_count"],
+            "error_like_share_of_seed": c["error_like_share_of_seed"],
+        })
+
+    return merged
 
 
 def _normalize_focus_sources(sources: Optional[List[Any]], top_k: int) -> Optional[List[str]]:
@@ -273,6 +365,7 @@ class _InvestigationModeConfig:
     timeline_head: int
     per_source_concurrency: int
     timeout_seconds: float
+    run_chronic_baseline: bool
 
 
 _MODE_CONFIGS: Dict[str, _InvestigationModeConfig] = {
@@ -287,6 +380,7 @@ _MODE_CONFIGS: Dict[str, _InvestigationModeConfig] = {
         timeline_head=0,
         per_source_concurrency=PER_SOURCE_CONCURRENCY,
         timeout_seconds=60.0,
+        run_chronic_baseline=False,
     ),
     "standard": _InvestigationModeConfig(
         name="standard",
@@ -299,6 +393,7 @@ _MODE_CONFIGS: Dict[str, _InvestigationModeConfig] = {
         timeline_head=TIMELINE_HEAD,
         per_source_concurrency=PER_SOURCE_CONCURRENCY,
         timeout_seconds=DEFAULT_TRACK_TIMEOUT_SECONDS,
+        run_chronic_baseline=True,
     ),
     "deep": _InvestigationModeConfig(
         name="deep",
@@ -311,6 +406,7 @@ _MODE_CONFIGS: Dict[str, _InvestigationModeConfig] = {
         timeline_head=50,
         per_source_concurrency=PER_SOURCE_CONCURRENCY,
         timeout_seconds=180.0,
+        run_chronic_baseline=True,
     ),
 }
 
@@ -377,6 +473,60 @@ def _parse_cluster_response(response: Dict[str, Any]) -> List[Dict[str, Any]]:
             "pattern": str(row[sample_idx]) if row[sample_idx] is not None else "",
             "count": int(cnt) if cnt is not None else 0,
             "problem_priority": problem_priority,
+        })
+    return out
+
+
+def _parse_chronic_response(
+    response: Dict[str, Any],
+    threshold: int,
+    focus_sources: Optional[List[str]] = None,
+    seed_total_events: Optional[int] = None,
+) -> List[Dict[str, Any]]:
+    """Parse a `| stats count as n by 'Log Source'` response for chronic baseline.
+
+    Defensive in two ways (spec §3.3):
+      1. Drops rows where `n < threshold` even though the query may already cap.
+      2. Drops sources not in `focus_sources` if provided, even if the query
+         already filtered.
+
+    `seed_total_events`, if provided and > 0, populates `error_like_share_of_seed`
+    on each entry as `n / seed_total_events`. Otherwise the field is None.
+    """
+    data = response.get("data", {}) or {}
+    columns = [c.get("name") for c in data.get("columns", []) or []]
+    rows = data.get("rows", []) or []
+    if "Log Source" not in columns or "n" not in columns:
+        return []
+    src_idx = columns.index("Log Source")
+    cnt_idx = columns.index("n")
+    max_idx = max(src_idx, cnt_idx)
+    focus_set = set(focus_sources) if focus_sources else None
+    out: List[Dict[str, Any]] = []
+    for row in rows:
+        if not row or len(row) <= max_idx:
+            continue
+        src = row[src_idx]
+        cnt = row[cnt_idx]
+        if src is None or cnt is None:
+            continue
+        try:
+            n = int(cnt)
+        except (TypeError, ValueError):
+            continue
+        if n < threshold:
+            continue
+        src_str = str(src)
+        if focus_set is not None and src_str not in focus_set:
+            continue
+        if seed_total_events and seed_total_events > 0:
+            share: Optional[float] = n / seed_total_events
+        else:
+            share = None
+        out.append({
+            "source": src_str,
+            "error_like_count": n,
+            "error_like_share_of_seed": share,
         })
     return out
 
@@ -582,6 +732,25 @@ def _templated_summary(acc: Dict[str, Any]) -> str:
     if parse_count:
         parts.append(f"J2 reports {parse_count} parse failure(s).")
 
+    chronic_entries = [
+        s for s in (anomalous or [])
+        if "chronic_baseline" in (s.get("reasons") or [])
+    ]
+    if chronic_entries:
+        # Pick the highest-volume chronic source — NOT the first merged entry.
+        # Merged ordering is anomaly-first, so the first chronic-tagged entry
+        # is often an anomaly+chronic overlap, not the loudest chronic finding.
+        # Treat None defensively as 0 for the max() key.
+        top_chronic = max(
+            chronic_entries,
+            key=lambda s: s.get("error_like_count") or 0,
+        )
+        parts.append(
+            f"Chronic baseline: {len(chronic_entries)} source(s) with high "
+            f"error-like volume (top: {top_chronic['source']} "
+            f"{top_chronic.get('error_like_count')} events)."
+        )
+
     reasons = acc.get("partial_reasons") or set()
     if reasons:
         parts.append(f"Result is partial: {', '.join(sorted(reasons))}.")
@@ -668,6 +837,8 @@ class InvestigateIncidentTool:
                 compartment_id=compartment_id,
                 config=config,
                 timeout_seconds=timeout_seconds,
+                top_k=top_k,
+                focus_sources=normalized_focus_sources,
             )
             diff_result = acc.get("diff") or {}
 
@@ -698,9 +869,22 @@ class InvestigateIncidentTool:
                         "current_count": None,
                         "comparison_count": None,
                         "pct_change": None,
+                        "reasons": ["focus_source"],
+                        "error_like_count": None,
+                        "error_like_share_of_seed": None,
                     }
                     for source in normalized_focus_sources
                 ]
+            # Merge chronic baseline candidates with the anomaly-track entries.
+            # Per spec §3.4, anomaly entries lead and chronic-only entries are
+            # appended in error_like_count desc order. Drill-down (below)
+            # iterates the merged list — chronic-only sources flow through the
+            # same cluster + entity + timeline pipeline as anomaly entries.
+            chronic_sources = acc.get("chronic_baseline_sources") or []
+            acc["anomalous_sources"] = _merge_chronic_with_anomalous(
+                anomalous_sources=acc["anomalous_sources"],
+                chronic_sources=chronic_sources,
+            )
             # Seed per_source entries for drill-down phases.
             for s in acc["anomalous_sources"]:
                 acc["per_source"][s["source"]] = {
@@ -786,6 +970,8 @@ class InvestigateIncidentTool:
         compartment_id: Optional[str],
         config: _InvestigationModeConfig,
         timeout_seconds: Optional[float],
+        top_k: int,
+        focus_sources: Optional[List[str]],
     ) -> None:
         track_specs = [
             (
@@ -823,6 +1009,21 @@ class InvestigateIncidentTool:
                 config.name,
                 "disabled_by_investigation_mode",
             )
+        if config.run_chronic_baseline:
+            track_specs.append((
+                "chronic_baseline",
+                "chronic_baseline_sources",
+                self._run_chronic_baseline_track(
+                    seed_filter=seed_filter,
+                    time_range=time_range,
+                    compartment_id=compartment_id,
+                    focus_sources=focus_sources,
+                    top_k=top_k,
+                    timeout_seconds=timeout_seconds,
+                ),
+            ))
+        else:
+            acc["chronic_baseline_sources"] = []
 
         results = await asyncio.gather(
             *(spec[2] for spec in track_specs),
@@ -831,15 +1032,24 @@ class InvestigateIncidentTool:
         for (track_name, acc_key, _), result in zip(track_specs, results):
             if isinstance(result, BudgetExceededError):
                 acc["partial_reasons"].add("budget_exceeded")
-                acc[acc_key] = _track_error_payload(track_name, result)
+                if track_name == "chronic_baseline":
+                    acc[acc_key] = []
+                else:
+                    acc[acc_key] = _track_error_payload(track_name, result)
                 continue
             if isinstance(result, asyncio.TimeoutError):
                 acc["partial_reasons"].add(f"{track_name}_timeout")
-                acc[acc_key] = _track_error_payload(track_name, result)
+                if track_name == "chronic_baseline":
+                    acc[acc_key] = []
+                else:
+                    acc[acc_key] = _track_error_payload(track_name, result)
                 continue
             if isinstance(result, Exception):
                 acc["partial_reasons"].add(f"{track_name}_errors")
-                acc[acc_key] = _track_error_payload(track_name, result)
+                if track_name == "chronic_baseline":
+                    acc[acc_key] = []
+                else:
+                    acc[acc_key] = _track_error_payload(track_name, result)
                 continue
             acc[acc_key] = result
 
@@ -925,6 +1135,45 @@ class InvestigateIncidentTool:
                 comparison_window=comparison_w,
             ),
             timeout_seconds,
+        )
+
+    async def _run_chronic_baseline_track(
+        self,
+        seed_filter: str,
+        time_range: str,
+        compartment_id: Optional[str],
+        focus_sources: Optional[List[str]],
+        top_k: int,
+        timeout_seconds: Optional[float],
+    ) -> List[Dict[str, Any]]:
+        """Chronic-baseline ranking track — peer of diff per spec §3.1.
+
+        Returns the parsed chronic_baseline_sources list (raw, pre-merge).
+        Re-raises BudgetExceededError; other exceptions propagate to
+        _run_core_tracks where they get mapped to partial_reasons.
+        """
+        cfg = self._settings.chronic_baseline
+        if not cfg.enabled:
+            return []
+        query = _compose_chronic_baseline_query(
+            seed_filter=seed_filter,
+            terms=cfg.error_like_terms,
+            top_k=top_k,
+            focus_sources=focus_sources,
+        )
+        response = await _await_with_timeout(
+            self._engine.execute(
+                query=query,
+                time_range=time_range,
+                compartment_id=compartment_id,
+            ),
+            timeout_seconds,
+        )
+        return _parse_chronic_response(
+            response,
+            threshold=cfg.count_threshold,
+            focus_sources=focus_sources,
+            seed_total_events=None,
         )
 
 
@@ -1077,6 +1326,7 @@ def _finalize(acc: Dict[str, Any], budget_tracker) -> Dict[str, Any]:
         "ingestion_health": acc["ingestion_health"],
         "parser_failures": acc["parser_failures"],
         "anomalous_sources": anomalous_list,
+        "chronic_baseline_sources": acc.get("chronic_baseline_sources") or [],
         "cross_source_timeline": cross_source,
         "next_steps": acc.get("next_steps") or [],
         "recommended_parallel_tasks": acc.get("recommended_parallel_tasks") or [],

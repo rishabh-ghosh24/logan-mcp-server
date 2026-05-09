@@ -4,7 +4,7 @@ import logging
 import os
 from dataclasses import dataclass, field
 from pathlib import Path
-from typing import Any, Dict, Literal, Optional
+from typing import Any, Dict, Literal, Optional, Tuple
 
 import yaml
 
@@ -137,6 +137,70 @@ class IngestionHealthConfig:
     freshness_probe_window: str = "last_1_hour"
 
 
+def _validate_chronic_baseline_terms(terms: Any) -> None:
+    """Validate chronic-baseline error-like terms.
+
+    Terms render literally into Logan `like '%<term>%'` clauses with no
+    escaping, so they must be safe-by-construction: lowercase ASCII alpha
+    only, no quotes, no SQL wildcards (`%`, `_`), no whitespace, no digits.
+    Defaults are 12 known-safe substrings; this validator is belt-and-braces
+    against future tunability.
+
+    The input must be a list or tuple. Strings are explicitly rejected — a
+    bare string is iterable and would silently split into single-char terms
+    that all pass the lowercase-alpha check, producing an over-broad query
+    like `'%e%' or '%r%' or '%r%' or '%o%' or '%r%'`.
+
+    Source-name escaping for `focus_sources` is a separate path and uses
+    single-quote-doubling — that path does NOT call this validator.
+    """
+    if isinstance(terms, str) or not isinstance(terms, (list, tuple)):
+        raise ValueError(
+            f"chronic_baseline.error_like_terms must be a list or tuple of "
+            f"strings (got {type(terms).__name__}). YAML must use list "
+            f"syntax: `error_like_terms: [error, fail]` not `error_like_terms: error`."
+        )
+    if not terms:
+        raise ValueError(
+            "chronic_baseline.error_like_terms must contain at least one term"
+        )
+    for t in terms:
+        if not isinstance(t, str) or not t or not t.isascii() or not t.islower() or not t.isalpha():
+            raise ValueError(
+                f"chronic_baseline.error_like_terms entry {t!r} must be "
+                f"lowercase ASCII alpha only (no quotes, wildcards, digits, "
+                f"or whitespace). See "
+                f"docs/phase-2/specs/2026-05-09-chronic-baseline-track-design.md §3.2."
+            )
+
+
+def _validate_chronic_baseline_threshold(threshold: int) -> None:
+    if threshold < 0:
+        raise ValueError(
+            f"chronic_baseline.count_threshold must be non-negative; got {threshold}"
+        )
+
+
+@dataclass
+class ChronicBaselineConfig:
+    """Chronic-baseline track for investigate_incident — see
+    docs/phase-2/specs/2026-05-09-chronic-baseline-track-design.md."""
+
+    enabled: bool = True
+    error_like_terms: Tuple[str, ...] = (
+        "error", "fail", "fatal", "critical", "exception", "timeout",
+        "reject", "deny", "drop", "nxdomain", "servfail", "refused",
+    )
+    count_threshold: int = 1000
+
+    def __post_init__(self):
+        _validate_chronic_baseline_terms(self.error_like_terms)
+        _validate_chronic_baseline_threshold(self.count_threshold)
+        # Normalize list inputs (e.g. from YAML) to tuple for the typed contract.
+        if isinstance(self.error_like_terms, list):
+            self.error_like_terms = tuple(self.error_like_terms)
+
+
 @dataclass
 class Settings:
     """Main settings container."""
@@ -151,6 +215,7 @@ class Settings:
     cost: CostConfig = field(default_factory=CostConfig)
     budget: BudgetConfig = field(default_factory=BudgetConfig)
     ingestion_health: IngestionHealthConfig = field(default_factory=IngestionHealthConfig)
+    chronic_baseline: ChronicBaselineConfig = field(default_factory=ChronicBaselineConfig)
     report_delivery: ReportDeliveryConfig = field(default_factory=ReportDeliveryConfig)
     read_only: bool = False
     transcript_dir: Path = field(default_factory=lambda: Path.home() / ".oci-logan-mcp" / "transcripts")
@@ -222,6 +287,11 @@ class Settings:
             "ingestion_health": {
                 "stoppage_threshold_seconds": self.ingestion_health.stoppage_threshold_seconds,
                 "freshness_probe_window": self.ingestion_health.freshness_probe_window,
+            },
+            "chronic_baseline": {
+                "enabled": self.chronic_baseline.enabled,
+                "error_like_terms": list(self.chronic_baseline.error_like_terms),
+                "count_threshold": self.chronic_baseline.count_threshold,
             },
             "transcript_dir": str(self.transcript_dir),
             "read_only": self.read_only,
@@ -363,6 +433,22 @@ def _parse_config(data: Dict[str, Any]) -> Settings:
             freshness_probe_window=ih_data.get(
                 "freshness_probe_window",
                 settings.ingestion_health.freshness_probe_window,
+            ),
+        )
+
+    if cb_data := data.get("chronic_baseline"):
+        # Pass `error_like_terms` through raw — do NOT auto-wrap in tuple().
+        # `tuple("error")` silently splits to ('e','r','r','o','r'); the
+        # ChronicBaselineConfig validator catches the bad shape and raises.
+        if "error_like_terms" in cb_data:
+            terms_value: Any = cb_data["error_like_terms"]
+        else:
+            terms_value = settings.chronic_baseline.error_like_terms
+        settings.chronic_baseline = ChronicBaselineConfig(
+            enabled=cb_data.get("enabled", settings.chronic_baseline.enabled),
+            error_like_terms=terms_value,
+            count_threshold=cb_data.get(
+                "count_threshold", settings.chronic_baseline.count_threshold
             ),
         )
 
