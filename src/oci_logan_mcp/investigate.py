@@ -818,6 +818,8 @@ class InvestigateIncidentTool:
                 compartment_id=compartment_id,
                 config=config,
                 timeout_seconds=timeout_seconds,
+                top_k=top_k,
+                focus_sources=normalized_focus_sources,
             )
             diff_result = acc.get("diff") or {}
 
@@ -848,9 +850,22 @@ class InvestigateIncidentTool:
                         "current_count": None,
                         "comparison_count": None,
                         "pct_change": None,
+                        "reasons": ["focus_source"],
+                        "error_like_count": None,
+                        "error_like_share_of_seed": None,
                     }
                     for source in normalized_focus_sources
                 ]
+            # Merge chronic baseline candidates with the anomaly-track entries.
+            # Per spec §3.4, anomaly entries lead and chronic-only entries are
+            # appended in error_like_count desc order. Drill-down (below)
+            # iterates the merged list — chronic-only sources flow through the
+            # same cluster + entity + timeline pipeline as anomaly entries.
+            chronic_sources = acc.get("chronic_baseline_sources") or []
+            acc["anomalous_sources"] = _merge_chronic_with_anomalous(
+                anomalous_sources=acc["anomalous_sources"],
+                chronic_sources=chronic_sources,
+            )
             # Seed per_source entries for drill-down phases.
             for s in acc["anomalous_sources"]:
                 acc["per_source"][s["source"]] = {
@@ -936,6 +951,8 @@ class InvestigateIncidentTool:
         compartment_id: Optional[str],
         config: _InvestigationModeConfig,
         timeout_seconds: Optional[float],
+        top_k: int,
+        focus_sources: Optional[List[str]],
     ) -> None:
         track_specs = [
             (
@@ -973,6 +990,21 @@ class InvestigateIncidentTool:
                 config.name,
                 "disabled_by_investigation_mode",
             )
+        if config.run_chronic_baseline:
+            track_specs.append((
+                "chronic_baseline",
+                "chronic_baseline_sources",
+                self._run_chronic_baseline_track(
+                    seed_filter=seed_filter,
+                    time_range=time_range,
+                    compartment_id=compartment_id,
+                    focus_sources=focus_sources,
+                    top_k=top_k,
+                    timeout_seconds=timeout_seconds,
+                ),
+            ))
+        else:
+            acc["chronic_baseline_sources"] = []
 
         results = await asyncio.gather(
             *(spec[2] for spec in track_specs),
@@ -981,15 +1013,24 @@ class InvestigateIncidentTool:
         for (track_name, acc_key, _), result in zip(track_specs, results):
             if isinstance(result, BudgetExceededError):
                 acc["partial_reasons"].add("budget_exceeded")
-                acc[acc_key] = _track_error_payload(track_name, result)
+                if track_name == "chronic_baseline":
+                    acc[acc_key] = []
+                else:
+                    acc[acc_key] = _track_error_payload(track_name, result)
                 continue
             if isinstance(result, asyncio.TimeoutError):
                 acc["partial_reasons"].add(f"{track_name}_timeout")
-                acc[acc_key] = _track_error_payload(track_name, result)
+                if track_name == "chronic_baseline":
+                    acc[acc_key] = []
+                else:
+                    acc[acc_key] = _track_error_payload(track_name, result)
                 continue
             if isinstance(result, Exception):
                 acc["partial_reasons"].add(f"{track_name}_errors")
-                acc[acc_key] = _track_error_payload(track_name, result)
+                if track_name == "chronic_baseline":
+                    acc[acc_key] = []
+                else:
+                    acc[acc_key] = _track_error_payload(track_name, result)
                 continue
             acc[acc_key] = result
 

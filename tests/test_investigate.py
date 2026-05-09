@@ -843,6 +843,62 @@ class TestRunChronicBaselineTrack:
             )
 
 
+class TestChronicTrackWiring:
+    @pytest.mark.asyncio
+    async def test_report_includes_chronic_baseline_sources_key(self):
+        """The merged report exposes chronic_baseline_sources at top level."""
+        engine = _make_engine()
+        schema, ih, j2, diff = _make_deps()
+        tool = InvestigateIncidentTool(
+            query_engine=engine, schema_manager=schema,
+            ingestion_health_tool=ih, parser_triage_tool=j2, diff_tool=diff,
+            settings=_make_settings(), budget_tracker=_make_budget(),
+        )
+        report = await tool.run(query="*", time_range="last_1_hour", top_k=3)
+        assert "chronic_baseline_sources" in report
+        assert isinstance(report["chronic_baseline_sources"], list)
+
+    @pytest.mark.asyncio
+    async def test_anomalous_sources_entries_have_reasons_field(self):
+        """Existing anomaly entries gain a `reasons` field with ["anomaly"]."""
+        diff_result = {
+            "current": {}, "comparison": {}, "summary": "",
+            "delta": [{"dimension": "Apache", "current": 100, "comparison": 50, "pct_change": 100.0}],
+        }
+        schema, ih, j2, diff = _make_deps()
+        diff.run = AsyncMock(return_value=diff_result)
+        tool = InvestigateIncidentTool(
+            query_engine=_make_engine(), schema_manager=schema,
+            ingestion_health_tool=ih, parser_triage_tool=j2, diff_tool=diff,
+            settings=_make_settings(), budget_tracker=_make_budget(),
+        )
+        report = await tool.run(query="*", time_range="last_1_hour", top_k=3)
+        assert report["anomalous_sources"]
+        assert report["anomalous_sources"][0]["reasons"] == ["anomaly"]
+
+    @pytest.mark.asyncio
+    async def test_focus_sources_entries_tagged_focus_source(self):
+        """Focus-source entries surface with reasons=["focus_source"], not
+        ["anomaly"], because they aren't anomaly findings — they're
+        caller-pinned sources."""
+        engine = _make_engine()
+        schema, ih, j2, diff = _make_deps()
+        tool = InvestigateIncidentTool(
+            query_engine=engine, schema_manager=schema,
+            ingestion_health_tool=ih, parser_triage_tool=j2, diff_tool=diff,
+            settings=_make_settings(), budget_tracker=_make_budget(),
+        )
+        report = await tool.run(
+            query="*",
+            time_range="last_1_hour",
+            top_k=3,
+            focus_sources=["Apache", "Nginx"],
+        )
+        sources_by_name = {s["source"]: s for s in report["anomalous_sources"]}
+        assert sources_by_name["Apache"]["reasons"] == ["focus_source"]
+        assert sources_by_name["Nginx"]["reasons"] == ["focus_source"]
+
+
 class TestPhase7NextSteps:
     @pytest.mark.asyncio
     async def test_next_steps_populated_from_seed_result(self):
