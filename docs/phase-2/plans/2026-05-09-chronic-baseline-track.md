@@ -621,6 +621,25 @@ class TestParseChronicResponse:
         )
         assert [e["source"] for e in out] == ["Apache"]
 
+    def test_non_numeric_count_skipped(self):
+        # If OCI LA ever returns a non-numeric in the n column, skip the row
+        # rather than crashing in int(cnt).
+        from oci_logan_mcp.investigate import _parse_chronic_response
+        out = _parse_chronic_response(
+            self._resp([["BadNumeric", "not-a-number"], ["Apache", 5000]]),
+            threshold=0,
+        )
+        assert [e["source"] for e in out] == ["Apache"]
+
+    def test_count_as_string_digit_accepted(self):
+        # Strings that parse cleanly to int are still accepted.
+        from oci_logan_mcp.investigate import _parse_chronic_response
+        out = _parse_chronic_response(
+            self._resp([["Apache", "5000"]]),
+            threshold=0,
+        )
+        assert out[0]["error_like_count"] == 5000
+
     def test_focus_sources_filter_applied_defensively(self):
         # Even if engine returns sources outside focus list, parser drops them.
         from oci_logan_mcp.investigate import _parse_chronic_response
@@ -666,7 +685,7 @@ class TestParseChronicResponse:
 pytest tests/test_investigate.py::TestParseChronicResponse -v
 ```
 
-Expected: 11 failed (`ImportError`).
+Expected: 13 failed (`ImportError`).
 
 - [ ] **Step 3: Add the parser to `src/oci_logan_mcp/investigate.py`**
 
@@ -706,7 +725,12 @@ def _parse_chronic_response(
         cnt = row[cnt_idx]
         if src is None or cnt is None:
             continue
-        n = int(cnt)
+        try:
+            n = int(cnt)
+        except (TypeError, ValueError):
+            # Non-numeric count — skip rather than crash. Belt against engine
+            # responses that violate the expected schema.
+            continue
         if n < threshold:
             continue
         src_str = str(src)
@@ -730,7 +754,7 @@ def _parse_chronic_response(
 pytest tests/test_investigate.py::TestParseChronicResponse -v
 ```
 
-Expected: 11 passed.
+Expected: 13 passed.
 
 - [ ] **Step 5: Commit**
 
@@ -849,6 +873,42 @@ class TestMergeChronicWithAnomalous:
         b = next(e for e in merged if e["source"] == "B")
         assert b["reasons"] == ["anomaly", "chronic_baseline"]
         assert b["error_like_count"] == 7000
+
+    def test_preset_reasons_preserved(self):
+        # focus_sources path pre-tags entries with reasons=["focus_source"].
+        # Merge must NOT clobber that tag with ["anomaly"].
+        from oci_logan_mcp.investigate import _merge_chronic_with_anomalous
+        focus_entry = {
+            "source": "Foo",
+            "current_count": None,
+            "comparison_count": None,
+            "pct_change": None,
+            "reasons": ["focus_source"],
+        }
+        merged = _merge_chronic_with_anomalous(
+            anomalous_sources=[focus_entry],
+            chronic_sources=[],
+        )
+        assert merged[0]["reasons"] == ["focus_source"]
+        assert merged[0]["error_like_count"] is None
+
+    def test_preset_focus_source_extends_with_chronic_on_overlap(self):
+        # Focus-source entry that ALSO surfaces from chronic: reasons must
+        # extend, not be replaced. Result: ["focus_source", "chronic_baseline"].
+        from oci_logan_mcp.investigate import _merge_chronic_with_anomalous
+        focus_entry = {
+            "source": "Foo",
+            "current_count": None,
+            "comparison_count": None,
+            "pct_change": None,
+            "reasons": ["focus_source"],
+        }
+        merged = _merge_chronic_with_anomalous(
+            anomalous_sources=[focus_entry],
+            chronic_sources=[self._chronic("Foo", 9000)],
+        )
+        assert merged[0]["reasons"] == ["focus_source", "chronic_baseline"]
+        assert merged[0]["error_like_count"] == 9000
 ```
 
 - [ ] **Step 2: Run tests to verify they fail**
@@ -857,7 +917,7 @@ class TestMergeChronicWithAnomalous:
 pytest tests/test_investigate.py::TestMergeChronicWithAnomalous -v
 ```
 
-Expected: 7 failed (`ImportError`).
+Expected: 9 failed (`ImportError`).
 
 - [ ] **Step 3: Add the merger to `src/oci_logan_mcp/investigate.py`**
 
@@ -871,9 +931,17 @@ def _merge_chronic_with_anomalous(
     """Merge anomaly and chronic-baseline candidate lists per spec §3.4.
 
     Order: anomaly entries first (preserving incoming order), then chronic-only
-    entries sorted by `error_like_count` desc. Sources appearing in both lists
-    yield a single entry with `reasons=["anomaly", "chronic_baseline"]` placed
-    at the anomaly source's position.
+    entries sorted by `error_like_count` desc.
+
+    Reason semantics:
+      - If an anomaly entry already carries a `reasons` list (e.g. the
+        focus_sources overwrite path tags entries `["focus_source"]`), that
+        list is preserved as-is and only EXTENDED with `"chronic_baseline"`
+        on overlap. Merge never clobbers a caller-set reason.
+      - If `reasons` is absent or empty, default to `["anomaly"]`.
+
+    Sources appearing in both lists yield a single entry placed at the
+    anomaly source's position, with the chronic numerics merged in.
     """
     chronic_by_source = {c["source"]: c for c in chronic_sources}
     seen_anomaly_sources = set()
@@ -884,14 +952,18 @@ def _merge_chronic_with_anomalous(
         seen_anomaly_sources.add(src)
         chronic_match = chronic_by_source.get(src)
         entry = dict(a)
+        existing_reasons = list(entry.get("reasons") or [])
+        if not existing_reasons:
+            existing_reasons = ["anomaly"]
         if chronic_match is not None:
-            entry["reasons"] = ["anomaly", "chronic_baseline"]
+            if "chronic_baseline" not in existing_reasons:
+                existing_reasons.append("chronic_baseline")
             entry["error_like_count"] = chronic_match["error_like_count"]
             entry["error_like_share_of_seed"] = chronic_match["error_like_share_of_seed"]
         else:
-            entry["reasons"] = ["anomaly"]
-            entry["error_like_count"] = None
-            entry["error_like_share_of_seed"] = None
+            entry.setdefault("error_like_count", None)
+            entry.setdefault("error_like_share_of_seed", None)
+        entry["reasons"] = existing_reasons
         merged.append(entry)
 
     chronic_only = [
@@ -918,7 +990,7 @@ def _merge_chronic_with_anomalous(
 pytest tests/test_investigate.py::TestMergeChronicWithAnomalous -v
 ```
 
-Expected: 7 passed.
+Expected: 9 passed.
 
 - [ ] **Step 5: Commit**
 
@@ -933,11 +1005,113 @@ git commit -m "Add _merge_chronic_with_anomalous with anomaly-first ordering"
 
 **Files:**
 - Modify: `src/oci_logan_mcp/investigate.py` — add method to `InvestigateIncidentTool` class (around line 902, near `_run_diff_track`)
-- Test: deferred to Task 8 (covered by orchestrator integration tests)
+- Test: `tests/test_investigate.py`
 
-This task adds the method only. Wiring into `_run_core_tracks` happens in Task 8 to keep diffs reviewable.
+This task adds the method with direct unit tests. Wiring into `_run_core_tracks` happens in Task 8 to keep diffs reviewable.
 
-- [ ] **Step 1: Add the method to `InvestigateIncidentTool`**
+- [ ] **Step 1: Write the failing tests**
+
+Append to `tests/test_investigate.py`:
+
+```python
+class TestRunChronicBaselineTrack:
+    @pytest.mark.asyncio
+    async def test_disabled_returns_empty_no_query_issued(self):
+        from oci_logan_mcp.config import Settings, ChronicBaselineConfig
+        settings = Settings()
+        # Disable chronic baseline; ChronicBaselineConfig is not frozen so
+        # field reassignment is supported.
+        settings.chronic_baseline = ChronicBaselineConfig(
+            enabled=False,
+            error_like_terms=("error",),
+            count_threshold=1000,
+        )
+        engine = MagicMock()
+        engine.execute = AsyncMock(return_value={"data": {"columns": [], "rows": []}})
+        schema, ih, j2, diff = _make_deps()
+        tool = InvestigateIncidentTool(
+            query_engine=engine, schema_manager=schema,
+            ingestion_health_tool=ih, parser_triage_tool=j2, diff_tool=diff,
+            settings=settings, budget_tracker=_make_budget(),
+        )
+        result = await tool._run_chronic_baseline_track(
+            seed_filter="*",
+            time_range="last_1_hour",
+            compartment_id=None,
+            focus_sources=None,
+            top_k=3,
+            timeout_seconds=None,
+        )
+        assert result == []
+        engine.execute.assert_not_called()
+
+    @pytest.mark.asyncio
+    async def test_enabled_returns_parsed_entries(self):
+        engine = MagicMock()
+        engine.execute = AsyncMock(return_value={
+            "data": {
+                "columns": [{"name": "Log Source"}, {"name": "n"}],
+                "rows": [["Apache", 5000], ["Tiny", 1]],
+            }
+        })
+        schema, ih, j2, diff = _make_deps()
+        tool = InvestigateIncidentTool(
+            query_engine=engine, schema_manager=schema,
+            ingestion_health_tool=ih, parser_triage_tool=j2, diff_tool=diff,
+            settings=_make_settings(),  # default: enabled=True, threshold=1000
+            budget_tracker=_make_budget(),
+        )
+        result = await tool._run_chronic_baseline_track(
+            seed_filter="*",
+            time_range="last_1_hour",
+            compartment_id=None,
+            focus_sources=None,
+            top_k=3,
+            timeout_seconds=None,
+        )
+        # Tiny is below threshold and gets dropped by the parser.
+        assert result == [{
+            "source": "Apache",
+            "error_like_count": 5000,
+            "error_like_share_of_seed": None,
+        }]
+        # Exactly one ranking query was issued.
+        assert engine.execute.call_count == 1
+        call_kwargs = engine.execute.call_args.kwargs
+        assert "'Original Log Content' like" in call_kwargs["query"]
+        assert call_kwargs["time_range"] == "last_1_hour"
+
+    @pytest.mark.asyncio
+    async def test_propagates_budget_exceeded(self):
+        from oci_logan_mcp.budget_tracker import BudgetExceededError
+        engine = MagicMock()
+        engine.execute = AsyncMock(side_effect=BudgetExceededError("out of budget"))
+        schema, ih, j2, diff = _make_deps()
+        tool = InvestigateIncidentTool(
+            query_engine=engine, schema_manager=schema,
+            ingestion_health_tool=ih, parser_triage_tool=j2, diff_tool=diff,
+            settings=_make_settings(), budget_tracker=_make_budget(),
+        )
+        with pytest.raises(BudgetExceededError):
+            await tool._run_chronic_baseline_track(
+                seed_filter="*",
+                time_range="last_1_hour",
+                compartment_id=None,
+                focus_sources=None,
+                top_k=3,
+                timeout_seconds=None,
+            )
+```
+
+- [ ] **Step 2: Run tests to verify they fail**
+
+```
+pytest tests/test_investigate.py::TestRunChronicBaselineTrack -v
+```
+
+Expected: 3 failed (`AttributeError: ... _run_chronic_baseline_track`).
+
+- [ ] **Step 3: Add the method to `InvestigateIncidentTool`**
 
 In `src/oci_logan_mcp/investigate.py`, in the `InvestigateIncidentTool` class (after `_run_diff_track`, around line 928), add:
 
@@ -984,19 +1158,19 @@ In `src/oci_logan_mcp/investigate.py`, in the `InvestigateIncidentTool` class (a
 
 The `seed_total_events=None` is intentional — spec §3.3 says best-effort, and we don't have a cheap seed-total at this layer yet. Future work can populate it without changing this method's signature for callers.
 
-- [ ] **Step 2: Quick smoke check that the method imports cleanly**
+- [ ] **Step 4: Run tests to verify they pass**
 
 ```
-python -c "from oci_logan_mcp.investigate import InvestigateIncidentTool; print(hasattr(InvestigateIncidentTool, '_run_chronic_baseline_track'))"
+pytest tests/test_investigate.py::TestRunChronicBaselineTrack -v
 ```
 
-Expected output: `True`.
+Expected: 3 passed.
 
-- [ ] **Step 3: Commit**
+- [ ] **Step 5: Commit**
 
 ```bash
-git add src/oci_logan_mcp/investigate.py
-git commit -m "Add _run_chronic_baseline_track method (not yet wired into orchestrator)"
+git add src/oci_logan_mcp/investigate.py tests/test_investigate.py
+git commit -m "Add _run_chronic_baseline_track method (TDD)"
 ```
 
 ---
@@ -1046,9 +1220,31 @@ class TestChronicTrackWiring:
         report = await tool.run(query="*", time_range="last_1_hour", top_k=3)
         assert report["anomalous_sources"]
         assert report["anomalous_sources"][0]["reasons"] == ["anomaly"]
+
+    @pytest.mark.asyncio
+    async def test_focus_sources_entries_tagged_focus_source(self):
+        """Focus-source entries surface with reasons=["focus_source"], not
+        ["anomaly"], because they aren't anomaly findings — they're
+        caller-pinned sources."""
+        engine = _make_engine()
+        schema, ih, j2, diff = _make_deps()
+        tool = InvestigateIncidentTool(
+            query_engine=engine, schema_manager=schema,
+            ingestion_health_tool=ih, parser_triage_tool=j2, diff_tool=diff,
+            settings=_make_settings(), budget_tracker=_make_budget(),
+        )
+        report = await tool.run(
+            query="*",
+            time_range="last_1_hour",
+            top_k=3,
+            focus_sources=["Apache", "Nginx"],
+        )
+        sources_by_name = {s["source"]: s for s in report["anomalous_sources"]}
+        assert sources_by_name["Apache"]["reasons"] == ["focus_source"]
+        assert sources_by_name["Nginx"]["reasons"] == ["focus_source"]
 ```
 
-Run: `pytest tests/test_investigate.py::TestChronicTrackWiring -v` — expected: 2 failed (KeyError on `chronic_baseline_sources`, KeyError on `reasons`).
+Run: `pytest tests/test_investigate.py::TestChronicTrackWiring -v` — expected: 3 failed (KeyError on `chronic_baseline_sources`, KeyError on `reasons`, focus-source tag missing).
 
 - [ ] **Step 2: Add the chronic track to `_run_core_tracks`**
 
@@ -1142,7 +1338,42 @@ In `src/oci_logan_mcp/investigate.py`, in `run()` (around line 619), at the call
             )
 ```
 
-After the existing block that builds `acc["anomalous_sources"]` from `_rank_anomalous_sources` (around line 691-703), and BEFORE the `for s in acc["anomalous_sources"]` per_source seeding loop (around line 705), insert:
+**Tag focus-source entries.** The existing focus-source overwrite block (currently at investigate.py:694-703) replaces `acc["anomalous_sources"]` with placeholder entries that have all-None numerics. After this change, those entries flow through `_merge_chronic_with_anomalous` and would default to `reasons=["anomaly"]` — which is wrong (they aren't anomaly findings; they're caller-pinned focus sources). Update that block to pre-tag entries with `reasons=["focus_source"]` and the chronic schema fields. Find:
+
+```python
+            if normalized_focus_sources is not None:
+                acc["anomalous_sources"] = [
+                    {
+                        "source": source,
+                        "current_count": None,
+                        "comparison_count": None,
+                        "pct_change": None,
+                    }
+                    for source in normalized_focus_sources
+                ]
+```
+
+Replace with:
+
+```python
+            if normalized_focus_sources is not None:
+                acc["anomalous_sources"] = [
+                    {
+                        "source": source,
+                        "current_count": None,
+                        "comparison_count": None,
+                        "pct_change": None,
+                        "reasons": ["focus_source"],
+                        "error_like_count": None,
+                        "error_like_share_of_seed": None,
+                    }
+                    for source in normalized_focus_sources
+                ]
+```
+
+`_merge_chronic_with_anomalous` (Task 6) preserves these preset reasons and only extends them on chronic overlap.
+
+After the focus-source block, and BEFORE the `for s in acc["anomalous_sources"]` per_source seeding loop (around line 705), insert:
 
 ```python
             # Merge chronic baseline candidates with the anomaly-track entries.
@@ -1157,7 +1388,7 @@ After the existing block that builds `acc["anomalous_sources"]` from `_rank_anom
             )
 ```
 
-The existing per_source seeding loop and `bounded()` drill-down already use `acc["anomalous_sources"]`, so no change is needed there — the loop just iterates more entries (anomaly + chronic-only).
+The existing per_source seeding loop and `bounded()` drill-down already use `acc["anomalous_sources"]`, so no change is needed there — the loop just iterates more entries (anomaly + chronic-only + focus-source).
 
 - [ ] **Step 4: Run smoke tests**
 
@@ -1165,7 +1396,7 @@ The existing per_source seeding loop and `bounded()` drill-down already use `acc
 pytest tests/test_investigate.py::TestChronicTrackWiring -v
 ```
 
-Expected: 2 passed.
+Expected: 3 passed.
 
 - [ ] **Step 5: Run the full investigate test module to catch regressions**
 
@@ -2013,25 +2244,25 @@ class TestReportGeneratorChronicBaselineNoneTolerance:
 
     def test_exec_summary_does_not_crash_on_none_pct_change(self):
         from oci_logan_mcp.report_generator import ReportGenerator
-        gen = ReportGenerator()
-        report = gen.build_report(self._investigation_with_chronic_only_source())
-        # Just having executed is the assertion. Belt: no literal "None%" in output.
-        rendered = str(report)
-        assert "None%" not in rendered
-        assert "+None" not in rendered
+        report = ReportGenerator().generate(self._investigation_with_chronic_only_source())
+        markdown = report["markdown"]
+        # Just having executed without raising is the primary assertion. Belt:
+        # no literal "None%" or "+None" in the rendered markdown — those would
+        # signal a non-tolerant formatter that f-stringed None directly.
+        assert "None%" not in markdown
+        assert "+None" not in markdown
 
     def test_top_findings_renders_chronic_only_source(self):
         from oci_logan_mcp.report_generator import ReportGenerator
-        gen = ReportGenerator()
-        report = gen.build_report(self._investigation_with_chronic_only_source())
-        rendered = str(report)
+        report = ReportGenerator().generate(self._investigation_with_chronic_only_source())
+        markdown = report["markdown"]
         # Source is named in the output.
-        assert "OKE Control Plane Logs" in rendered
+        assert "OKE Control Plane Logs" in markdown
         # Cluster sample is named in the output (drill-down rendered).
-        assert "kube-apiserver" in rendered
+        assert "kube-apiserver" in markdown
 ```
 
-`ReportGenerator` may have a different public API; if `build_report` isn't the entry point, replace with the actual one (check existing tests in `tests/test_report_generator.py` for the pattern). Existing tests use `tests/test_report_generator.py:39-41` which set `pct_change=250.0` — that's the call shape. If the existing tests use `gen.generate(...)` or similar, mirror that.
+The call shape `ReportGenerator().generate(investigation_dict)` is verified against the existing test file at `tests/test_report_generator.py` (e.g. line 74: `report = ReportGenerator().generate(_investigation())`). The returned dict has a `markdown` key that contains the rendered report.
 
 - [ ] **Step 3: Run the new tests**
 
@@ -2112,6 +2343,7 @@ If the smoke script revealed nothing, no commit needed. The work is done.
 
 ## Self-review checklist (already applied; re-verify before execution)
 
-- **Spec coverage:** every spec section has tasks. §3.1 (track registration) → Tasks 3, 8. §3.2 (query) → Task 4. §3.3 (parser, threshold, focus_sources defensive filter) → Task 5. §3.4 (merge) → Task 6. §3.5 (drill-down through merge) → Task 8 step 3 + Task 11. §4.1 (top-level field) → Task 9. §4.2 (per-source schema, downstream audit) → Tasks 6, 17. §4.3 (failure signalling) → Tasks 8, 15. §4.4 (summary text) → Task 10. §5 (config) → Tasks 1, 2, 3. §6 (threshold rationale) → embedded in defaults (Task 1). §7 (interaction rules) → covered by Task 4 (focus_sources rendering), Task 5 (post-filter), Task 6 (top_k merge), Task 13 (mode gating). §8 test plan → Tasks 1-2 (config), 4 (compose), 5 (parse), 6 (merge), 11 (OKE), 12 (overlap), 13 (quick), 14 (threshold), 15 (failure), 16 (focus_sources), 17 (downstream audit).
-- **Type/name consistency:** `_compose_chronic_baseline_query`, `_parse_chronic_response`, `_merge_chronic_with_anomalous`, `_run_chronic_baseline_track`, `chronic_baseline_sources`, `error_like_count`, `error_like_share_of_seed`, `error_like_terms`, `count_threshold`, `run_chronic_baseline`, `chronic_baseline_timeout`, `chronic_baseline_errors` — all spelled identically across tasks.
-- **Placeholder scan:** no TBD / TODO / "etc." / "similar to" / "appropriate handling". All steps name exact files, lines, and code.
+- **Spec coverage:** every spec section has tasks. §3.1 (track registration) → Tasks 3, 8. §3.2 (query) → Task 4. §3.3 (parser, threshold, focus_sources defensive filter, malformed-n guard) → Task 5. §3.4 (merge with reason preservation) → Task 6. §3.5 (drill-down through merge) → Task 8 step 3 + Task 11. §4.1 (top-level field) → Task 9. §4.2 (per-source schema, downstream audit) → Tasks 6, 17. §4.3 (failure signalling) → Tasks 8, 15. §4.4 (summary text — top by max(error_like_count)) → Task 10. §5 (config) → Tasks 1, 2, 3. §6 (threshold rationale) → embedded in defaults (Task 1). §7 (interaction rules) → covered by Task 4 (focus_sources rendering), Task 5 (post-filter), Task 6 (top_k merge), Task 8 (focus-source reason tagging), Task 13 (mode gating). §8 test plan → Tasks 1-2 (config), 4 (compose), 5 (parse), 6 (merge), 7 (track method), 11 (OKE), 12 (overlap), 13 (quick), 14 (threshold), 15 (failure), 16 (focus_sources behavioural), 17 (downstream audit).
+- **Reason semantics:** anomaly entries default to `["anomaly"]`; focus-source entries pre-tagged `["focus_source"]` (Task 8); chronic-only entries tagged `["chronic_baseline"]` (Task 6); overlaps extend the existing reasons list (e.g. `["focus_source", "chronic_baseline"]`) — `_merge_chronic_with_anomalous` never clobbers a caller-set tag.
+- **Type/name consistency:** `_compose_chronic_baseline_query`, `_parse_chronic_response`, `_merge_chronic_with_anomalous`, `_run_chronic_baseline_track`, `chronic_baseline_sources`, `error_like_count`, `error_like_share_of_seed`, `error_like_terms`, `count_threshold`, `run_chronic_baseline`, `chronic_baseline_timeout`, `chronic_baseline_errors`, reasons strings `"anomaly"` / `"chronic_baseline"` / `"focus_source"` — all spelled identically across tasks.
+- **Placeholder scan:** no TBD / TODO / "etc." / "similar to" / "appropriate handling". All steps name exact files, lines, and code. Task 17 uses the verified `ReportGenerator().generate(...)` API and asserts on `report["markdown"]`.
