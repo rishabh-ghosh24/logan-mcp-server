@@ -843,6 +843,85 @@ class TestRunChronicBaselineTrack:
             )
 
 
+class TestTemplatedSummaryChronicSentence:
+    def _acc(self, anomalous_sources):
+        return {
+            "seed": {"seed_filter": "*", "seed_filter_degraded": True, "time_range": "last_1_hour"},
+            "ingestion_health": None,
+            "parser_failures": None,
+            "anomalous_sources": anomalous_sources,
+            "partial_reasons": set(),
+        }
+
+    def test_no_chronic_no_sentence(self):
+        from oci_logan_mcp.investigate import _templated_summary
+        acc = self._acc([
+            {"source": "Apache", "pct_change": 100.0, "reasons": ["anomaly"]},
+        ])
+        s = _templated_summary(acc)
+        assert "Chronic baseline" not in s
+
+    def test_chronic_only_appends_sentence(self):
+        from oci_logan_mcp.investigate import _templated_summary
+        acc = self._acc([
+            {
+                "source": "OKE Control Plane Logs",
+                "pct_change": None,
+                "reasons": ["chronic_baseline"],
+                "error_like_count": 34000,
+            },
+        ])
+        s = _templated_summary(acc)
+        assert "Chronic baseline: 1 source(s) with high error-like volume" in s
+        assert "OKE Control Plane Logs 34000 events" in s
+
+    def test_overlap_counted_in_sentence(self):
+        from oci_logan_mcp.investigate import _templated_summary
+        acc = self._acc([
+            {
+                "source": "Apache",
+                "pct_change": 200.0,
+                "reasons": ["anomaly", "chronic_baseline"],
+                "error_like_count": 8000,
+            },
+        ])
+        s = _templated_summary(acc)
+        assert "Chronic baseline: 1 source(s)" in s
+        assert "Apache 8000 events" in s
+
+    def test_top_chronic_picked_by_count_not_position(self):
+        from oci_logan_mcp.investigate import _templated_summary
+        acc = self._acc([
+            {
+                "source": "Apache",
+                "pct_change": 100.0,
+                "reasons": ["anomaly", "chronic_baseline"],
+                "error_like_count": 1500,
+            },
+            {
+                "source": "OKE",
+                "pct_change": None,
+                "reasons": ["chronic_baseline"],
+                "error_like_count": 34000,
+            },
+        ])
+        s = _templated_summary(acc)
+        assert "OKE 34000 events" in s
+        assert "Apache 1500" not in s
+
+    def test_handles_none_error_like_count_defensively(self):
+        from oci_logan_mcp.investigate import _templated_summary
+        acc = self._acc([
+            {
+                "source": "X",
+                "pct_change": None,
+                "reasons": ["chronic_baseline"],
+                "error_like_count": None,
+            },
+        ])
+        _templated_summary(acc)
+
+
 class TestChronicBaselineSourcesInFinalReport:
     @pytest.mark.asyncio
     async def test_chronic_baseline_sources_propagates_from_track(self):

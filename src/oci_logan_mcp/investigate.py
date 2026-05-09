@@ -732,6 +732,25 @@ def _templated_summary(acc: Dict[str, Any]) -> str:
     if parse_count:
         parts.append(f"J2 reports {parse_count} parse failure(s).")
 
+    chronic_entries = [
+        s for s in (anomalous or [])
+        if "chronic_baseline" in (s.get("reasons") or [])
+    ]
+    if chronic_entries:
+        # Pick the highest-volume chronic source — NOT the first merged entry.
+        # Merged ordering is anomaly-first, so the first chronic-tagged entry
+        # is often an anomaly+chronic overlap, not the loudest chronic finding.
+        # Treat None defensively as 0 for the max() key.
+        top_chronic = max(
+            chronic_entries,
+            key=lambda s: s.get("error_like_count") or 0,
+        )
+        parts.append(
+            f"Chronic baseline: {len(chronic_entries)} source(s) with high "
+            f"error-like volume (top: {top_chronic['source']} "
+            f"{top_chronic.get('error_like_count')} events)."
+        )
+
     reasons = acc.get("partial_reasons") or set()
     if reasons:
         parts.append(f"Result is partial: {', '.join(sorted(reasons))}.")
