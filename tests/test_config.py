@@ -297,3 +297,70 @@ def test_ingestion_health_roundtrip(tmp_path):
 
     assert loaded.ingestion_health.stoppage_threshold_seconds == 120
     assert loaded.ingestion_health.freshness_probe_window == "last_4_hours"
+
+
+class TestChronicBaselineConfig:
+    def test_defaults(self):
+        from oci_logan_mcp.config import ChronicBaselineConfig
+        c = ChronicBaselineConfig()
+        assert c.enabled is True
+        assert c.count_threshold == 1000
+        assert c.error_like_terms == (
+            "error", "fail", "fatal", "critical", "exception", "timeout",
+            "reject", "deny", "drop", "nxdomain", "servfail", "refused",
+        )
+
+    def test_default_terms_pass_validation(self):
+        from oci_logan_mcp.config import ChronicBaselineConfig, _validate_chronic_baseline_terms
+        c = ChronicBaselineConfig()
+        _validate_chronic_baseline_terms(c.error_like_terms)
+
+    def test_uppercase_term_rejected(self):
+        from oci_logan_mcp.config import _validate_chronic_baseline_terms
+        with pytest.raises(ValueError, match="lowercase ASCII alpha"):
+            _validate_chronic_baseline_terms(("Error",))
+
+    def test_term_with_quote_rejected(self):
+        from oci_logan_mcp.config import _validate_chronic_baseline_terms
+        with pytest.raises(ValueError, match="lowercase ASCII alpha"):
+            _validate_chronic_baseline_terms(("err'or",))
+
+    def test_term_with_double_quote_rejected(self):
+        from oci_logan_mcp.config import _validate_chronic_baseline_terms
+        with pytest.raises(ValueError, match="lowercase ASCII alpha"):
+            _validate_chronic_baseline_terms(('err"or',))
+
+    def test_term_with_percent_wildcard_rejected(self):
+        from oci_logan_mcp.config import _validate_chronic_baseline_terms
+        with pytest.raises(ValueError, match="lowercase ASCII alpha"):
+            _validate_chronic_baseline_terms(("er%or",))
+
+    def test_term_with_underscore_wildcard_rejected(self):
+        from oci_logan_mcp.config import _validate_chronic_baseline_terms
+        with pytest.raises(ValueError, match="lowercase ASCII alpha"):
+            _validate_chronic_baseline_terms(("er_or",))
+
+    def test_term_with_digit_rejected(self):
+        from oci_logan_mcp.config import _validate_chronic_baseline_terms
+        with pytest.raises(ValueError, match="lowercase ASCII alpha"):
+            _validate_chronic_baseline_terms(("err0r",))
+
+    def test_term_with_whitespace_rejected(self):
+        from oci_logan_mcp.config import _validate_chronic_baseline_terms
+        with pytest.raises(ValueError, match="lowercase ASCII alpha"):
+            _validate_chronic_baseline_terms(("er ror",))
+
+    def test_empty_term_rejected(self):
+        from oci_logan_mcp.config import _validate_chronic_baseline_terms
+        with pytest.raises(ValueError, match="lowercase ASCII alpha"):
+            _validate_chronic_baseline_terms(("",))
+
+    def test_no_terms_rejected(self):
+        from oci_logan_mcp.config import _validate_chronic_baseline_terms
+        with pytest.raises(ValueError, match="at least one"):
+            _validate_chronic_baseline_terms(())
+
+    def test_negative_threshold_rejected(self):
+        from oci_logan_mcp.config import _validate_chronic_baseline_threshold
+        with pytest.raises(ValueError, match="non-negative"):
+            _validate_chronic_baseline_threshold(-1)

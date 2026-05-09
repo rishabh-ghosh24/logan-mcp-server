@@ -4,7 +4,7 @@ import logging
 import os
 from dataclasses import dataclass, field
 from pathlib import Path
-from typing import Any, Dict, Literal, Optional
+from typing import Any, Dict, Literal, Optional, Tuple
 
 import yaml
 
@@ -135,6 +135,56 @@ class IngestionHealthConfig:
     # Time window for the freshness probe query; any source with no record in
     # this window is classified `unknown/warn`.
     freshness_probe_window: str = "last_1_hour"
+
+
+def _validate_chronic_baseline_terms(terms: Tuple[str, ...]) -> None:
+    """Validate chronic-baseline error-like terms.
+
+    Terms render literally into Logan `like '%<term>%'` clauses with no
+    escaping, so they must be safe-by-construction: lowercase ASCII alpha
+    only, no quotes, no SQL wildcards (`%`, `_`), no whitespace, no digits.
+    Defaults are 12 known-safe substrings; this validator is belt-and-braces
+    against future tunability.
+
+    Source-name escaping for `focus_sources` is a separate path and uses
+    single-quote-doubling — that path does NOT call this validator.
+    """
+    if not terms:
+        raise ValueError(
+            "chronic_baseline.error_like_terms must contain at least one term"
+        )
+    for t in terms:
+        if not t or not t.isascii() or not t.islower() or not t.isalpha():
+            raise ValueError(
+                f"chronic_baseline.error_like_terms entry {t!r} must be "
+                f"lowercase ASCII alpha only (no quotes, wildcards, digits, "
+                f"or whitespace). See "
+                f"docs/phase-2/specs/2026-05-09-chronic-baseline-track-design.md §3.2."
+            )
+
+
+def _validate_chronic_baseline_threshold(threshold: int) -> None:
+    if threshold < 0:
+        raise ValueError(
+            f"chronic_baseline.count_threshold must be non-negative; got {threshold}"
+        )
+
+
+@dataclass
+class ChronicBaselineConfig:
+    """Chronic-baseline track for investigate_incident — see
+    docs/phase-2/specs/2026-05-09-chronic-baseline-track-design.md."""
+
+    enabled: bool = True
+    error_like_terms: Tuple[str, ...] = (
+        "error", "fail", "fatal", "critical", "exception", "timeout",
+        "reject", "deny", "drop", "nxdomain", "servfail", "refused",
+    )
+    count_threshold: int = 1000
+
+    def __post_init__(self):
+        _validate_chronic_baseline_terms(self.error_like_terms)
+        _validate_chronic_baseline_threshold(self.count_threshold)
 
 
 @dataclass
