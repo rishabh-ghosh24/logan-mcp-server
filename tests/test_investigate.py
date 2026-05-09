@@ -60,6 +60,20 @@ class TestExtractSeedFilter:
         assert _extract_seed_filter("'Log Source' = 'X'") == "'Log Source' = 'X'"
 
 
+class TestChronicBaselineModeFlag:
+    def test_quick_mode_does_not_run_chronic_baseline(self):
+        from oci_logan_mcp.investigate import _mode_config
+        assert _mode_config("quick").run_chronic_baseline is False
+
+    def test_standard_mode_runs_chronic_baseline(self):
+        from oci_logan_mcp.investigate import _mode_config
+        assert _mode_config("standard").run_chronic_baseline is True
+
+    def test_deep_mode_runs_chronic_baseline(self):
+        from oci_logan_mcp.investigate import _mode_config
+        assert _mode_config("deep").run_chronic_baseline is True
+
+
 class TestComposeSourceScopedQuery:
     def test_wildcard_seed_omits_and_and_parens(self):
         # "*" means no seed scoping — emit just the source predicate.

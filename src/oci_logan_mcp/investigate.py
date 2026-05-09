@@ -273,6 +273,7 @@ class _InvestigationModeConfig:
     timeline_head: int
     per_source_concurrency: int
     timeout_seconds: float
+    run_chronic_baseline: bool
 
 
 _MODE_CONFIGS: Dict[str, _InvestigationModeConfig] = {
@@ -287,6 +288,7 @@ _MODE_CONFIGS: Dict[str, _InvestigationModeConfig] = {
         timeline_head=0,
         per_source_concurrency=PER_SOURCE_CONCURRENCY,
         timeout_seconds=60.0,
+        run_chronic_baseline=False,
     ),
     "standard": _InvestigationModeConfig(
         name="standard",
@@ -299,6 +301,7 @@ _MODE_CONFIGS: Dict[str, _InvestigationModeConfig] = {
         timeline_head=TIMELINE_HEAD,
         per_source_concurrency=PER_SOURCE_CONCURRENCY,
         timeout_seconds=DEFAULT_TRACK_TIMEOUT_SECONDS,
+        run_chronic_baseline=True,
     ),
     "deep": _InvestigationModeConfig(
         name="deep",
@@ -311,6 +314,7 @@ _MODE_CONFIGS: Dict[str, _InvestigationModeConfig] = {
         timeline_head=50,
         per_source_concurrency=PER_SOURCE_CONCURRENCY,
         timeout_seconds=180.0,
+        run_chronic_baseline=True,
     ),
 }
 
