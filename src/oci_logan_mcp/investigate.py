@@ -417,6 +417,60 @@ def _parse_cluster_response(response: Dict[str, Any]) -> List[Dict[str, Any]]:
     return out
 
 
+def _parse_chronic_response(
+    response: Dict[str, Any],
+    threshold: int,
+    focus_sources: Optional[List[str]] = None,
+    seed_total_events: Optional[int] = None,
+) -> List[Dict[str, Any]]:
+    """Parse a `| stats count as n by 'Log Source'` response for chronic baseline.
+
+    Defensive in two ways (spec §3.3):
+      1. Drops rows where `n < threshold` even though the query may already cap.
+      2. Drops sources not in `focus_sources` if provided, even if the query
+         already filtered.
+
+    `seed_total_events`, if provided and > 0, populates `error_like_share_of_seed`
+    on each entry as `n / seed_total_events`. Otherwise the field is None.
+    """
+    data = response.get("data", {}) or {}
+    columns = [c.get("name") for c in data.get("columns", []) or []]
+    rows = data.get("rows", []) or []
+    if "Log Source" not in columns or "n" not in columns:
+        return []
+    src_idx = columns.index("Log Source")
+    cnt_idx = columns.index("n")
+    max_idx = max(src_idx, cnt_idx)
+    focus_set = set(focus_sources) if focus_sources else None
+    out: List[Dict[str, Any]] = []
+    for row in rows:
+        if not row or len(row) <= max_idx:
+            continue
+        src = row[src_idx]
+        cnt = row[cnt_idx]
+        if src is None or cnt is None:
+            continue
+        try:
+            n = int(cnt)
+        except (TypeError, ValueError):
+            continue
+        if n < threshold:
+            continue
+        src_str = str(src)
+        if focus_set is not None and src_str not in focus_set:
+            continue
+        if seed_total_events and seed_total_events > 0:
+            share: Optional[float] = n / seed_total_events
+        else:
+            share = None
+        out.append({
+            "source": src_str,
+            "error_like_count": n,
+            "error_like_share_of_seed": share,
+        })
+    return out
+
+
 def _parse_timeline_response(response: Dict[str, Any]) -> List[Dict[str, Any]]:
     """Parse a `| fields Time, Severity, 'Original Log Content' | sort -Time | head N` response.
 

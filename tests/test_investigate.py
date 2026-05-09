@@ -184,6 +184,121 @@ class TestComposeChronicBaselineQuery:
         )
 
 
+class TestParseChronicResponse:
+    def _resp(self, rows):
+        return {
+            "data": {
+                "columns": [{"name": "Log Source"}, {"name": "n"}],
+                "rows": rows,
+            }
+        }
+
+    def test_happy_path(self):
+        from oci_logan_mcp.investigate import _parse_chronic_response
+        out = _parse_chronic_response(
+            self._resp([["Apache", 5000], ["Nginx", 2000]]),
+            threshold=1000,
+        )
+        assert out == [
+            {"source": "Apache", "error_like_count": 5000, "error_like_share_of_seed": None},
+            {"source": "Nginx", "error_like_count": 2000, "error_like_share_of_seed": None},
+        ]
+
+    def test_threshold_filter_drops_below(self):
+        from oci_logan_mcp.investigate import _parse_chronic_response
+        out = _parse_chronic_response(
+            self._resp([["Apache", 5000], ["Quiet", 50]]),
+            threshold=1000,
+        )
+        assert [e["source"] for e in out] == ["Apache"]
+
+    def test_threshold_zero_keeps_all(self):
+        from oci_logan_mcp.investigate import _parse_chronic_response
+        out = _parse_chronic_response(
+            self._resp([["A", 1], ["B", 2]]),
+            threshold=0,
+        )
+        assert len(out) == 2
+
+    def test_malformed_columns_returns_empty(self):
+        from oci_logan_mcp.investigate import _parse_chronic_response
+        bad = {"data": {"columns": [{"name": "Wrong"}], "rows": [["x"]]}}
+        assert _parse_chronic_response(bad, threshold=0) == []
+
+    def test_empty_response(self):
+        from oci_logan_mcp.investigate import _parse_chronic_response
+        assert _parse_chronic_response({}, threshold=0) == []
+        assert _parse_chronic_response({"data": {}}, threshold=0) == []
+
+    def test_null_count_skipped(self):
+        from oci_logan_mcp.investigate import _parse_chronic_response
+        out = _parse_chronic_response(
+            self._resp([["Apache", 5000], ["NullCount", None]]),
+            threshold=0,
+        )
+        assert [e["source"] for e in out] == ["Apache"]
+
+    def test_null_source_skipped(self):
+        from oci_logan_mcp.investigate import _parse_chronic_response
+        out = _parse_chronic_response(
+            self._resp([[None, 9999], ["Apache", 5000]]),
+            threshold=0,
+        )
+        assert [e["source"] for e in out] == ["Apache"]
+
+    def test_non_numeric_count_skipped(self):
+        from oci_logan_mcp.investigate import _parse_chronic_response
+        out = _parse_chronic_response(
+            self._resp([["BadNumeric", "not-a-number"], ["Apache", 5000]]),
+            threshold=0,
+        )
+        assert [e["source"] for e in out] == ["Apache"]
+
+    def test_count_as_string_digit_accepted(self):
+        from oci_logan_mcp.investigate import _parse_chronic_response
+        out = _parse_chronic_response(
+            self._resp([["Apache", "5000"]]),
+            threshold=0,
+        )
+        assert out[0]["error_like_count"] == 5000
+
+    def test_focus_sources_filter_applied_defensively(self):
+        from oci_logan_mcp.investigate import _parse_chronic_response
+        out = _parse_chronic_response(
+            self._resp([["Apache", 9000], ["Nginx", 8000], ["Other", 7000]]),
+            threshold=0,
+            focus_sources=["Apache", "Nginx"],
+        )
+        assert [e["source"] for e in out] == ["Apache", "Nginx"]
+
+    def test_focus_sources_none_means_no_filter(self):
+        from oci_logan_mcp.investigate import _parse_chronic_response
+        out = _parse_chronic_response(
+            self._resp([["A", 1000], ["B", 1000]]),
+            threshold=0,
+            focus_sources=None,
+        )
+        assert len(out) == 2
+
+    def test_share_of_seed_when_seed_total_provided(self):
+        from oci_logan_mcp.investigate import _parse_chronic_response
+        out = _parse_chronic_response(
+            self._resp([["Apache", 250]]),
+            threshold=0,
+            seed_total_events=1000,
+        )
+        assert out[0]["error_like_share_of_seed"] == 0.25
+
+    def test_share_of_seed_zero_total_treated_as_none(self):
+        from oci_logan_mcp.investigate import _parse_chronic_response
+        out = _parse_chronic_response(
+            self._resp([["Apache", 250]]),
+            threshold=0,
+            seed_total_events=0,
+        )
+        assert out[0]["error_like_share_of_seed"] is None
+
+
 class TestComputeWindows:
     def test_equal_length_and_zero_gap_adjacency(self):
         anchor = datetime(2026, 4, 22, 10, 0, 0, tzinfo=timezone.utc)
