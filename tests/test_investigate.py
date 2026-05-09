@@ -758,6 +758,91 @@ def _make_budget():
     )
 
 
+class TestRunChronicBaselineTrack:
+    @pytest.mark.asyncio
+    async def test_disabled_returns_empty_no_query_issued(self):
+        from oci_logan_mcp.config import Settings, ChronicBaselineConfig
+        settings = Settings()
+        settings.chronic_baseline = ChronicBaselineConfig(
+            enabled=False,
+            error_like_terms=("error",),
+            count_threshold=1000,
+        )
+        engine = MagicMock()
+        engine.execute = AsyncMock(return_value={"data": {"columns": [], "rows": []}})
+        schema, ih, j2, diff = _make_deps()
+        tool = InvestigateIncidentTool(
+            query_engine=engine, schema_manager=schema,
+            ingestion_health_tool=ih, parser_triage_tool=j2, diff_tool=diff,
+            settings=settings, budget_tracker=_make_budget(),
+        )
+        result = await tool._run_chronic_baseline_track(
+            seed_filter="*",
+            time_range="last_1_hour",
+            compartment_id=None,
+            focus_sources=None,
+            top_k=3,
+            timeout_seconds=None,
+        )
+        assert result == []
+        engine.execute.assert_not_called()
+
+    @pytest.mark.asyncio
+    async def test_enabled_returns_parsed_entries(self):
+        engine = MagicMock()
+        engine.execute = AsyncMock(return_value={
+            "data": {
+                "columns": [{"name": "Log Source"}, {"name": "n"}],
+                "rows": [["Apache", 5000], ["Tiny", 1]],
+            }
+        })
+        schema, ih, j2, diff = _make_deps()
+        tool = InvestigateIncidentTool(
+            query_engine=engine, schema_manager=schema,
+            ingestion_health_tool=ih, parser_triage_tool=j2, diff_tool=diff,
+            settings=_make_settings(),
+            budget_tracker=_make_budget(),
+        )
+        result = await tool._run_chronic_baseline_track(
+            seed_filter="*",
+            time_range="last_1_hour",
+            compartment_id=None,
+            focus_sources=None,
+            top_k=3,
+            timeout_seconds=None,
+        )
+        assert result == [{
+            "source": "Apache",
+            "error_like_count": 5000,
+            "error_like_share_of_seed": None,
+        }]
+        assert engine.execute.call_count == 1
+        call_kwargs = engine.execute.call_args.kwargs
+        assert "'Original Log Content' like" in call_kwargs["query"]
+        assert call_kwargs["time_range"] == "last_1_hour"
+
+    @pytest.mark.asyncio
+    async def test_propagates_budget_exceeded(self):
+        from oci_logan_mcp.budget_tracker import BudgetExceededError
+        engine = MagicMock()
+        engine.execute = AsyncMock(side_effect=BudgetExceededError("out of budget"))
+        schema, ih, j2, diff = _make_deps()
+        tool = InvestigateIncidentTool(
+            query_engine=engine, schema_manager=schema,
+            ingestion_health_tool=ih, parser_triage_tool=j2, diff_tool=diff,
+            settings=_make_settings(), budget_tracker=_make_budget(),
+        )
+        with pytest.raises(BudgetExceededError):
+            await tool._run_chronic_baseline_track(
+                seed_filter="*",
+                time_range="last_1_hour",
+                compartment_id=None,
+                focus_sources=None,
+                top_k=3,
+                timeout_seconds=None,
+            )
+
+
 class TestPhase7NextSteps:
     @pytest.mark.asyncio
     async def test_next_steps_populated_from_seed_result(self):

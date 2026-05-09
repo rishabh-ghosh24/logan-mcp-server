@@ -1077,6 +1077,45 @@ class InvestigateIncidentTool:
             timeout_seconds,
         )
 
+    async def _run_chronic_baseline_track(
+        self,
+        seed_filter: str,
+        time_range: str,
+        compartment_id: Optional[str],
+        focus_sources: Optional[List[str]],
+        top_k: int,
+        timeout_seconds: Optional[float],
+    ) -> List[Dict[str, Any]]:
+        """Chronic-baseline ranking track — peer of diff per spec §3.1.
+
+        Returns the parsed chronic_baseline_sources list (raw, pre-merge).
+        Re-raises BudgetExceededError; other exceptions propagate to
+        _run_core_tracks where they get mapped to partial_reasons.
+        """
+        cfg = self._settings.chronic_baseline
+        if not cfg.enabled:
+            return []
+        query = _compose_chronic_baseline_query(
+            seed_filter=seed_filter,
+            terms=cfg.error_like_terms,
+            top_k=top_k,
+            focus_sources=focus_sources,
+        )
+        response = await _await_with_timeout(
+            self._engine.execute(
+                query=query,
+                time_range=time_range,
+                compartment_id=compartment_id,
+            ),
+            timeout_seconds,
+        )
+        return _parse_chronic_response(
+            response,
+            threshold=cfg.count_threshold,
+            focus_sources=focus_sources,
+            seed_total_events=None,
+        )
+
 
 def _not_run_track(track_name: str, mode: str, reason: str) -> Dict[str, Any]:
     return {
