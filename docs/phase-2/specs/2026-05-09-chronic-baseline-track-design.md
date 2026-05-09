@@ -1,9 +1,10 @@
 # `chronic_baseline` track for `investigate_incident` — Design Document
 
 **Status:** Design approved, pending writing-plans.
-**Branch:** `goofy-mestorf-606e96` (worktree off `main`).
-**Touches:** `src/oci_logan_mcp/investigate.py`, `src/oci_logan_mcp/config.py`, `src/oci_logan_mcp/report_generator.py` (small summary phrasing reuse only), `tests/test_investigate.py`.
+**Implementation branch:** `goofy-mestorf-606e96` (worktree branch). Verified to be cut from `feat/combined-investigation-report-persistence`, **not** from `main`. Work merges back into the combined-investigation branch via PR; `main` is not a direct target.
+**Touches:** `src/oci_logan_mcp/investigate.py`, `src/oci_logan_mcp/config.py`, `src/oci_logan_mcp/report_generator.py` (summary phrasing reuse + None-tolerance audit per §4.2), `tests/test_investigate.py`, plus any test files whose fixtures assume non-null `pct_change` / `current_count` / `comparison_count` on anomalous-source entries.
 **Related spec:** `docs/phase-2/specs/2026-04-22-a1-investigate-incident-design.md` (the A1 base design this track extends).
+**Plan location:** the implementation plan written by `superpowers:writing-plans` will live at `docs/phase-2/plans/2026-05-09-chronic-baseline-track.md`, mirroring the existing tracked-plan pattern (e.g. `2026-04-22-a1-investigate-incident.md`). `docs/superpowers/plans/` is gitignored and must not be used.
 
 > **For agentic workers:** This is a design spec. Produce a TDD implementation plan via `superpowers:writing-plans`, then execute. Do NOT start coding from this doc directly.
 
@@ -52,8 +53,9 @@ ranking_query = f"{seed_clause}{error_clause}{focus_clause} | stats count as n b
 Notes:
 - Logan matching is case-insensitive natively, so `error`, `Error`, `ERROR`, `Failed` all match a single `%error%` / `%fail%` literal.
 - `seed_filter` extraction reuses `_extract_seed_filter` (existing pre-pipe clause extractor).
-- Source-name escaping in the focus clause uses the same single-quote-doubling pattern as `_compose_source_scoped_query`. Source names are user input and may contain quotes.
-- Term-list values are sanitized at config load: lowercase ASCII alpha only, no quotes/wildcards. Defaults are 12 known-safe substrings, so injection isn't a real risk in practice; validation is belt-and-braces against future tunability.
+- **Two distinct safety paths — do not conflate them:**
+  - `focus_sources` (user-supplied source names) are **escaped** via single-quote-doubling, the same pattern as `_compose_source_scoped_query`. Source names may legitimately contain odd characters; we render them safely rather than rejecting them.
+  - `error_like_terms` (config-supplied substring fragments) are **rejected at config load** if they contain anything other than lowercase ASCII alpha characters — quotes, wildcards (`%`, `_`), digits, whitespace, or any other non-alpha all cause a hard `ValueError` with a clear message. We render terms literally into `like '%<term>%'` with no escaping. Defaults are 12 known-safe substrings, so injection isn't a real risk in practice; validation is belt-and-braces against future tunability.
 - The `compartment_id` and `time_range` parameters thread through identically to the diff track.
 
 ### 3.3 Parser and threshold
@@ -109,7 +111,13 @@ Each entry in `anomalous_sources` (the merged list — name preserved for backwa
 "error_like_share_of_seed": Optional[float]   # None for anomaly-only entries
 ```
 
-Existing fields (`current_count`, `comparison_count`, `pct_change`, `top_error_clusters`, `top_entities`, `timeline`, `errors`) are preserved and nullable for chronic-only entries. Existing consumers can ignore the new fields.
+Existing fields (`current_count`, `comparison_count`, `pct_change`, `top_error_clusters`, `top_entities`, `timeline`, `errors`) are preserved and nullable for chronic-only entries. Existing consumers can ignore the new fields, **but every reader of `anomalous_sources` must tolerate `pct_change=None`, `current_count=None`, and `comparison_count=None` on chronic-only entries.** This is no longer a hypothetical — chronic-only entries always present these as `None`. The implementation plan (§8) must include an explicit downstream-reader audit covering at least:
+
+- `src/oci_logan_mcp/report_generator.py` — exec summary, anomaly source bullets, cluster/entity rendering
+- MCP handlers that surface or post-process `investigate_incident` results
+- Any test fixtures or assertions that assume those numeric fields are non-null
+
+Anywhere a reader currently formats or arithmetic-uses these fields, add a None-tolerant branch (typically rendering as "—" or omitting the line). The audit's outputs are tracked as plan items, not deferred to a follow-up.
 
 ### 4.3 Failure signalling
 
@@ -145,7 +153,7 @@ New dataclass in `config.py`:
 @dataclass
 class ChronicBaselineConfig:
     """Chronic-baseline track for investigate_incident — see
-    docs/superpowers/specs/2026-05-09-chronic-baseline-track-design.md."""
+    docs/phase-2/specs/2026-05-09-chronic-baseline-track-design.md."""
     enabled: bool = True
     error_like_terms: Tuple[str, ...] = (
         "error", "fail", "fatal", "critical", "exception", "timeout",
@@ -194,16 +202,19 @@ Tests live in `tests/test_investigate.py` and follow the existing fake-engine pa
 1. `_compose_chronic_baseline_query`:
    - wildcard seed (no leading `(*) and`)
    - simple seed (parenthesized seed clause)
-   - `focus_sources` set (in-clause appended, single-quote escaping verified)
-   - custom term list from settings
-   - source-name and term escaping (embedded quotes doubled)
-2. `_parse_chronic_response`:
+   - `focus_sources` set (in-clause appended)
+   - `focus_sources` containing a name with an embedded single quote — name is single-quote-doubled in the rendered query (escape path)
+   - custom term list from settings (defaults overridden) — terms render literally as `like '%<term>%'`
+2. `_validate_chronic_baseline_terms` (config-load validation, separate from query composition):
+   - lowercase ASCII alpha terms accepted (defaults pass)
+   - term containing a single quote, double quote, `%`, `_`, or non-alpha character — **rejected** with a clear ValueError; the terms path uses *rejection*, not escaping (escaping is only for `focus_sources`)
+3. `_parse_chronic_response`:
    - happy path — multiple rows, sorted output preserved
    - malformed columns — empty list
    - threshold filter (defensive) — below-threshold rows dropped even if returned by query
    - null counts — row skipped
    - `share_of_seed` populated when seed total available; `None` otherwise (no extra query made)
-3. `_merge_chronic_with_anomalous`:
+4. `_merge_chronic_with_anomalous`:
    - anomaly-only — pass through, `reasons=["anomaly"]`
    - chronic-only — entries appended after anomalies, `reasons=["chronic_baseline"]`
    - overlap — single entry per source, `reasons=["anomaly", "chronic_baseline"]`, numeric fields from both
@@ -212,23 +223,27 @@ Tests live in `tests/test_investigate.py` and follow the existing fake-engine pa
 
 **Integration tests on `InvestigateIncidentTool.run()`**
 
-4. **OKE-style scenario (the primary bug fix)**: anomaly delta empty, chronic returns one source (`error_like_count=34475`) over threshold. Assertions:
+5. **OKE-style scenario (the primary bug fix)**: anomaly delta empty, chronic returns one source (`error_like_count=34475`) over threshold. Assertions:
    - that source appears in the merged `anomalous_sources` with `reasons=["chronic_baseline"]`
    - **drill-down ran for it** — `top_error_clusters`, `top_entities`, and `timeline` are populated, not empty (this is the core regression-prevention assertion)
    - `chronic_baseline_sources` at top level lists the source
    - summary contains the chronic-baseline sentence
-5. **Both tracks fire on the same source**: source appears once in merged list with `reasons=["anomaly", "chronic_baseline"]`, both numeric field groups present, drill-down ran once.
-6. **`quick` mode skips the track**: no chronic ranking query is made by the fake engine; `chronic_baseline_sources` is `[]`; no chronic-baseline sentence in the summary.
-7. **Below-threshold filter**: chronic raw response has 5 sources; only 1 above the configured threshold reaches merge and drill-down.
-8. **Chronic track failure modes** — three sub-tests:
+6. **Both tracks fire on the same source**: source appears once in merged list with `reasons=["anomaly", "chronic_baseline"]`, both numeric field groups present, drill-down ran once.
+7. **`quick` mode skips the track**: no chronic ranking query is made by the fake engine; `chronic_baseline_sources` is `[]`; no chronic-baseline sentence in the summary.
+8. **Below-threshold filter**: chronic raw response has 5 sources; only 1 above the configured threshold reaches merge and drill-down.
+9. **Chronic track failure modes** — three sub-tests:
    - `asyncio.TimeoutError` → `partial_reasons` contains `chronic_baseline_timeout`, anomaly flow unaffected
    - generic exception → `partial_reasons` contains `chronic_baseline_errors`, anomaly flow unaffected
    - `BudgetExceededError` → `partial_reasons` contains `budget_exceeded`, anomaly flow unaffected
-9. **`focus_sources` constrains both tracks**: focus list of `[X, Y]`; the chronic ranking query string contains `and 'Log Source' in ('X','Y')`; sources outside `focus_sources` never appear in merged output even if returned by a misbehaving fake engine.
+10. **`focus_sources` constrains both tracks**: focus list of `[X, Y]`; the chronic ranking query string contains `and 'Log Source' in ('X','Y')`; sources outside `focus_sources` never appear in merged output even if returned by a misbehaving fake engine.
+
+**Downstream-reader audit (drives plan items, not extra test cases)**
+
+11. The implementation plan must add tests covering each downstream reader of `anomalous_sources` for None-tolerance on `pct_change`, `current_count`, `comparison_count` (per §4.2). Concretely: `report_generator` exec-summary and source-bullet rendering, plus any handler tests that assert on those fields. New tests live in the same test files as the existing readers.
 
 **Backward-compat**
 
-10. All pre-existing `tests/test_investigate.py` cases pass without modification. The new `reasons` field on existing anomaly entries is additive.
+12. All pre-existing `tests/test_investigate.py` cases pass without modification. The new `reasons` field on existing anomaly entries is additive.
 
 ## 9. Open questions deferred to implementation
 
