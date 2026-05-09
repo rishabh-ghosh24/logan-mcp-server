@@ -364,3 +364,44 @@ class TestChronicBaselineConfig:
         from oci_logan_mcp.config import _validate_chronic_baseline_threshold
         with pytest.raises(ValueError, match="non-negative"):
             _validate_chronic_baseline_threshold(-1)
+
+    def test_settings_includes_chronic_baseline_default(self):
+        from oci_logan_mcp.config import Settings, ChronicBaselineConfig
+        s = Settings()
+        assert isinstance(s.chronic_baseline, ChronicBaselineConfig)
+        assert s.chronic_baseline.enabled is True
+
+    def test_to_dict_includes_chronic_baseline(self):
+        from oci_logan_mcp.config import Settings
+        s = Settings()
+        d = s.to_dict()
+        assert "chronic_baseline" in d
+        assert d["chronic_baseline"]["enabled"] is True
+        assert d["chronic_baseline"]["count_threshold"] == 1000
+        assert "error" in d["chronic_baseline"]["error_like_terms"]
+
+    def test_load_config_parses_chronic_baseline(self, tmp_path):
+        import yaml
+        from oci_logan_mcp.config import load_config
+        cfg_path = tmp_path / "config.yaml"
+        cfg_path.write_text(yaml.safe_dump({
+            "chronic_baseline": {
+                "enabled": False,
+                "error_like_terms": ["error", "fail"],
+                "count_threshold": 500,
+            }
+        }))
+        s = load_config(cfg_path)
+        assert s.chronic_baseline.enabled is False
+        assert s.chronic_baseline.error_like_terms == ("error", "fail")
+        assert s.chronic_baseline.count_threshold == 500
+
+    def test_load_config_rejects_invalid_term(self, tmp_path):
+        import yaml
+        from oci_logan_mcp.config import load_config
+        cfg_path = tmp_path / "config.yaml"
+        cfg_path.write_text(yaml.safe_dump({
+            "chronic_baseline": {"error_like_terms": ["Error"]}
+        }))
+        with pytest.raises(ValueError, match="lowercase ASCII alpha"):
+            load_config(cfg_path)

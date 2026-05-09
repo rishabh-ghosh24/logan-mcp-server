@@ -201,6 +201,7 @@ class Settings:
     cost: CostConfig = field(default_factory=CostConfig)
     budget: BudgetConfig = field(default_factory=BudgetConfig)
     ingestion_health: IngestionHealthConfig = field(default_factory=IngestionHealthConfig)
+    chronic_baseline: ChronicBaselineConfig = field(default_factory=ChronicBaselineConfig)
     report_delivery: ReportDeliveryConfig = field(default_factory=ReportDeliveryConfig)
     read_only: bool = False
     transcript_dir: Path = field(default_factory=lambda: Path.home() / ".oci-logan-mcp" / "transcripts")
@@ -272,6 +273,11 @@ class Settings:
             "ingestion_health": {
                 "stoppage_threshold_seconds": self.ingestion_health.stoppage_threshold_seconds,
                 "freshness_probe_window": self.ingestion_health.freshness_probe_window,
+            },
+            "chronic_baseline": {
+                "enabled": self.chronic_baseline.enabled,
+                "error_like_terms": list(self.chronic_baseline.error_like_terms),
+                "count_threshold": self.chronic_baseline.count_threshold,
             },
             "transcript_dir": str(self.transcript_dir),
             "read_only": self.read_only,
@@ -413,6 +419,18 @@ def _parse_config(data: Dict[str, Any]) -> Settings:
             freshness_probe_window=ih_data.get(
                 "freshness_probe_window",
                 settings.ingestion_health.freshness_probe_window,
+            ),
+        )
+
+    if cb_data := data.get("chronic_baseline"):
+        terms = cb_data.get("error_like_terms")
+        settings.chronic_baseline = ChronicBaselineConfig(
+            enabled=cb_data.get("enabled", settings.chronic_baseline.enabled),
+            error_like_terms=(
+                tuple(terms) if terms is not None else settings.chronic_baseline.error_like_terms
+            ),
+            count_threshold=cb_data.get(
+                "count_threshold", settings.chronic_baseline.count_threshold
             ),
         )
 
