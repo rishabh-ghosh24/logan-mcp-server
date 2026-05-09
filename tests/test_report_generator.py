@@ -536,3 +536,55 @@ def test_invalid_options_raise_structured_error(kwargs, message):
         ReportGenerator().generate(_investigation(), **kwargs)
 
     assert message in str(exc.value)
+
+
+class TestReportGeneratorChronicBaselineNoneTolerance:
+    """Per spec §4.2, chronic-only entries in anomalous_sources have
+    pct_change/current_count/comparison_count = None. report_generator
+    must render these without crashing or producing 'None' literals."""
+
+    def _investigation_with_chronic_only_source(self):
+        return {
+            "summary": "test",
+            "seed": {"query": "*", "seed_filter": "*", "time_range": "last_1_hour"},
+            "ingestion_health": None,
+            "parser_failures": None,
+            "anomalous_sources": [
+                {
+                    "source": "OKE Control Plane Logs",
+                    "current_count": None,
+                    "comparison_count": None,
+                    "pct_change": None,
+                    "reasons": ["chronic_baseline"],
+                    "error_like_count": 34000,
+                    "error_like_share_of_seed": None,
+                    "top_error_clusters": [
+                        {"Cluster Sample": "kube-apiserver dial tcp ... refused", "Count": 1440},
+                    ],
+                    "top_entities": [],
+                    "timeline": None,
+                    "errors": [],
+                },
+            ],
+            "chronic_baseline_sources": [
+                {"source": "OKE Control Plane Logs", "error_like_count": 34000, "error_like_share_of_seed": None},
+            ],
+            "cross_source_timeline": [],
+            "next_steps": [],
+            "budget": {},
+            "partial": False,
+            "partial_reasons": [],
+            "elapsed_seconds": 1.0,
+        }
+
+    def test_exec_summary_does_not_crash_on_none_pct_change(self):
+        report = ReportGenerator().generate(self._investigation_with_chronic_only_source())
+        markdown = report["markdown"]
+        assert "None%" not in markdown
+        assert "+None" not in markdown
+
+    def test_top_findings_renders_chronic_only_source(self):
+        report = ReportGenerator().generate(self._investigation_with_chronic_only_source())
+        markdown = report["markdown"]
+        assert "OKE Control Plane Logs" in markdown
+        assert "kube-apiserver" in markdown
