@@ -229,7 +229,7 @@ Investigation intent routing:
 - User wording such as "investigate", "investigation mode", "investigator mode", "root cause", "what happened", "likely story", "triage this incident", "troubleshoot", "find the issue(s)", "what is wrong", "diagnose", "what went wrong", "why did this happen", "RCA", and "postmortem" should start with `investigate_incident`.
 - Supporting subagents or manual `run_query` calls can deepen evidence, but they do not replace `investigate_incident`.
 - If the user expects a written artifact, call `generate_incident_report` after `investigate_incident`, or use `investigate_and_generate_report` to run both steps in one tool call.
-- Email delivery is a separate confirmed action: ask whether the user wants OCI Notifications email delivery, resolve/reuse a topic, ask final confirmation, then call `deliver_report`.
+- Email delivery is a separate confirmed action: ask whether the user wants OCI Notifications email delivery, resolve/reuse a topic with `prepare_report_delivery`, ask its final confirmation prompt, then call `deliver_report` with the returned `delivery_confirmation_token`.
 
 **P0 limitations** (documented honestly, not magic):
 - Only the seed's pre-pipe search clause is used for drill-down scoping. A seed like `'Event' = 'error' | where Severity = 'critical'` investigates **all** `'Event' = 'error'` rows — the `where` narrowing is dropped for drill-down. Fix: put all scoping in the pre-pipe filter.
@@ -376,7 +376,8 @@ Stored report helpers:
 
 - `get_incident_report(report_id="rpt_...")` returns the stored Markdown, paths, and metadata.
 - `list_incident_reports(limit=20)` lists recent stored reports and includes `warnings.corrupt_count`.
-- `deliver_report(report={"report_id": "rpt_..."}, channels=["email"], recipients={"email_topic_ocid": "ocid1.onstopic..."})` sends a stored report after the user explicitly asks for delivery.
+- `prepare_report_delivery(report_id="rpt_...", channel="email", recipients={"email_topic_ocid": "ocid1.onstopic..."})` stores the selected topic and returns a final-confirmation prompt plus token.
+- `deliver_report(report={"report_id": "rpt_..."}, channels=["email"], delivery_confirmation_token="<token>")` sends a stored report only after `prepare_report_delivery` and final user confirmation.
 
 ### `get_report_delivery_options` and `list_notification_topics`
 
@@ -387,7 +388,9 @@ After report generation, ask:
 If the user says yes, use `get_report_delivery_options` or the report's returned `delivery_options`:
 - If `saved_topic` exists, ask whether to reuse it.
 - If no saved topic should be reused, call `list_notification_topics` to show available topics.
-- Ask final confirmation before sending: `Send report <title> to OCI Notifications topic <topic name>?`
+- Call `prepare_report_delivery` with the selected topic. It stores the topic and returns `confirmation_prompt` plus `confirmation_token`.
+- Ask the returned final confirmation prompt before sending.
+- Call `deliver_report` with the returned `delivery_confirmation_token`. If the topic changes, call `prepare_report_delivery` again; the token is bound to the prepared topic.
 
 `list_notification_topics` defaults to the current compartment and accessible subcompartments, and can be scoped with `compartment_id`, `include_subcompartments`, and `lifecycle_state`.
 
@@ -399,15 +402,15 @@ Deliver generated report Markdown to the channels users already monitor. Telegra
 {
   "tool": "deliver_report",
   "report": {
-    "title": "Apache error investigation",
-    "markdown": "# Incident Report\n\n## Executive Summary\nApache errors spiked..."
+    "report_id": "rpt_0123456789abcdef0123456789abcdef"
   },
   "channels": ["telegram", "email"],
   "format": "both",
   "recipients": {
     "telegram_chat_id": "-100999",
     "email_topic_ocid": "ocid1.onstopic.oc1..example"
-  }
+  },
+  "delivery_confirmation_token": "token_from_prepare_report_delivery"
 }
 ```
 
@@ -420,8 +423,9 @@ P0 behavior:
 - `format="both"` sends the PDF to Telegram and inline summaries to email/Slack.
 - Telegram uploads are rejected before send if the PDF exceeds the 50 MB Bot API document limit.
 - ONS email delivery publishes an inline Markdown/plaintext summary to an OCI Notifications topic. ONS does not attach the PDF and no Object Storage/PAR link is generated in P0.
-- If email is requested and `recipients.email_topic_ocid` is omitted, `deliver_report` reuses the current user's saved report topic, then the server-configured `notifications.ons.default_topic_ocid`. Successful email delivery saves the effective topic as the user's future default.
-- The assistant/client must still ask for explicit final confirmation before calling `deliver_report`; topic reuse only removes repeated topic selection.
+- Email delivery requires a stored `report.report_id` and a valid `delivery_confirmation_token` from `prepare_report_delivery`.
+- If email is prepared and `recipients.email_topic_ocid` is omitted, the workflow reuses the current user's saved report topic, then the server-configured `notifications.ons.default_topic_ocid`. Successful email delivery saves the effective topic as the user's future default.
+- The assistant/client must call `prepare_report_delivery`, ask its explicit final confirmation prompt, and pass its token to `deliver_report`; topic reuse only removes repeated topic selection.
 - Slack is optional and summary-only via the existing webhook integration. This is suitable for testing with a private/free Slack registration before later Oracle Slack workspace rollout.
 
 Configure defaults in `~/.oci-logan-mcp/config.yaml`:
@@ -471,7 +475,11 @@ End-to-end incident flow:
 ```
 
 ```json
-{"tool": "deliver_report", "report": {"report_id": "rpt_<id from generate_incident_report>"}, "channels": ["telegram", "email"], "format": "both"}
+{"tool": "prepare_report_delivery", "report_id": "rpt_<id from generate_incident_report>", "channel": "email", "recipients": {"email_topic_ocid": "ocid1.onstopic.oc1..selected"}}
+```
+
+```json
+{"tool": "deliver_report", "report": {"report_id": "rpt_<id from generate_incident_report>"}, "channels": ["telegram", "email"], "format": "both", "delivery_confirmation_token": "<token from prepare_report_delivery>"}
 ```
 
 ### `record_investigation` — save a playbook from the audit trail

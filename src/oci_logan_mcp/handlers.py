@@ -1454,6 +1454,7 @@ class MCPHandlers:
                 raw_report=raw_report,
                 resolved_report=report,
                 token=args.get("delivery_confirmation_token"),
+                recipients=recipients_arg,
             )
             if error:
                 return error
@@ -1506,6 +1507,7 @@ class MCPHandlers:
         raw_report: Dict[str, Any],
         resolved_report: Dict[str, Any],
         token: Any,
+        recipients: Optional[Dict[str, Any]] = None,
     ) -> Optional[List[Dict]]:
         report_id = raw_report.get("report_id")
         if not isinstance(report_id, str) or not report_id.strip():
@@ -1513,16 +1515,9 @@ class MCPHandlers:
                 "email_delivery_requires_stored_report",
                 "Email delivery requires a stored report_id prepared with prepare_report_delivery.",
             )
-        expected = (
-            (resolved_report.get("metadata") or {})
-            .get("delivery_state", {})
-            .get("confirmation_token")
-        )
-        status = (
-            (resolved_report.get("metadata") or {})
-            .get("delivery_state", {})
-            .get("status")
-        )
+        delivery_state = (resolved_report.get("metadata") or {}).get("delivery_state", {})
+        expected = delivery_state.get("confirmation_token")
+        status = delivery_state.get("status")
         if not expected or status != "awaiting_final_confirmation":
             return self._error_response(
                 "email_delivery_confirmation_required",
@@ -1533,7 +1528,34 @@ class MCPHandlers:
                 "email_delivery_confirmation_required",
                 "Valid delivery_confirmation_token from prepare_report_delivery is required.",
             )
+        mismatch = self._email_delivery_recipient_mismatch(delivery_state, recipients)
+        if mismatch:
+            prepared_topic, requested_topic = mismatch
+            return self._error_response(
+                "email_delivery_recipient_mismatch",
+                "Email delivery recipient changed after prepare_report_delivery. "
+                "Call prepare_report_delivery again for the new topic before sending.",
+                prepared_email_topic_ocid=prepared_topic,
+                requested_email_topic_ocid=requested_topic,
+            )
         return None
+
+    def _email_delivery_recipient_mismatch(
+        self,
+        delivery_state: Dict[str, Any],
+        recipients: Optional[Dict[str, Any]],
+    ) -> Optional[tuple[str, str]]:
+        if not isinstance(recipients, dict):
+            return None
+        requested_topic = recipients.get("email_topic_ocid")
+        if not requested_topic:
+            return None
+        stored_recipients = delivery_state.get("recipients") or {}
+        selected_topic = delivery_state.get("selected_topic") or {}
+        prepared_topic = stored_recipients.get("email_topic_ocid") or selected_topic.get("topic_id")
+        if requested_topic == prepared_topic:
+            return None
+        return str(prepared_topic or ""), str(requested_topic)
 
     def _recipients_from_delivery_state(
         self,
@@ -1543,14 +1565,15 @@ class MCPHandlers:
         merged = dict(recipients or {})
         state = (report.get("metadata") or {}).get("delivery_state") or {}
         stored_recipients = state.get("recipients") or {}
-        for key in ("email_topic_ocid", "email_topic_name", "email_topic_compartment_id"):
-            if stored_recipients.get(key) and not merged.get(key):
-                merged[key] = stored_recipients[key]
         selected_topic = state.get("selected_topic") or {}
-        if selected_topic.get("source") and not merged.get("email_topic_source"):
+        prepared_topic = stored_recipients.get("email_topic_ocid") or selected_topic.get("topic_id")
+        if prepared_topic:
+            merged["email_topic_ocid"] = prepared_topic
+        for key in ("email_topic_name", "email_topic_compartment_id"):
+            if stored_recipients.get(key):
+                merged[key] = stored_recipients[key]
+        if selected_topic.get("source"):
             merged["email_topic_source"] = selected_topic["source"]
-        if selected_topic.get("topic_id") and not merged.get("email_topic_ocid"):
-            merged["email_topic_ocid"] = selected_topic["topic_id"]
         if selected_topic.get("name") and not merged.get("email_topic_name"):
             merged["email_topic_name"] = selected_topic["name"]
         if selected_topic.get("compartment_id") and not merged.get("email_topic_compartment_id"):
@@ -1618,8 +1641,8 @@ class MCPHandlers:
                     "Ask the user whether to deliver the report by OCI Notifications email.",
                     "If a saved topic exists, ask whether to reuse it.",
                     "If the user wants a different topic, call list_notification_topics and ask which topic to use.",
-                    "Before sending, ask: Send report <title> to OCI Notifications topic <topic name>?",
-                    "Only after confirmation, call deliver_report with channel email.",
+                    "Call prepare_report_delivery with the selected topic and show its confirmation_prompt.",
+                    "Only after final confirmation, call deliver_report with channel email and delivery_confirmation_token.",
                 ],
             }
         }
