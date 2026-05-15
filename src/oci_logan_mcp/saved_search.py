@@ -95,7 +95,7 @@ class SavedSearchService:
             provider_version=PROVIDER_VERSION,
             metadata_version="2.0",
             nls={},
-            data_config=[],
+            data_config=[{"query": query}],
             screen_image=" ",
             widget_template="visualizations/chartWidgetTemplate.html",
             widget_vm="jet-modules/dashboards/widgets/lxSavedSearchWidget",

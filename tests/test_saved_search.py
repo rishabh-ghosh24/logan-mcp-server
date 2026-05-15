@@ -228,6 +228,30 @@ class TestCreateSearch:
 
         client.delete_management_saved_search.assert_called_once_with("ocid1.mss.1")
 
+    @pytest.mark.asyncio
+    async def test_query_is_persisted_in_data_config(self):
+        """Regression test: the query argument must reach data_config on the create payload.
+
+        Previous bug: create_search constructed CreateManagementSavedSearchDetails with
+        data_config=[] hardcoded, silently dropping the query and producing empty saved
+        searches. This test inspects the call argument to ensure the query actually
+        lands in the payload.
+        """
+        client = AsyncMock()
+        client.compartment_id = "ocid1.compartment.test"
+        client.create_management_saved_search.return_value = {"id": "ocid1.mss.new"}
+        client.create_scheduled_task.return_value = {"id": "ocid1.task.new"}
+        svc = SavedSearchService(client, CacheManager(CacheConfig(enabled=True)))
+
+        query_text = "'Log Source' = 'OCI VCN Flow Unified Schema Logs' | stats count as Flows"
+        await svc.create_search(display_name="VCN Total Flows", query=query_text)
+
+        # Inspect the CreateManagementSavedSearchDetails payload passed to OCI.
+        mss_details = client.create_management_saved_search.call_args.args[0]
+        assert mss_details.data_config == [{"query": query_text}], (
+            f"Expected query in data_config, got: {mss_details.data_config}"
+        )
+
 
 class TestDeleteSearch:
     @pytest.mark.asyncio
