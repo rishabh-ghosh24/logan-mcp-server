@@ -5,13 +5,7 @@ from typing import Optional, List, Dict, Any
 
 from .client import OCILogAnalyticsClient
 from .cache import CacheManager
-
-PROVIDER_ID = "log-analytics"
-PROVIDER_NAME = "Log Analytics"
-PROVIDER_VERSION = "3.0.0"
-
-# OCI Management Dashboard API requires crossService in featuresConfig
-FEATURES_CONFIG = {"crossService": {"shared": True}}
+from ._mss_payload import build_mss_details
 
 
 class SavedSearchService:
@@ -80,28 +74,19 @@ class SavedSearchService:
         description: Optional[str] = None,
         compartment_id: Optional[str] = None,
         category: Optional[str] = None,
+        visualization_type: str = "summary_table",
     ) -> Dict[str, Any]:
         """Create a new saved search backed by a ManagementSavedSearch and a ScheduledTask."""
         cid = compartment_id or self.oci_client.compartment_id
 
-        mss_details = oci.management_dashboard.models.CreateManagementSavedSearchDetails(
+        mss_details = build_mss_details(
             display_name=display_name,
+            query=query,
             compartment_id=cid,
-            description=description or "",
-            is_oob_saved_search=False,
-            type="SEARCH_SHOW_IN_DASHBOARD",
-            provider_id=PROVIDER_ID,
-            provider_name=PROVIDER_NAME,
-            provider_version=PROVIDER_VERSION,
-            metadata_version="2.0",
-            nls={},
-            data_config=[{"query": query}],
-            screen_image=" ",
-            widget_template="visualizations/chartWidgetTemplate.html",
-            widget_vm="jet-modules/dashboards/widgets/lxSavedSearchWidget",
-            parameters_config=[],
-            drilldown_config=[],
-            features_config=FEATURES_CONFIG,
+            tenancy_id=self.oci_client.tenancy_id,
+            visualization_type=visualization_type,
+            is_dashboard_tile=False,
+            description=description,
         )
         mss = await self.oci_client.create_management_saved_search(mss_details)
 

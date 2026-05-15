@@ -7,6 +7,7 @@ import oci
 
 from .client import OCILogAnalyticsClient
 from .cache import CacheManager
+from ._mss_payload import build_mss_details, FEATURES_CONFIG
 
 logger = logging.getLogger(__name__)
 
@@ -14,9 +15,6 @@ VALID_VIZ_TYPES = {
     "bar", "vertical_bar", "line", "pie", "table",
     "tile", "area", "treemap", "heatmap", "histogram",
 }
-
-# Matches working pg_dashboard_builder.py payload
-FEATURES_CONFIG = {"crossService": {"shared": True}}
 
 VIZ_TYPE_MAP = {
     "bar": "bar",
@@ -30,27 +28,6 @@ VIZ_TYPE_MAP = {
     "heatmap": "heatmap",
     "histogram": "records_histogram",
 }
-
-# Saved search parameters config — LA-specific scope filters
-# (from oracle-quickstart/oci-o11y-solutions IAM Domain Audit dashboard)
-SS_PARAMS_CONFIG = [
-    {"name": "log-analytics-log-group-compartment", "displayName": "Log Group Compartment",
-     "required": True, "defaultFilterIds": ["OOBSS-management-dashboard-filter-4a"],
-     "editUi": {"inputType": "savedSearch",
-                "filterTile": {"filterId": "OOBSS-management-dashboard-filter-4a"}},
-     "valueFormat": {"type": "object"}},
-    {"name": "log-analytics-entity", "displayName": "Entity",
-     "required": True, "defaultFilterIds": ["OOBSS-management-dashboard-filter-2a"],
-     "editUi": {"inputType": "savedSearch",
-                "filterTile": {"filterId": "OOBSS-management-dashboard-filter-2a"}},
-     "valueFormat": {"type": "object"}},
-    {"name": "log-analytics-region", "displayName": "Region",
-     "required": False, "defaultFilterIds": ["OOBSS-management-dashboard-region-filter"],
-     "editUi": {"inputType": "savedSearch",
-                "filterTile": {"filterId": "OOBSS-management-dashboard-region-filter"}},
-     "valueFormat": {"type": "array"}},
-    {"name": "time", "displayName": "$(bundle.globalSavedSearch.TIME)", "required": True, "hidden": True},
-]
 
 # Dashboard-level parameters config — filter bar with LA scope tiles
 # (from oracle-quickstart/oci-o11y-solutions IAM Domain Audit dashboard)
@@ -74,44 +51,6 @@ TILE_PARAMS_MAP = {
     "log-analytics-entity": "$(dashboard.params.log-analytics-entity-filter)",
     "log-analytics-region": "$(dashboard.params.regionFilter)",
 }
-
-
-def _build_scope_filters(compartment_id: str, tenancy_id: str, region: str = "us-ashburn-1") -> dict:
-    """Build scope filters matching the working pg_dashboard_builder pattern."""
-    region_label = "US East (Ashburn)" if region == "us-ashburn-1" else region
-    base = [
-        {"type": "LogGroup", "flags": {"IncludeSubCompartments": True},
-         "values": [{"value": tenancy_id, "label": "root"}]},
-        {"type": "MetricCompartment", "flags": {}, "values": []},
-        {"type": "Entity", "flags": {"IncludeDependents": True, "ScopeCompartmentId": compartment_id}, "values": []},
-        {"type": "LogSet", "flags": {}, "values": []},
-        {"type": "ResourceCompartment", "flags": {"IncludeSubCompartments": True},
-         "values": [{"value": tenancy_id, "label": "root"}]},
-        {"type": "Region", "flags": {}, "values": [{"value": region, "label": region_label}]},
-    ]
-    result = {"filters": base, "isGlobal": False}
-    for f in base:
-        result[f["type"]] = f
-    return result
-
-
-def _build_ui_config(query: str, viz_type: str, scope_filters: dict) -> dict:
-    """Build uiConfig matching the working pg_dashboard_builder pattern."""
-    return {
-        "timeSelection": {"timePeriod": "l7d"},
-        "showTitle": True,
-        "visualizationType": viz_type,
-        "visualizationOptions": {
-            "customVizOpt": {
-                "primaryFieldIname": "mbody",
-                "primaryFieldDname": "Original Log Content",
-            }
-        },
-        "queryString": query,
-        "scopeFilters": scope_filters,
-        "vizType": "lxSavedSearchWidgetType",
-        "enableWidgetInApp": True,
-    }
 
 
 class DashboardService:
@@ -161,7 +100,6 @@ class DashboardService:
 
         cid = compartment_id or self.oci_client.compartment_id
         tenancy_id = self.oci_client.tenancy_id
-        scope_filters = _build_scope_filters(cid, tenancy_id)
 
         group_id = str(uuid4())
         base_tags = {"logan_managed": "true", "logan_group_id": group_id,
@@ -172,25 +110,14 @@ class DashboardService:
         try:
             for i, tile in enumerate(tiles):
                 viz = VIZ_TYPE_MAP.get(tile["visualization_type"], tile["visualization_type"])
-                mss_details = oci.management_dashboard.models.CreateManagementSavedSearchDetails(
+                mss_details = build_mss_details(
                     display_name=tile["title"],
-                    description=tile.get("description", tile["title"]),
+                    query=tile["query"],
                     compartment_id=cid,
-                    is_oob_saved_search=False,
-                    type="WIDGET_SHOW_IN_DASHBOARD",
-                    provider_id="log-analytics",
-                    provider_name="Log Analytics",
-                    provider_version="3.0.0",
-                    metadata_version="2.0",
-                    nls={},
-                    data_config=[],
-                    ui_config=_build_ui_config(tile["query"], viz, scope_filters),
-                    screen_image=" ",
-                    widget_template="visualizations/chartWidgetTemplate.html",
-                    widget_vm="jet-modules/dashboards/widgets/lxSavedSearchWidget",
-                    parameters_config=SS_PARAMS_CONFIG,
-                    drilldown_config=[],
-                    features_config=FEATURES_CONFIG,
+                    tenancy_id=tenancy_id,
+                    visualization_type=viz,
+                    is_dashboard_tile=True,
+                    description=tile.get("description", tile["title"]),
                     freeform_tags=base_tags,
                 )
                 mss = await self.oci_client.create_management_saved_search(mss_details)
@@ -285,30 +212,18 @@ class DashboardService:
 
         cid = dashboard.get("compartment_id") or self.oci_client.compartment_id
         tenancy_id = self.oci_client.tenancy_id
-        scope_filters = _build_scope_filters(cid, tenancy_id)
         viz = VIZ_TYPE_MAP.get(visualization_type, visualization_type)
 
         new_search_id = None
         try:
-            mss_details = oci.management_dashboard.models.CreateManagementSavedSearchDetails(
+            mss_details = build_mss_details(
                 display_name=title,
-                description=title,
+                query=query,
                 compartment_id=cid,
-                is_oob_saved_search=False,
-                type="WIDGET_SHOW_IN_DASHBOARD",
-                provider_id="log-analytics",
-                provider_name="Log Analytics",
-                provider_version="3.0.0",
-                metadata_version="2.0",
-                nls={},
-                data_config=[],
-                ui_config=_build_ui_config(query, viz, scope_filters),
-                screen_image=" ",
-                widget_template="visualizations/chartWidgetTemplate.html",
-                widget_vm="jet-modules/dashboards/widgets/lxSavedSearchWidget",
-                parameters_config=SS_PARAMS_CONFIG,
-                drilldown_config=[],
-                features_config=FEATURES_CONFIG,
+                tenancy_id=tenancy_id,
+                visualization_type=viz,
+                is_dashboard_tile=True,
+                description=title,
                 freeform_tags={"logan_managed": "true",
                                "logan_kind": "dashboard_saved_search",
                                "logan_dashboard_id": dashboard_id},

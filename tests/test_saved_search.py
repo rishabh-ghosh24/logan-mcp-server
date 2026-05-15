@@ -229,16 +229,18 @@ class TestCreateSearch:
         client.delete_management_saved_search.assert_called_once_with("ocid1.mss.1")
 
     @pytest.mark.asyncio
-    async def test_query_is_persisted_in_data_config(self):
-        """Regression test: the query argument must reach data_config on the create payload.
+    async def test_query_is_persisted_in_ui_config_querystring(self):
+        """Regression test: the query must land in ui_config['queryString'] on the create payload.
 
-        Previous bug: create_search constructed CreateManagementSavedSearchDetails with
-        data_config=[] hardcoded, silently dropping the query and producing empty saved
-        searches. This test inspects the call argument to ensure the query actually
-        lands in the payload.
+        Prior bug history: create_search shipped with no ui_config at all, causing
+        OCI to reject with 'Invalid uiConfig'. A first-pass fix added the query to
+        data_config, which would have been insufficient — the working dashboard
+        path puts the query in ui_config.queryString and uses data_config=[].
+        This test asserts the correct location.
         """
         client = AsyncMock()
         client.compartment_id = "ocid1.compartment.test"
+        client.tenancy_id = "ocid1.tenancy.test"
         client.create_management_saved_search.return_value = {"id": "ocid1.mss.new"}
         client.create_scheduled_task.return_value = {"id": "ocid1.task.new"}
         svc = SavedSearchService(client, CacheManager(CacheConfig(enabled=True)))
@@ -246,11 +248,35 @@ class TestCreateSearch:
         query_text = "'Log Source' = 'OCI VCN Flow Unified Schema Logs' | stats count as Flows"
         await svc.create_search(display_name="VCN Total Flows", query=query_text)
 
-        # Inspect the CreateManagementSavedSearchDetails payload passed to OCI.
         mss_details = client.create_management_saved_search.call_args.args[0]
-        assert mss_details.data_config == [{"query": query_text}], (
-            f"Expected query in data_config, got: {mss_details.data_config}"
+        assert mss_details.ui_config["queryString"] == query_text, (
+            f"Expected query in ui_config.queryString, got: {mss_details.ui_config}"
         )
+        # data_config should remain empty — the working pattern puts the query
+        # in ui_config, not data_config.
+        assert mss_details.data_config == [], (
+            f"Expected data_config=[], got: {mss_details.data_config}"
+        )
+
+    @pytest.mark.asyncio
+    async def test_standalone_save_uses_search_type_not_widget_type(self):
+        """Standalone saved searches are user-visible (SEARCH_SHOW_IN_DASHBOARD).
+        Dashboard tile MSSes are hidden backing resources (WIDGET_SHOW_IN_DASHBOARD).
+        This test pins the standalone type so the two paths cannot drift.
+        """
+        client = AsyncMock()
+        client.compartment_id = "ocid1.compartment.test"
+        client.tenancy_id = "ocid1.tenancy.test"
+        client.create_management_saved_search.return_value = {"id": "ocid1.mss.new"}
+        client.create_scheduled_task.return_value = {"id": "ocid1.task.new"}
+        svc = SavedSearchService(client, CacheManager(CacheConfig(enabled=True)))
+
+        await svc.create_search(display_name="Standalone", query="* | stats count")
+
+        mss_details = client.create_management_saved_search.call_args.args[0]
+        assert mss_details.type == "SEARCH_SHOW_IN_DASHBOARD"
+        # Standalone saves should NOT carry logan_managed (which would hide them).
+        assert mss_details.freeform_tags.get("logan_managed") != "true"
 
 
 class TestDeleteSearch:

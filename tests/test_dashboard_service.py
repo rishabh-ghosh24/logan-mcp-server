@@ -9,6 +9,7 @@ from oci_logan_mcp.config import CacheConfig
 def make_client():
     client = AsyncMock()
     client.compartment_id = "ocid1.compartment.test"
+    client.tenancy_id = "ocid1.tenancy.test"
     client.create_management_saved_search.return_value = {
         "id": "ocid1.mss.1", "display_name": "tile1"
     }
@@ -45,6 +46,40 @@ class TestCreateDashboard:
         assert client.create_management_dashboard.call_count == 1
         assert result["dashboard_id"] == "ocid1.dash.1"
         assert len(result["tile_saved_search_ids"]) == 3
+
+    @pytest.mark.asyncio
+    async def test_tile_mss_payload_uses_widget_type_and_querystring(self):
+        """Regression: each tile's MSS must be created via the shared builder.
+        Asserts: type=WIDGET_SHOW_IN_DASHBOARD, query in ui_config['queryString'],
+        logan_managed=true tag set. Prevents drift between dashboard tile path
+        and standalone saved-search path.
+        """
+        client = make_client()
+        client.create_management_saved_search.side_effect = [
+            {"id": "ocid1.mss.1"}, {"id": "ocid1.mss.2"}
+        ]
+        client.create_management_dashboard.return_value = {"id": "ocid1.dash.1"}
+        svc = make_svc(client)
+
+        await svc.create_dashboard(
+            display_name="D",
+            tiles=[
+                {"title": "T1", "query": "src=foo | stats count", "visualization_type": "line"},
+                {"title": "T2", "query": "src=bar | stats count", "visualization_type": "pie"},
+            ],
+        )
+
+        calls = client.create_management_saved_search.call_args_list
+        first = calls[0].args[0]
+        assert first.type == "WIDGET_SHOW_IN_DASHBOARD"
+        assert first.ui_config["queryString"] == "src=foo | stats count"
+        assert first.ui_config["visualizationType"] == "line"
+        assert first.freeform_tags.get("logan_managed") == "true"
+        assert first.data_config == []
+
+        second = calls[1].args[0]
+        assert second.ui_config["queryString"] == "src=bar | stats count"
+        assert second.ui_config["visualizationType"] == "pie"
 
     @pytest.mark.asyncio
     async def test_cleans_up_on_dashboard_creation_failure(self):
