@@ -17,19 +17,19 @@ Branch: `vcn-dashboard`. Engagement contract: [prompt.md](prompt.md) (v4-FINAL, 
 | File | Purpose |
 |---|---|
 | [`prompt.md`](prompt.md) | The working contract — design rules, build rules, file layout, DoD. Frozen for this engagement. |
-| [`catalog.md`](catalog.md) | Phase 1 deliverable — 24 widget designs organized into 2 categories, with shape class, viz, fields, default time window, counter-tests for alarms. |
+| [`catalog.md`](catalog.md) | Phase 1 deliverable — 25 widget designs organized into 2 categories, with shape class, viz, fields, default time window, counter-tests for alarms. |
 | `build-log.md` | Phase 2 record (per widget): final query, validation outcome, smoke-test rows + counter-test result, saved-search name. |
 | `summary.md` | Closing report — shipped vs skipped widgets, reasons, follow-ups. |
 | `vcn-flow-dashboard.html` | Operator-facing HTML reference — self-contained, printable, no external CSS/JS. |
 
 ## Headline design choices
 
-- **2 widget categories**: *Performance & Capacity* (14 widgets) and *Security & Investigation* (10 widgets).
+- **2 widget categories**: *Performance & Capacity* (14 widgets) and *Security & Investigation* (11 widgets).
 - **3 dashboards** in Phase 3 (when invoked): *Performance & Capacity*, *Security Investigation*, *Deny & Reject Troubleshooting*. Dashboards remix widgets from both categories.
 - **Saved-search naming**: `RG | VCN Flow | <Category> | <Widget Name>` — four pipe-separated segments.
 - **Dashboard naming**: `RG | VCN Flow | <Topic>`.
 - **Shape classes** (per widget): `[Trend]`, `[Top-N]`, or `[Alarm]`. `[Alarm]` widgets ship with a counter-test query so a zero-row result can be proven healthy rather than buggy.
-- **All 10 OCI LA viz types used** across the 24 widgets.
+- **9 of 10 OCI LA viz types** used across the 25 widgets (`vertical_bar` and `histogram` consolidated out — see catalog viz-coverage note).
 
 ## How to reuse this for a different log source
 
