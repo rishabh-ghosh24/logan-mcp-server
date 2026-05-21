@@ -1,0 +1,313 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>Logan MCP Windows Setup</title>
+  <style>
+    :root {
+      color-scheme: light;
+      --bg: #f7f8fa;
+      --panel: #ffffff;
+      --text: #17202a;
+      --muted: #52606d;
+      --line: #d8dee6;
+      --accent: #0f6bca;
+      --accent-soft: #eaf3ff;
+      --danger-soft: #fff1f0;
+      --danger: #b42318;
+      --code: #111827;
+    }
+
+    body {
+      margin: 0;
+      background: var(--bg);
+      color: var(--text);
+      font: 15px/1.55 "Segoe UI", Arial, sans-serif;
+    }
+
+    main {
+      max-width: 920px;
+      margin: 0 auto;
+      padding: 36px 20px 56px;
+    }
+
+    h1, h2, h3 {
+      line-height: 1.2;
+      margin: 0;
+    }
+
+    h1 {
+      font-size: 34px;
+      margin-bottom: 8px;
+    }
+
+    h2 {
+      font-size: 23px;
+      margin-top: 34px;
+      padding-top: 6px;
+    }
+
+    h3 {
+      font-size: 18px;
+      margin-top: 24px;
+    }
+
+    p {
+      margin: 10px 0;
+    }
+
+    ul, ol {
+      margin-top: 10px;
+      padding-left: 24px;
+    }
+
+    li {
+      margin: 6px 0;
+    }
+
+    code {
+      background: #eef2f7;
+      border: 1px solid var(--line);
+      border-radius: 4px;
+      padding: 1px 5px;
+      color: var(--code);
+      font-family: Consolas, "Courier New", monospace;
+      font-size: 0.94em;
+    }
+
+    pre {
+      overflow-x: auto;
+      background: #111827;
+      color: #f9fafb;
+      border-radius: 6px;
+      padding: 14px 16px;
+      font-family: Consolas, "Courier New", monospace;
+      font-size: 13px;
+    }
+
+    pre code {
+      background: transparent;
+      border: 0;
+      color: inherit;
+      padding: 0;
+    }
+
+    table {
+      width: 100%;
+      border-collapse: collapse;
+      margin-top: 12px;
+      background: var(--panel);
+    }
+
+    th, td {
+      border: 1px solid var(--line);
+      padding: 9px 10px;
+      vertical-align: top;
+      text-align: left;
+    }
+
+    th {
+      background: #eef2f7;
+    }
+
+    .card {
+      background: var(--panel);
+      border: 1px solid var(--line);
+      border-radius: 8px;
+      padding: 18px 20px;
+      margin-top: 18px;
+    }
+
+    .lead {
+      color: var(--muted);
+      font-size: 17px;
+      margin-bottom: 22px;
+    }
+
+    .callout {
+      border-left: 4px solid var(--accent);
+      background: var(--accent-soft);
+      padding: 12px 14px;
+      margin: 16px 0;
+    }
+
+    .warning {
+      border-left-color: var(--danger);
+      background: var(--danger-soft);
+    }
+
+    .warning strong {
+      color: var(--danger);
+    }
+  </style>
+</head>
+<body>
+  <main>
+    <h1>Logan MCP Windows Setup</h1>
+    <p class="lead">Use this guide to connect Codex App on Windows to the shared Logan MCP server.</p>
+
+    <section class="card">
+      <h2>Recommended: One-Time Codex Installer</h2>
+      <p>For team Windows machines, use the one-time installer instead of configuring PuTTY or manually entering SSH arguments in Codex.</p>
+
+      <p>Package these files together in one folder:</p>
+      <pre><code>windows-setup/
+Double-Click-to-Install.cmd
+logan-mcp.ps1
+logan.key
+windows-setup.html</code></pre>
+
+      <ol>
+        <li>Double-click <code>Double-Click-to-Install.cmd</code>.</li>
+        <li>Enter your Logan username in strict <code>firstname.lastname</code> format.</li>
+        <li>Let the installer close Codex when prompted, or close Codex completely from Task Manager.</li>
+        <li>Open Codex App normally.</li>
+      </ol>
+
+      <div class="callout">
+        The installer normalizes uppercase input to lowercase. For example, <code>Rishabh.Ghosh</code> becomes <code>rishabh.ghosh</code>.
+      </div>
+
+      <p>The generated Codex MCP server name is <code>logan-mcp</code>.</p>
+      <div class="warning">
+        <strong>Sharing note:</strong> Add the real <code>logan.key</code> file locally, zip the <code>windows-setup</code> folder, and send it through your approved internal channel. Do not commit <code>logan.key</code> to git.
+      </div>
+    </section>
+
+    <section class="card">
+      <h2>Using Logan MCP In Codex</h2>
+      <p>Open a new Codex chat and type:</p>
+      <pre><code>connect to logan-mcp server</code></pre>
+      <p>After Codex confirms the <code>logan-mcp</code> server is connected, continue in natural language. For example, ask it to list log sources, investigate recent errors, or run a Log Analytics query.</p>
+    </section>
+
+    <section class="card">
+      <h2>What The Installer Does</h2>
+      <ul>
+        <li>Copies <code>logan.key</code> to <code>%USERPROFILE%\.logan-mcp\logan.key</code>.</li>
+        <li>Writes a pinned SSH <code>known_hosts</code> file for <code>130.162.53.112</code>.</li>
+        <li>Backs up <code>%USERPROFILE%\.codex\config.toml</code> if it already exists.</li>
+        <li>Appends or replaces only <code>[mcp_servers.logan-mcp]</code>.</li>
+        <li>Tests SSH connectivity before writing the Codex config.</li>
+        <li>Asks whether to close running Codex processes so the new config can load.</li>
+      </ul>
+    </section>
+
+    <section class="card">
+      <h2>Private Key Format</h2>
+      <p>The file beside the installer must be named <code>logan.key</code> and must be an OpenSSH private key.</p>
+
+      <p>Valid private key headers look like one of these:</p>
+      <pre><code>-----BEGIN OPENSSH PRIVATE KEY-----
+...
+-----END OPENSSH PRIVATE KEY-----</code></pre>
+
+      <pre><code>-----BEGIN RSA PRIVATE KEY-----
+...
+-----END RSA PRIVATE KEY-----</code></pre>
+
+      <div class="warning">
+        <strong>Do not use a public key.</strong> Files starting with <code>ssh-rsa AAAA...</code> or <code>BEGIN SSH2 PUBLIC KEY</code> are public keys and will not work with <code>ssh -i</code>.
+      </div>
+    </section>
+
+    <section class="card">
+      <h2>Manual PuTTY Fallback</h2>
+      <p>If the generated Windows <code>ssh.exe</code> config connects but immediately disconnects, Windows OpenSSH may not be handling MCP stdio correctly in that environment. Use PuTTY <code>plink.exe</code> only as a fallback.</p>
+
+      <h3>Prerequisites</h3>
+      <ul>
+        <li>PuTTY installed on your Windows machine.</li>
+        <li>Your SSH private key file.</li>
+      </ul>
+
+      <h3>Step 1: Convert Your SSH Key To PuTTY Format</h3>
+      <ol>
+        <li>Open <strong>PuTTYgen</strong>.</li>
+        <li>Click <strong>Load</strong> and select your private key file.</li>
+        <li>Click <strong>Save private key</strong> and save as a <code>.ppk</code> file.</li>
+      </ol>
+
+      <h3>Step 2: Create A PuTTY Saved Session</h3>
+      <ol>
+        <li>Open <strong>PuTTY</strong>.</li>
+        <li>Set Host Name to the VM IP and Port to <code>22</code>.</li>
+        <li>Set keepalives to <code>30</code> seconds.</li>
+        <li>Set auto-login username to <code>opc</code>.</li>
+        <li>Browse to your <code>.ppk</code> key file under SSH authentication settings.</li>
+        <li>Save the session as <code>logan-mcp</code>.</li>
+      </ol>
+
+      <h3>Step 3: Cache The Host Key</h3>
+      <pre><code>"C:\Program Files\PuTTY\plink.exe" -load logan-mcp "echo hello"</code></pre>
+      <p>Type <code>y</code> when prompted. You should see <code>hello</code>.</p>
+
+      <h3>Step 4: Configure Your MCP Client</h3>
+      <pre><code>{
+  "mcpServers": {
+    "logan-mcp": {
+      "command": "C:\\Program Files\\PuTTY\\plink.exe",
+      "args": [
+        "-load", "logan-mcp",
+        "-batch",
+        "-T",
+        "cd /home/opc/logan-mcp-server && source venv/bin/activate && oci-logan-mcp --user firstname.lastname"
+      ]
+    }
+  }
+}</code></pre>
+    </section>
+
+    <section class="card">
+      <h2>Troubleshooting</h2>
+      <table>
+        <thead>
+          <tr>
+            <th>Symptom</th>
+            <th>Likely Cause</th>
+            <th>Fix</th>
+          </tr>
+        </thead>
+        <tbody>
+          <tr>
+            <td><code>Username must be firstname.lastname</code></td>
+            <td>The username contains digits, spaces, underscores, hyphens, or extra dots.</td>
+            <td>Use letters only with exactly one dot, for example <code>rishabh.ghosh</code>.</td>
+          </tr>
+          <tr>
+            <td><code>Missing SSH key</code></td>
+            <td><code>logan.key</code> is not beside the installer.</td>
+            <td>Put <code>logan.key</code> in the same folder as <code>Double-Click-to-Install.cmd</code>.</td>
+          </tr>
+          <tr>
+            <td><code>Access to ...\.logan-mcp\logan.key is denied</code></td>
+            <td>An older installer copy hardened the key permissions and blocked overwrite.</td>
+            <td>Use the updated installer, which removes the old installed key before copying the new one.</td>
+          </tr>
+          <tr>
+            <td><code>Cannot find a process with the process identifier ...</code> during Codex close</td>
+            <td>A Codex process exited by itself while the installer was closing Codex.</td>
+            <td>Use the updated installer, which ignores already-exited Codex processes.</td>
+          </tr>
+          <tr>
+            <td>Codex does not show <code>logan-mcp</code></td>
+            <td>Codex did not fully restart.</td>
+            <td>Let the installer close Codex, or close all Codex processes from Task Manager and open Codex again.</td>
+          </tr>
+          <tr>
+            <td>Server connects then immediately disconnects</td>
+            <td>Windows OpenSSH stdio handling or remote path/venv issue.</td>
+            <td>First verify SSH manually. If the remote command works but Codex disconnects, use the PuTTY fallback.</td>
+          </tr>
+          <tr>
+            <td><code>Network error</code> or timeout</td>
+            <td>Firewall, VPN, security list, or IP access issue.</td>
+            <td>Confirm port <code>22</code> to <code>130.162.53.112</code> is reachable from the user's machine.</td>
+          </tr>
+        </tbody>
+      </table>
+    </section>
+  </main>
+</body>
+</html>

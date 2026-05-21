@@ -99,11 +99,29 @@ args = ["-i", "~/.ssh/your-key", "-o", "StrictHostKeyChecking=no", "-o", "Server
 
 #### Codex App
 
+For Windows teammates, use the one-time installer in `windows-setup/` instead
+of manually entering SSH arguments. Package these files together:
+
+```text
+Double-Click-to-Install.cmd
+logan-mcp.ps1
+logan.key
+```
+
+Double-click `Double-Click-to-Install.cmd`, enter your username in
+`firstname.lastname` format, then restart Codex App. The installer creates a
+Codex MCP server named `logan-mcp`, pins the SSH host key for the shared OCI VM,
+copies the private key to `~/.logan-mcp/`, and backs up
+`~/.codex/config.toml` before updating it. At the end, it can close running
+Codex processes for you so the new MCP config is loaded on the next launch.
+
+Manual setup is still possible.
+
 In the Codex app, go to **MCP settings → Connect to a custom MCP** and fill in:
 
 | Field | Value |
 |---|---|
-| **Name** | `oci-log-analytics` |
+| **Name** | `logan-mcp` |
 | **Type** | `STDIO` |
 | **Command to launch** | `ssh` |
 | **Argument 1** | `-i` |
@@ -119,7 +137,10 @@ In the Codex app, go to **MCP settings → Connect to a custom MCP** and fill in
 
 Click **Save**, then start a new Codex session to connect.
 
-> **Windows users:** Try the standard SSH config above first. If the server connects but immediately disconnects, Windows OpenSSH may not be handling stdio correctly. In that case, use PuTTY's `plink.exe` instead — see the [Windows setup guide](docs/windows-setup.md).
+> **Windows users:** Prefer the one-time installer above. If the generated
+> `ssh` config connects but immediately disconnects, Windows OpenSSH may not be
+> handling stdio correctly in that environment. In that case, use PuTTY's
+> `plink.exe` fallback in the [Windows setup guide](windows-setup/windows-setup.html).
 
 ## What You Can Do
 

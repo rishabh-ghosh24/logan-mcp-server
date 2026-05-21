@@ -45,3 +45,6 @@ logs/
 
 # OCI config (user-specific)
 .oci-logan-mcp/
+
+# Local Logan MCP installer key
+windows-setup/logan.key
