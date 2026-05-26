@@ -99,14 +99,18 @@ args = ["-i", "~/.ssh/your-key", "-o", "StrictHostKeyChecking=no", "-o", "Server
 
 #### Codex App
 
-For Windows teammates, use the one-time installer in `windows-setup/` instead
-of manually entering SSH arguments. Package these files together:
+For Windows teammates using Codex App, use the one-time installer in
+`windows-setup/` first instead of manually entering SSH arguments. Package these
+files together:
 
 ```text
 Double-Click-to-Install.cmd
 logan-mcp.ps1
 logan.key
 ```
+
+The real `logan.key` is not committed to this repo. Add it locally to the
+`windows-setup/` folder before zipping and sharing the folder with a user.
 
 Double-click `Double-Click-to-Install.cmd`, enter your username in
 `firstname.lastname` format, then restart Codex App. The installer creates a
