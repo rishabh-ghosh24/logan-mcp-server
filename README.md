@@ -110,8 +110,7 @@ logan.key
 
 Double-click `Double-Click-to-Install.cmd`, enter your username in
 `firstname.lastname` format, then restart Codex App. The installer creates a
-Codex MCP server named `logan-mcp`, pins the SSH host key for the shared OCI VM,
-copies the private key to `~/.logan-mcp/`, and backs up
+Codex MCP server named `logan-mcp`, copies the private key to `~/.logan-mcp/`, and backs up
 `~/.codex/config.toml` before updating it. At the end, it can close running
 Codex processes for you so the new MCP config is loaded on the next launch.
 

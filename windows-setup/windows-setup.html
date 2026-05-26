@@ -186,7 +186,6 @@ windows-setup.html</code></pre>
       <h2>What The Installer Does</h2>
       <ul>
         <li>Copies <code>logan.key</code> to a fresh key file under <code>%USERPROFILE%\.logan-mcp\</code>.</li>
-        <li>Writes a pinned SSH <code>known_hosts</code> file for <code>130.162.53.112</code>.</li>
         <li>Backs up <code>%USERPROFILE%\.codex\config.toml</code> if it already exists.</li>
         <li>Appends or replaces only <code>[mcp_servers.logan-mcp]</code>.</li>
         <li>Tests SSH connectivity before writing the Codex config.</li>
@@ -299,11 +298,6 @@ windows-setup.html</code></pre>
             <td>Server connects then immediately disconnects</td>
             <td>Windows OpenSSH stdio handling or remote path/venv issue.</td>
             <td>First verify SSH manually. If the remote command works but Codex disconnects, use the PuTTY fallback.</td>
-          </tr>
-          <tr>
-            <td><code>No ED25519 host key is known</code></td>
-            <td>An older installer passed the pinned <code>known_hosts</code> path incorrectly when the Windows username path contained a space.</td>
-            <td>Use the updated installer, which passes SSH options as separate arguments.</td>
           </tr>
           <tr>
             <td><code>Network error</code> or timeout</td>

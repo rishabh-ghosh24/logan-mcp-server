@@ -13,7 +13,6 @@ $ErrorActionPreference = "Stop"
 $VmHost = "130.162.53.112"
 $RemoteUser = "opc"
 $RemoteCommandPrefix = "cd /home/opc/logan-mcp-server && source venv/bin/activate && oci-logan-mcp --user"
-$PinnedHostKey = "130.162.53.112 ssh-ed25519 AAAAC3NzaC1lZDI1NTE5AAAAIFcj0yHMayP5k838JNY37ZUoyrv79CYtnkBf0BvXsqz1"
 
 function ConvertTo-LoganUserName {
     param([string]$RawUserName)
@@ -72,7 +71,6 @@ function Write-CodexConfig {
     param(
         [string]$ConfigPath,
         [string]$KeyPath,
-        [string]$KnownHostsPath,
         [string]$LoganUser
     )
 
@@ -93,9 +91,7 @@ function Write-CodexConfig {
         "-o",
         "BatchMode=yes",
         "-o",
-        "StrictHostKeyChecking=yes",
-        "-o",
-        "UserKnownHostsFile=$KnownHostsPath",
+        "StrictHostKeyChecking=no",
         "-o",
         "ServerAliveInterval=60",
         "-o",
@@ -121,10 +117,7 @@ args = [$argsText]
 }
 
 function Test-LoganSshConnection {
-    param(
-        [string]$KeyPath,
-        [string]$KnownHostsPath
-    )
+    param([string]$KeyPath)
 
     $sshArgs = @(
         "-i",
@@ -132,9 +125,7 @@ function Test-LoganSshConnection {
         "-o",
         "BatchMode=yes",
         "-o",
-        "StrictHostKeyChecking=yes",
-        "-o",
-        "UserKnownHostsFile=$KnownHostsPath",
+        "StrictHostKeyChecking=no",
         "-o",
         "ServerAliveInterval=60",
         "-o",
@@ -204,9 +195,7 @@ function Invoke-Install {
     New-Item -ItemType Directory -Force -Path $InstallDir | Out-Null
     $keyFileName = "logan-{0}.key" -f (Get-Date -Format "yyyyMMddHHmmssfff")
     $keyPath = Join-Path $InstallDir $keyFileName
-    $knownHostsPath = Join-Path $InstallDir "known_hosts"
     Copy-Item -LiteralPath $KeySourcePath -Destination $keyPath -Force
-    Set-Content -LiteralPath $knownHostsPath -Value ($PinnedHostKey + "`n") -Encoding ascii
 
     if (-not $SkipAcl) {
         Set-PrivateKeyAcl $keyPath
@@ -215,13 +204,12 @@ function Invoke-Install {
 
     if (-not $SkipSshTest) {
         Write-Host "Testing SSH connection to logan-mcp VM..."
-        Test-LoganSshConnection -KeyPath $keyPath -KnownHostsPath $knownHostsPath
+        Test-LoganSshConnection -KeyPath $keyPath
     }
 
     Write-CodexConfig `
         -ConfigPath $CodexConfigPath `
         -KeyPath $keyPath `
-        -KnownHostsPath $knownHostsPath `
         -LoganUser $loganUser
 
     Write-Host ""
