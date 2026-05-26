@@ -92,7 +92,7 @@ For running on an OCI VM with instance principal auth. This config goes in your 
 Add to `~/.codex/config.toml`:
 
 ```toml
-[mcp_servers.oci-log-analytics]
+[mcp_servers.logan-mcp]
 command = "ssh"
 args = ["-i", "~/.ssh/your-key", "-o", "StrictHostKeyChecking=no", "-o", "ServerAliveInterval=60", "-o", "ServerAliveCountMax=3", "opc@your-vm-ip", "cd /path/to/logan-mcp-server && source venv/bin/activate && oci-logan-mcp --user firstname.lastname"]
 ```
@@ -107,20 +107,23 @@ files together:
 Double-Click-to-Install.cmd
 logan-mcp.ps1
 logan.key
+windows-setup.html
 ```
 
 The real `logan.key` is not committed to this repo. Add it locally to the
 `windows-setup/` folder before zipping and sharing the folder with a user.
 
 Double-click `Double-Click-to-Install.cmd`, enter your username in
-`firstname.lastname` format, then restart Codex App. The installer creates a
-Codex MCP server named `logan-mcp`, copies the private key to `~/.logan-mcp/`, and backs up
-`~/.codex/config.toml` before updating it. At the end, it can close running
-Codex processes for you so the new MCP config is loaded on the next launch.
+`firstname.lastname` format, and let the installer close Codex when prompted.
+The installer creates a Codex MCP server named `logan-mcp`, copies the private
+key to `~/.logan-mcp/`, and backs up `~/.codex/config.toml` before updating it.
+At the end, it can close running Codex processes for you so the new MCP config
+is loaded on the next launch.
 
-Manual setup is still possible.
+Manual Codex App setup is still possible for non-Windows users or advanced
+troubleshooting.
 
-In the Codex app, go to **MCP settings → Connect to a custom MCP** and fill in:
+In the Codex app, go to **MCP settings -> Connect to a custom MCP** and fill in:
 
 | Field | Value |
 |---|---|
@@ -559,7 +562,7 @@ cd /path/to/logan-mcp-server && source venv/bin/activate && oci-logan-mcp --user
 For Codex CLI (`~/.codex/config.toml`):
 
 ```toml
-[mcp_servers.oci-log-analytics]
+[mcp_servers.logan-mcp]
 command = "ssh"
 args = ["-i", "~/.ssh/your-key", "-o", "StrictHostKeyChecking=no", "-o", "ServerAliveInterval=60", "-o", "ServerAliveCountMax=3", "opc@your-vm-ip", "cd /path/to/logan-mcp-server && source venv/bin/activate && oci-logan-mcp --user david.smith"]
 ```
