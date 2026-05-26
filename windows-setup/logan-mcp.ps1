@@ -126,15 +126,24 @@ function Test-LoganSshConnection {
         [string]$KnownHostsPath
     )
 
-    & ssh.exe `
-        -i $KeyPath `
-        -o BatchMode=yes `
-        -o StrictHostKeyChecking=yes `
-        -o UserKnownHostsFile=$KnownHostsPath `
-        -o ServerAliveInterval=60 `
-        -o ServerAliveCountMax=3 `
-        "$RemoteUser@$VmHost" `
+    $sshArgs = @(
+        "-i",
+        $KeyPath,
+        "-o",
+        "BatchMode=yes",
+        "-o",
+        "StrictHostKeyChecking=yes",
+        "-o",
+        "UserKnownHostsFile=$KnownHostsPath",
+        "-o",
+        "ServerAliveInterval=60",
+        "-o",
+        "ServerAliveCountMax=3",
+        "$RemoteUser@$VmHost",
         "echo logan-mcp-ok"
+    )
+
+    & ssh.exe @sshArgs
 
     if ($LASTEXITCODE -ne 0) {
         throw "SSH test failed. Check that logan.key is valid and access to $VmHost is allowed."

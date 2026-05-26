@@ -301,6 +301,11 @@ windows-setup.html</code></pre>
             <td>First verify SSH manually. If the remote command works but Codex disconnects, use the PuTTY fallback.</td>
           </tr>
           <tr>
+            <td><code>No ED25519 host key is known</code></td>
+            <td>An older installer passed the pinned <code>known_hosts</code> path incorrectly when the Windows username path contained a space.</td>
+            <td>Use the updated installer, which passes SSH options as separate arguments.</td>
+          </tr>
+          <tr>
             <td><code>Network error</code> or timeout</td>
             <td>Firewall, VPN, security list, or IP access issue.</td>
             <td>Confirm port <code>22</code> to <code>130.162.53.112</code> is reachable from the user's machine.</td>
