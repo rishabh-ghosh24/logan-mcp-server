@@ -185,7 +185,7 @@ windows-setup.html</code></pre>
     <section class="card">
       <h2>What The Installer Does</h2>
       <ul>
-        <li>Copies <code>logan.key</code> to <code>%USERPROFILE%\.logan-mcp\logan.key</code>.</li>
+        <li>Copies <code>logan.key</code> to a fresh key file under <code>%USERPROFILE%\.logan-mcp\</code>.</li>
         <li>Writes a pinned SSH <code>known_hosts</code> file for <code>130.162.53.112</code>.</li>
         <li>Backs up <code>%USERPROFILE%\.codex\config.toml</code> if it already exists.</li>
         <li>Appends or replaces only <code>[mcp_servers.logan-mcp]</code>.</li>
@@ -283,7 +283,7 @@ windows-setup.html</code></pre>
           <tr>
             <td><code>Access to ...\.logan-mcp\logan.key is denied</code></td>
             <td>An older installer copy hardened the key permissions and blocked overwrite.</td>
-            <td>Use the updated installer, which removes the old installed key before copying the new one.</td>
+            <td>Use the updated installer, which writes a fresh key file instead of overwriting the old one.</td>
           </tr>
           <tr>
             <td><code>Cannot find a process with the process identifier ...</code> during Codex close</td>

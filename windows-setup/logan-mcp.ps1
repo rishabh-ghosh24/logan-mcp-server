@@ -45,8 +45,20 @@ function Set-PrivateKeyAcl {
     param([string]$KeyPath)
 
     $user = [System.Security.Principal.WindowsIdentity]::GetCurrent().Name
-    & icacls.exe $KeyPath /inheritance:r | Out-Null
-    & icacls.exe $KeyPath /grant:r "${user}:(R)" "SYSTEM:(R)" "Administrators:(R)" | Out-Null
+    $escapedPath = $KeyPath.Replace('"', '\"')
+    & cmd.exe /d /c "icacls `"$escapedPath`" /inheritance:r >nul 2>nul"
+    & cmd.exe /d /c "icacls `"$escapedPath`" /grant:r `"${user}:(F)`" `"SYSTEM:(R)`" `"Administrators:(R)`" >nul 2>nul"
+}
+
+function Remove-OldInstalledKeys {
+    param(
+        [string]$InstallDir,
+        [string]$CurrentKeyPath
+    )
+
+    Get-ChildItem -LiteralPath $InstallDir -Filter "logan*.key" -ErrorAction SilentlyContinue |
+        Where-Object { $_.FullName -ne $CurrentKeyPath } |
+        Remove-Item -Force -ErrorAction SilentlyContinue
 }
 
 function Remove-ExistingLoganBlock {
@@ -181,17 +193,16 @@ function Invoke-Install {
     }
 
     New-Item -ItemType Directory -Force -Path $InstallDir | Out-Null
-    $keyPath = Join-Path $InstallDir "logan.key"
+    $keyFileName = "logan-{0}.key" -f (Get-Date -Format "yyyyMMddHHmmssfff")
+    $keyPath = Join-Path $InstallDir $keyFileName
     $knownHostsPath = Join-Path $InstallDir "known_hosts"
-    if (Test-Path -LiteralPath $keyPath) {
-        Remove-Item -LiteralPath $keyPath -Force
-    }
     Copy-Item -LiteralPath $KeySourcePath -Destination $keyPath -Force
     Set-Content -LiteralPath $knownHostsPath -Value ($PinnedHostKey + "`n") -Encoding ascii
 
     if (-not $SkipAcl) {
         Set-PrivateKeyAcl $keyPath
     }
+    Remove-OldInstalledKeys -InstallDir $InstallDir -CurrentKeyPath $keyPath
 
     if (-not $SkipSshTest) {
         Write-Host "Testing SSH connection to logan-mcp VM..."
