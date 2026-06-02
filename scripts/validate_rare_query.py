@@ -457,7 +457,7 @@ def main() -> int:
     )
     parser.add_argument(
         "--remote-python",
-        default=".venv/bin/python",
+        default="venv/bin/python",
         help="Remote Python executable used when --ssh-host is set.",
     )
     args = parser.parse_args()
