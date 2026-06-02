@@ -148,8 +148,9 @@ cams:
 
 Notes:
 - `customers` is a list of integer customer numbers.
-- The server's own OCI auth must target the `assurance4emea` tenancy (instance
-  principal on the VM; config-file auth pointed at it for local testing).
+- Confirmed: the VM's instance principal already authenticates to the
+  `assurance4emea` tenancy, so the server's OCI auth needs no change. Local
+  testing can use config-file auth pointed at the same tenancy.
 
 ### 6.3 Identity resolution, `--enforce-access`, fail-closed
 At startup, when `--enforce-access` is set:
@@ -332,13 +333,17 @@ Does not protect against (accepted):
 - Customer data spans log groups `DEFAULT` / `ExaCC` / `ExaCS`; log source names
   are file-type names (`Assurance_Metrics_Compute`, ...), not customer names - so
   log group / source enumeration leaks no customer identity.
+- The VM's instance principal already authenticates to the `assurance4emea`
+  tenancy - no OCI-auth change is required for the feature.
 
 ## 9. Outstanding items (non-blocking for build)
 
 - Object-storage **namespace** for the `assurance4emea` tenancy - needed in
   `access_control.yaml` at deploy time.
-- Wire the Assurance MCP connection for final end-to-end verification and to read
-  the namespace.
+- Smoke tests run against the Assurance VM MCP connection, which the user will
+  set up when the feature is ready for testing. This run also yields the
+  namespace value above. (Instance-principal auth to the tenancy is already in
+  place - see Section 8.)
 
 ## 10. Testing strategy (TDD)
 
