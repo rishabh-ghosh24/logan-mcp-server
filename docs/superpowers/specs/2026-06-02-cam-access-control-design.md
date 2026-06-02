@@ -123,9 +123,10 @@ A single source of truth, modeled on `read_only_guard.py` (which has a
 drift-catching test). It provides:
 - Loading and validation of `access_control.yaml`.
 - `AccessProfile` - the resolved, per-process authorization context.
-- Entity-number matching.
-- Query scoping (the transform).
-- Tool gating (CAM tool allowlist).
+- Entity-number matching (6.4).
+- Query scoping: grammar validation + the `scope_query()` pure transform (6.5).
+- Tool gating (CAM tool allowlist, 6.6) and MCP resource gating (6.12).
+- Catalog/report source filtering for CAM mode (6.11).
 
 ### 6.2 Config file `access_control.yaml`
 Root-owned, on the VM (default location alongside existing config under the
@@ -166,6 +167,14 @@ At startup, when `--enforce-access` is set:
    surfaces misconfiguration instead of masking it, and never falls back to
    unrestricted.
 
+This validation runs **before the stdio transport starts**, and it must override
+the current startup behavior: `initialize_core` today catches OCI-client init
+failure and continues ("Server will start but OCI operations will fail",
+`server.py`). Under `--enforce-access` that swallow-and-continue path is fatal -
+if the OCI client cannot initialize or entities cannot be resolved, the process
+exits non-zero rather than starting in a degraded state. Building and validating
+the `AccessProfile` is a precondition of serving any request.
+
 When `--enforce-access` is **not** set, no `AccessProfile` is created and every
 code path behaves exactly as today (general users unaffected). This invariant is
 covered by tests.
@@ -200,11 +209,17 @@ A CAM's resolved entity set is the union of matches across all their numbers. A
 single number may match more than one entity; all are included.
 
 ### 6.5 Query scoping (the core)
-Enforced at the **single OCI query chokepoint** `OCILogAnalyticsClient.query()`
-(`client.py`, where `QueryDetails` is built and sent). Enforcing here guarantees
-that **every** query is scoped, including queries built internally by
-`get_log_summary`, `find_rare_events`, `pivot_on_entity`, `investigate_incident`,
-and `run_batch_queries` - not just `run_query`.
+Enforcement lives in the OCI client, which owns the `AccessProfile` (Section 6.9).
+`OCILogAnalyticsClient.query()` (`client.py`, where `QueryDetails` is built and
+sent) is the single chokepoint through which all query execution passes, including
+queries built internally by `get_log_summary`, `find_rare_events`,
+`pivot_on_entity`, `investigate_incident`, and `run_batch_queries` - not just
+`run_query`. The scope transform is applied here so no path can bypass it.
+
+The scope transform itself is a **pure function** in `access_control.py`
+(`profile.scope_query(q) -> str`) so the calling layer can also compute the
+effective query for cache keys, cost estimation, logging, and audit (Section 6.10)
+without re-deriving it.
 
 When an `AccessProfile` with a resolved entity set is active, the query string is
 rewritten before being sent:
@@ -214,23 +229,38 @@ rewritten before being sent:
 ```
 
 Algorithm:
-1. Build the predicate `'<entity_field>' in (<quoted entity names>)` from the
+1. **Validate against the CAM-safe grammar (fail-closed) BEFORE rewriting.** A
+   single leading predicate only constrains the outer search; OCI Log Analytics
+   supports constructs that open *additional* data contexts the predicate would
+   not reach - sub-queries inside `addfields`, `createview`/`map`, `updatetable`,
+   and the lookup family (`lookup`, `searchlookup`). In CAM mode the query is
+   **rejected** if it contains sub-query brackets (`[` / `]`) or any
+   context-opening command. v1 uses an **allowlist of pipeline commands** known to
+   operate only on the already-scoped record set (e.g. `stats`, `timestats`,
+   `eventstats`, `where`, `eval`, `sort`, `head`, `tail`, `fields`,
+   `fieldsummary`, `distinct`, `top`, `bottom`, `rename`, `addfields` **without**
+   a sub-query, `classify` as needed) - any command not on the list is rejected.
+   The allowlist and the bracket/lookup rejection are validated against the
+   Oracle Command Reference. (A full LQL-aware recursive scoper that scopes every
+   search context is future work; until then, rejection is the safe default.)
+2. Build the predicate `'<entity_field>' in (<quoted entity names>)` from the
    resolved set (always non-empty, guaranteed by Section 6.3).
-2. Split the query into the head (the leading search expression) and tail (the
+3. Split the query into the head (the leading search expression) and tail (the
    command pipeline) on the **first top-level `|`**, respecting quoted strings
    so a `|` inside `'...'`/`"..."` does not split.
-3. If the head is empty or `*`, the scoped query is `predicate | tail`. Otherwise
+4. If the head is empty or `*`, the scoped query is `predicate | tail`. Otherwise
    it is `predicate and (head) | tail` - the head is parenthesized so the
    predicate ANDs with the whole user expression regardless of internal
    `and`/`or` precedence.
-4. The predicate sits in the base record set **before** any aggregation, AND-ed
+5. The predicate sits in the base record set **before** any aggregation, AND-ed
    in, so a CAM can only ever **narrow** within their entities, never widen. A
    user-supplied `Entity = '99_other'` just ANDs to an empty result.
 
-**Reject-rather-than-pass:** if the query cannot be safely tokenized (e.g.
-unbalanced quotes) or an entity value cannot be safely quoted, the query is
-**rejected** with a clear error and **never sent unscoped**. This is fail-closed;
-ordinary queries scope cleanly, so rejection is a rare backstop.
+**Reject-rather-than-pass:** if the query fails grammar validation (step 1),
+cannot be safely tokenized (e.g. unbalanced quotes), or an entity value cannot be
+safely quoted, it is **rejected** with a clear error and **never sent unscoped**.
+This is fail-closed; ordinary capacity-reporting queries (aggregations over the
+CAM's own entities) scope cleanly, so rejection is a rare backstop.
 
 Scoping is by `Entity` only, never by Log Group, because a customer's data spans
 the `DEFAULT` / `ExaCC` / `ExaCS` log groups; the entity filter follows the
@@ -244,38 +274,50 @@ CAMs until consciously allowed. A drift-catching test (like the read-only guard'
 asserts every registered tool is classified as allowed or knowingly blocked, so
 nothing is forgotten.
 
+This is the complete classification of the live tool registry
+(`handlers.py` handler map). The drift test asserts every registered tool appears
+in exactly one of these sets; a new tool is blocked until classified.
+
 **Allowed for CAMs (read + report):**
-- Data reads (all entity-scoped via 6.5): `run_query`, `run_batch_queries`,
-  `get_log_summary`, `find_rare_events`, `pivot_on_entity` (entity argument also
-  validated against the allowlist, Section 6.7), `investigate_incident`,
+- Scoped data reads (entity-scoped via 6.5; compartment pinned via 6.9):
+  `run_query`, `run_batch_queries`, `get_log_summary`, `find_rare_events`,
+  `pivot_on_entity` (entity arg also validated, 6.7), `investigate_incident`,
   `investigate_and_generate_report`, `diff_time_windows`, `trace_request_id`.
-- Entity listing: `list_entities` (filtered, Section 6.7).
+- Entity listing: `list_entities` (filtered, 6.7).
 - Generic metadata (no customer identity leaked): `list_log_groups`,
-  `list_log_sources`, `list_fields`, `list_labels`, `list_parsers`,
-  `get_query_examples`, `explain_query`, `validate_query`.
+  `list_log_sources`, `list_fields`, `list_labels`, `list_parsers`.
+- Query helpers (must operate on the scoped query / not execute unscoped):
+  `validate_query`, `explain_query`, `get_query_examples` (shared excluded, 6.11).
 - Reporting / visualization: `visualize`, `export_results`,
   `generate_incident_report`, `get_incident_report`, `list_incident_reports`,
-  `get_report_delivery_options`, `prepare_report_delivery`.
-- Outbound push (gated by `allow_delivery`, Section 6.8): `deliver_report`,
+  `get_report_delivery_options`, `prepare_report_delivery`, `export_transcript`
+  (own session only).
+- Outbound push (gated by `allow_delivery`, 6.8): `deliver_report`,
   `send_to_slack`, `send_to_telegram`.
 - Session info: `get_current_context`, `get_session_budget`, `get_preferences`,
   `test_connection`.
 
 **Blocked for CAMs:**
 - Scope changes: `set_compartment`, `set_namespace`, `update_tenancy_context`.
-- Cross-customer artifacts whose names/contents may reference other customers:
-  `list_dashboards`, `list_saved_searches`, `run_saved_search`,
-  `related_dashboards_and_searches`.
+- Compartment / topic enumeration (reveal tenancy structure beyond the pin):
+  `list_compartments`, `find_compartment`, `list_notification_topics`.
+- Cross-customer artifacts (names / stored query text / content may name other
+  customers): `list_dashboards`, `list_saved_searches`, `run_saved_search`,
+  `related_dashboards_and_searches`, `list_alerts`, `why_did_this_fire`,
+  `list_playbooks`, `get_playbook`.
+- Cross-source diagnostics not entity-scoped (not needed for capacity reporting;
+  could leak other customers' state): `ingestion_health`, `parser_failure_triage`.
 - All OCI mutations: `create_alert`, `update_alert`, `delete_alert`,
   `create_saved_search`, `update_saved_search`, `delete_saved_search`,
   `create_dashboard`, `add_dashboard_tile`, `delete_dashboard`,
   `create_log_source_from_sample`.
-- State / catalog writes: `save_learned_query`, `remember_preference`,
-  `record_investigation`, `setup_confirmation_secret`, playbook writes.
+- State / catalog / secret writes: `save_learned_query`, `remember_preference`,
+  `record_investigation`, `delete_playbook`, `setup_confirmation_secret`.
 
-(The exact final list is finalized in implementation against the live tool
-registry and locked by the drift test. The policy above - default-deny, read +
-report only - is the rule the list must satisfy.)
+`list_alerts` exposes stored Logan alert queries (`alarm_service.py`),
+`why_did_this_fire` fetches arbitrary alarm metadata and runs its stored query
+(`alarm_postmortem.py`), and `list_notification_topics` walks compartments
+(`client.py`) - all confirmed cross-customer leak vectors, hence blocked.
 
 ### 6.7 list_entities filtering and pivot validation
 - `list_entities` results are filtered to the CAM's resolved entity set before
@@ -293,26 +335,74 @@ report only - is the rule the list must satisfy.)
   with an optional per-CAM override. When disabled, these three tools are blocked
   for that CAM.
 
-### 6.9 Compartment / namespace pinning
-For CAMs, the active compartment and namespace are forced to the
-`access_control.yaml` values. The scope resolver ignores any `compartment_id`
-argument and `scope=tenancy` for CAM sessions, so a CAM cannot redirect queries
+### 6.9 Compartment / namespace pinning (in the client, not just the resolver)
+The `AccessProfile` is attached to `OCILogAnalyticsClient`. For CAMs, namespace
+and compartment are pinned **inside every OCI-facing client method**, not only in
+the handler-layer `_resolve_scope`. This is required because some paths bypass
+`_resolve_scope`: `_list_log_sources` accepts a `compartment_id` override
+(`handlers.py`), `run_batch_queries` allows a per-query `compartment_id`
+(`query_engine.py`), and notification-topic listing can walk compartments
+(`client.py`). In CAM mode the client ignores any caller-supplied
+`compartment_id`/namespace and `scope=tenancy`, so no tool argument can redirect
 to other data.
 
-### 6.10 Audit
-Every access decision is logged via the existing `AuditLogger` under the CAM's
-id: allow, deny (blocked tool), the injected entity predicate, and any query
-rejection. This gives an attempt trail. (See `audit.py`.)
+### 6.10 Audit and effective-query handling
+- Every access decision is logged via the existing `AuditLogger` under the CAM's
+  id: allow, deny (blocked tool), blocked resource, the **injected entity
+  predicate / effective scoped query**, and any query rejection. The access audit
+  event is emitted at the enforcement layer (client / `access_control`) so it
+  records the *scoped* query, not the original (the existing `query_engine` query
+  log records the original and is not the access-audit source of truth).
+- The query cache is **in-memory and per-process** (`cache.py`, plain dicts).
+  Because each CAM is a separate stdio process with a single pinned identity,
+  there is no cross-CAM cache collision. As cheap defense-in-depth against any
+  future shared-cache change, the cache key includes the profile/user id.
+- The cost estimator currently runs on the original query; under scoping it would
+  over-estimate (safe direction, not a leak). Passing the scoped query to the
+  estimator for accuracy is a low-priority follow-up.
+
+### 6.11 Shared-catalog and report isolation (CAM mode)
+Shared/promoted query text and shared/legacy report content can name other
+customers' entities, so in CAM mode:
+- The query catalog excludes shared/promoted entries - **builtin + personal
+  only**. `get_query_examples` and any catalog view used by a CAM drop the shared
+  source (`catalog.py`).
+- Legacy shared-report import into the per-user store is **skipped**
+  (`report_store.py` `_import_legacy_shared_reports`), so a CAM never inherits
+  another customer's legacy reports.
+- `related_dashboards_and_searches` (which loads shared queries and lists all
+  dashboards/saved searches, `related_resources.py`) is blocked (also in 6.6).
+
+### 6.12 MCP resource gating (separate protocol surface)
+MCP resources are served by `read_resource`/`list_resources` (`server.py`),
+which is a **separate path from `handle_tool_call`** and therefore not covered by
+tool gating. In CAM mode:
+- `loganalytics://schema` (returns `get_full_schema()`, which includes **all
+  entities**, `schema_manager.py`) has its entity list filtered to the CAM's
+  resolved set.
+- `loganalytics://tenancy-context` (persisted entities/compartments,
+  `context_manager.py`), `loganalytics://recent-queries` (query history), and
+  `loganalytics://query-templates` (shared queries) are **blocked**.
+- Static resources `loganalytics://syntax-guide` and
+  `loganalytics://reference-docs` remain available.
+- `list_resources` advertises only the resources a CAM may read.
+
+Additionally, CAM mode suppresses shared-state auto-capture: `_list_log_sources`
+and `_list_fields` write into the shared tenancy context unless suppressed
+(`handlers.py`, currently keyed on `read_only`); CAM mode suppresses these writes
+too, so CAMs neither read nor pollute shared tenancy context.
 
 ## 7. Threat model - what this does and does not protect
 
 Protects (under Layer 1 + Layer 2):
-- A CAM reading another customer's data through any MCP tool.
-- A CAM widening scope via raw queries, compartment/namespace switching, entity
-  enumeration, or pivot.
+- A CAM reading another customer's data through any MCP tool, **MCP resource**, or
+  shared artifact (catalog/saved-search/dashboard/legacy report).
+- A CAM widening scope via raw queries (incl. sub-queries/lookups - rejected),
+  compartment/namespace switching, entity/compartment enumeration, or pivot.
 - A CAM impersonating another identity (forced command pins `--user`).
-- Silent unrestricted operation (fail-closed startup; default-deny tools;
-  reject-on-unparseable queries).
+- Silent unrestricted operation (fail-closed startup that aborts on any
+  resolution failure; default-deny tools and resources; reject-on-unparseable and
+  reject-on-unsafe-grammar queries).
 
 Does not protect against (accepted):
 - A trusted admin who edits `access_control.yaml`, `authorized_keys`, or the VM.
@@ -335,6 +425,17 @@ Does not protect against (accepted):
   log group / source enumeration leaks no customer identity.
 - The VM's instance principal already authenticates to the `assurance4emea`
   tenancy - no OCI-auth change is required for the feature.
+- All query execution funnels through `OCILogAnalyticsClient.query()`
+  (`client.py`) - the single enforcement chokepoint for scoping.
+- The query/schema cache is **in-memory, per-process** (`cache.py`, plain dicts) -
+  no cross-process sharing between CAM sessions.
+- MCP resources are served by `read_resource`/`list_resources` (`server.py`), a
+  protocol surface **separate** from `handle_tool_call` - it must be gated
+  independently (Section 6.12).
+- OCI LA supports sub-queries (`addfields`, `createview`/`map`, `updatetable`)
+  and `lookup`/`searchlookup` (Oracle Command Reference) - these open data
+  contexts a single leading predicate does not constrain, which is why CAM-mode
+  query scoping validates against a safe grammar (Section 6.5).
 
 ## 9. Outstanding items (non-blocking for build)
 
@@ -354,18 +455,33 @@ Unit:
   `and`/`or`; first-pipe split respecting quotes; multi-pipe pipelines;
   adversarial widen attempts (`Entity = 'other'` -> empty); unparseable ->
   reject (never unscoped).
+- Query-scope grammar validation (6.5 step 1): reject sub-query brackets `[`/`]`
+  and the lookup/view family (`lookup`, `searchlookup`, `createview`, `map`,
+  `updatetable`); allowlisted reporting commands pass; reject command not on the
+  allowlist.
 - Tool gating: CAM allowlist; blocked tools error; **drift test** that every
-  registered tool is classified.
+  registered tool AND every MCP resource is classified (allowed/blocked).
+- MCP resource gating (6.12): `schema` entity list filtered; `tenancy-context`,
+  `recent-queries`, `query-templates` blocked; static resources allowed;
+  `list_resources` advertises only permitted resources.
+- Shared-catalog isolation (6.11): `get_query_examples` excludes shared entries;
+  legacy shared-report import skipped; shared-state auto-capture suppressed.
 - Fail-closed startup: unknown CAM -> refuse; empty `customers` -> refuse; zero
-  resolved entities -> refuse; OCI unreachable at resolution -> refuse.
+  resolved entities -> refuse; OCI unreachable / client-init failure at startup
+  -> process exits non-zero (overrides the swallow-and-continue path).
 - `list_entities` filtering; `pivot_on_entity` entity validation.
-- Compartment/namespace pinning ignores `compartment_id` and `scope=tenancy`.
+- Client-level compartment/namespace pinning ignores `compartment_id` (incl.
+  `_list_log_sources` and per-query batch overrides) and `scope=tenancy`.
+- Audit/cache: access audit records the effective scoped query; cache key
+  includes profile/user id.
 - Delivery gating: global default and per-CAM override.
-- **General-user invariance:** without `--enforce-access`, behavior is unchanged.
+- **General-user invariance:** without `--enforce-access`, behavior is unchanged
+  (tools, resources, catalog, startup all identical to today).
 
 Integration:
 - Simulated CAM session end-to-end: filtered `list_entities`, scoped query,
-  blocked tool rejected, scope-change disabled, delivery gating.
+  blocked tool rejected, blocked resource rejected, scope-change disabled,
+  shared catalog excluded, delivery gating.
 
 Deployment verification (documented, run against the Assurance compartment):
 - Confirm `Entity` (`mtgt`) is populated with `<number>_<name>` values where the
