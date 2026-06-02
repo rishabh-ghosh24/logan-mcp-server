@@ -619,8 +619,9 @@ Unit:
 
 Integration:
 - Simulated CAM session end-to-end: filtered `list_entities`, scoped query,
-  blocked tool rejected, blocked resource rejected, scope-change disabled,
-  shared catalog excluded, delivery gating.
+  blocked tool rejected, blocked resource (`tenancy-context`) rejected,
+  `query-templates`/shared query examples available, roster not enumerable,
+  scope-change disabled, delivery destination lockdown.
 
 Deployment verification (documented, run against the Assurance compartment):
 - Confirm `Entity` (`mtgt`) is populated with `<number>_<name>` values where the
