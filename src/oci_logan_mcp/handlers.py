@@ -2637,6 +2637,20 @@ class MCPHandlers:
         sid = args.get("session_id", "current")
         if sid == "current":
             sid = self.audit_logger.session_id
+        # Enforce session ownership: each audit entry records its owner in the
+        # "user" field. Refuse export if any entry in the requested session
+        # belongs to a different user, so no one can read another user's
+        # transcript (including result-data previews) by guessing a session id.
+        current_user = self.user_store.user_id
+        owners = {
+            entry.get("user")
+            for entry in self.audit_logger.iter_entries(session_id=sid)
+            if entry.get("user") is not None
+        }
+        if owners - {current_user}:
+            return [{"type": "text", "text": json.dumps({
+                "error": "Access denied: session belongs to a different user.",
+            })}]
         out_dir = self.settings.transcript_dir
         try:
             result = self.audit_logger.export_transcript(

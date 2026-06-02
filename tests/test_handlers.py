@@ -1926,6 +1926,56 @@ async def test_export_transcript_tool_returns_path_and_count(handlers, tmp_path)
     assert os.path.isfile(payload["path"])
 
 
+@pytest.mark.asyncio
+async def test_export_transcript_denies_other_users_session(handlers, tmp_path):
+    """A user must not be able to export another user's session transcript."""
+    audit_dir = tmp_path / "audit_shared"
+    # Victim ("alice") records a session containing a result-data preview.
+    victim_audit = AuditLogger(audit_dir, session_id="victim-session")
+    victim_audit.log(
+        user="alice",
+        tool="run_query",
+        args={"q": "* | stats count"},
+        outcome="executed",
+        result_summary="CONFIDENTIAL customer log preview",
+    )
+
+    # Attacker is the fixture user ("testuser"), running their own session but
+    # sharing the same audit directory as the victim.
+    assert handlers.user_store.user_id != "alice"
+    handlers.audit_logger = AuditLogger(audit_dir, session_id="attacker-session")
+    handlers.settings.transcript_dir = tmp_path / "transcripts"
+
+    result = await handlers._export_transcript({"session_id": "victim-session"})
+    payload = json.loads(result[0]["text"])
+
+    # Export must be refused, and none of the victim's data may leak.
+    assert "path" not in payload
+    assert "error" in payload
+    assert "CONFIDENTIAL customer log preview" not in result[0]["text"]
+
+
+@pytest.mark.asyncio
+async def test_export_transcript_allows_own_session(handlers, tmp_path):
+    """A user can still export a session that they own."""
+    audit_dir = tmp_path / "audit_own"
+    handlers.audit_logger = AuditLogger(audit_dir, session_id="my-session")
+    handlers.settings.transcript_dir = tmp_path / "transcripts"
+    handlers.audit_logger.log(
+        user=handlers.user_store.user_id,
+        tool="run_query",
+        args={"q": "*"},
+        outcome="executed",
+        result_summary="my own preview",
+    )
+
+    result = await handlers._export_transcript({"session_id": "current"})
+    payload = json.loads(result[0]["text"])
+
+    assert "path" in payload
+    assert payload["event_count"] >= 1
+
+
 class TestDiffTimeWindows:
     @pytest.mark.asyncio
     async def test_diff_time_windows_routes_through_handler(self, handlers):
