@@ -272,7 +272,11 @@ Anything not on it is **blocked** with a clear "not permitted in access-controll
 mode" error. Default-deny means any tool added later is automatically blocked for
 CAMs until consciously allowed. A drift-catching test (like the read-only guard's)
 asserts every registered tool is classified as allowed or knowingly blocked, so
-nothing is forgotten.
+nothing is forgotten. In CAM mode `list_tools` also advertises only allowed
+tools, so blocked tools are neither listed nor invocable. (The MCP server exposes
+exactly four surfaces - `list_tools`/`call_tool` and `list_resources`/
+`read_resource`, `server.py` - both of which are gated; there are no prompt or
+sampling surfaces.)
 
 This is the complete classification of the live tool registry
 (`handlers.py` handler map). The drift test asserts every registered tool appears
