@@ -420,11 +420,27 @@ def test_validate_rejects_brackets_anywhere():
 
 
 def test_validate_rejects_command_form_head():
-    # searchlookup / lookup are unbracketed and could open a data context as head
+    # These commands may appear before the first pipe; CAM mode requires the head
+    # to be a pure search/filter expression instead.
+    for query in [
+        "searchlookup table='t' | fields *",
+        "lookup table='t'",
+        "createview view='v' [ * | stats count ]",
+        "map [ * | stats count ]",
+        "updatetable table='t' [ * | stats count ]",
+        "link Entity",
+        "classify Severity",
+        "addfields [ * | stats count ] as c",
+    ]:
+        with pytest.raises(QueryNotAllowed):
+            validate_cam_query(query)
+
+
+def test_validate_rejects_unknown_bare_command_form_head():
+    # Fail closed: a bare leading token with command-style arguments is not a
+    # field predicate, even if the command is not in our explicit command list.
     with pytest.raises(QueryNotAllowed):
-        validate_cam_query("searchlookup table='t' | fields *")
-    with pytest.raises(QueryNotAllowed):
-        validate_cam_query("lookup table='t'")
+        validate_cam_query("madeupcommand arg=value | stats count")
 
 
 def test_validate_rejects_non_allowlisted_pipeline_command():
@@ -506,6 +522,37 @@ def _leading_token(segment: str) -> str:
     return segment.strip().split(None, 1)[0].lower() if segment.strip() else ""
 
 
+_SEARCH_HEAD_RE = re.compile(
+    r"""^\s*(
+        \*$
+        |
+        \([^)]*
+        |
+        not\s+
+        |
+        '[^']+'\s*(=|!=|<>|<=|>=|<|>|\bin\b|\blike\b|\bcontains\b|\bis\b)
+        |
+        "[^"]+"\s*(=|!=|<>|<=|>=|<|>|\bin\b|\blike\b|\bcontains\b|\bis\b)
+        |
+        [A-Za-z_][\w.]*\s*(=|!=|<>|<=|>=|<|>|\bin\b|\blike\b|\bcontains\b|\bis\b)
+    )""",
+    re.IGNORECASE | re.VERBOSE,
+)
+
+
+def _head_is_search_expression(head: str) -> bool:
+    """Conservative check for a base search/filter expression.
+
+    CAM mode does not need free-text or command-form heads for capacity reports.
+    If this does not look like `*`, a parenthesized/filter expression, or a field
+    predicate, reject it before injecting the entity predicate.
+    """
+    stripped = head.strip()
+    if stripped in ("", "*"):
+        return True
+    return bool(_SEARCH_HEAD_RE.match(stripped))
+
+
 def validate_cam_query(query: str) -> None:
     """Reject anything that could open an unscoped data context. See spec 6.5."""
     if "[" in query or "]" in query:
@@ -518,6 +565,11 @@ def validate_cam_query(query: str) -> None:
         raise QueryNotAllowed(
             f"Query may not begin with the command '{head_token}'; the leading "
             f"segment must be a search expression."
+        )
+    if not _head_is_search_expression(head):
+        raise QueryNotAllowed(
+            "The leading query segment must be a field predicate or '*'; "
+            "command-form heads are not permitted in access-controlled mode."
         )
     # (b) every pipeline command must be in the allowlist
     for seg in segments[1:]:
@@ -598,6 +650,7 @@ from oci_logan_mcp.access_control import (
     is_resource_allowed,
 )
 from oci_logan_mcp.tools import get_tools
+from oci_logan_mcp.resources import get_resources
 
 
 def test_tool_sets_partition_the_registry():
@@ -641,6 +694,16 @@ def test_resource_gating():
     assert is_resource_allowed("loganalytics://schema")        # filtered, but readable
     assert not is_resource_allowed("loganalytics://tenancy-context")
     assert not is_resource_allowed("loganalytics://recent-queries")
+
+
+def test_resource_sets_partition_the_registry():
+    from oci_logan_mcp.access_control import CAM_BLOCKED_RESOURCES
+
+    registered = {r["uri"] for r in get_resources()}
+    classified = CAM_ALLOWED_RESOURCES | CAM_BLOCKED_RESOURCES
+    assert registered - classified == set(), f"unclassified: {registered - classified}"
+    assert classified - registered == set(), f"stale: {classified - registered}"
+    assert (CAM_ALLOWED_RESOURCES & CAM_BLOCKED_RESOURCES) == set()
 ```
 
 - [ ] **Step 2: Run test to verify it fails**
@@ -807,6 +870,7 @@ git commit -m "feat(access-control): --enforce-access flag and config wiring"
 
 **Files:**
 - Modify: `src/oci_logan_mcp/server.py` (`initialize_core`, ~171-209)
+- Modify: `src/oci_logan_mcp/handlers.py` (`MCPHandlers.__init__`, set `self.access_profile` before `ReportStore`)
 - Test: `tests/test_cam_enforcement.py`
 
 - [ ] **Step 1: Write the failing test**
@@ -817,34 +881,127 @@ git commit -m "feat(access-control): --enforce-access flag and config wiring"
 import textwrap
 import pytest
 
-from oci_logan_mcp.access_control import AccessConfigError, build_profile, load_access_config
+from oci_logan_mcp.access_control import AccessConfigError, load_access_config
 
 
-def _cfg(tmp_path):
+def _access_config_file(tmp_path, *, body=None):
     p = tmp_path / "ac.yaml"
-    p.write_text(textwrap.dedent("""
+    p.write_text(textwrap.dedent(body or """
         compartment_id: c
         namespace: ns
         cams:
           cam_alice: { customers: [223] }
     """), encoding="utf-8")
-    return load_access_config(p)
+    return p
 
 
-def test_startup_precondition_refuses_unknown_cam(tmp_path):
+class _FakeClient:
+    def __init__(self, settings):
+        self.settings = settings
+        self.namespace = "old_ns"
+        self.compartment_id = "old_compartment"
+        self.access_profile = None
+        self.access_audit_logger = None
+
+    async def list_entities(self, entity_type=None):
+        return [{"name": "223_x"}, {"name": "999_other"}]
+
+
+class _FakeSecretStore:
+    def __init__(self, path):
+        self.path = path
+
+    def has_secret(self):
+        return False
+
+    def is_valid(self):
+        return True
+
+
+class _FakeHandlers:
+    captured_profile = None
+
+    def __init__(self, **kwargs):
+        _FakeHandlers.captured_profile = kwargs.get("access_profile")
+
+
+def _patch_initialize_core_dependencies(monkeypatch, tmp_path, settings):
+    import oci_logan_mcp.server as server_mod
+
+    monkeypatch.setattr(server_mod, "config_exists", lambda: True)
+    monkeypatch.setattr(server_mod, "load_config", lambda: settings)
+    monkeypatch.setattr(server_mod, "CONFIG_PATH", tmp_path / "config.yaml")
+    monkeypatch.setattr(server_mod, "OCILogAnalyticsClient", _FakeClient)
+    monkeypatch.setattr(server_mod, "CacheManager", lambda cfg: object())
+    monkeypatch.setattr(server_mod, "QueryLogger", lambda cfg: object())
+    monkeypatch.setattr(server_mod, "ContextManager", lambda cfg: object())
+    monkeypatch.setattr(server_mod, "PreferenceStore", lambda user_dir: object())
+    monkeypatch.setattr(server_mod, "SecretStore", _FakeSecretStore)
+    monkeypatch.setattr(server_mod, "AuditLogger", lambda log_dir, session_id: object())
+    monkeypatch.setattr(server_mod, "MCPHandlers", _FakeHandlers)
+
+
+@pytest.mark.asyncio
+async def test_initialize_core_enforce_access_refuses_unknown_cam(monkeypatch, tmp_path):
+    from oci_logan_mcp.config import Settings
+    from oci_logan_mcp.server import OCILogAnalyticsMCPServer
+
+    settings = Settings()
+    settings.enforce_access = True
+    settings.access_control_path = str(_access_config_file(tmp_path))
+    monkeypatch.setenv("LOGAN_USER", "cam_ghost")
+    _patch_initialize_core_dependencies(monkeypatch, tmp_path, settings)
+
     with pytest.raises(AccessConfigError):
-        build_profile(_cfg(tmp_path), "cam_ghost", ["223_x"])
+        await OCILogAnalyticsMCPServer().initialize_core()
 
 
-def test_startup_precondition_refuses_zero_resolved(tmp_path):
+@pytest.mark.asyncio
+async def test_initialize_core_builds_profile_from_user_store_identity(monkeypatch, tmp_path):
+    from oci_logan_mcp.config import Settings
+    from oci_logan_mcp.server import OCILogAnalyticsMCPServer
+
+    settings = Settings()
+    settings.enforce_access = True
+    settings.access_control_path = str(_access_config_file(tmp_path))
+    monkeypatch.setenv("LOGAN_USER", "cam_alice")
+    _patch_initialize_core_dependencies(monkeypatch, tmp_path, settings)
+
+    srv = OCILogAnalyticsMCPServer()
+    await srv.initialize_core()
+
+    assert srv.access_profile.user_id == "cam_alice"
+    assert srv.access_profile.entity_names == frozenset({"223_x"})
+    assert srv.oci_client.namespace == "ns"
+    assert srv.oci_client.compartment_id == "c"
+    assert srv.oci_client.access_profile is srv.access_profile
+    assert _FakeHandlers.captured_profile is srv.access_profile
+
+
+@pytest.mark.asyncio
+async def test_initialize_core_enforce_access_zero_resolved_fails(monkeypatch, tmp_path):
+    from oci_logan_mcp.config import Settings
+    from oci_logan_mcp.server import OCILogAnalyticsMCPServer
+
+    settings = Settings()
+    settings.enforce_access = True
+    settings.access_control_path = str(_access_config_file(tmp_path, body="""
+        compartment_id: c
+        namespace: ns
+        cams:
+          cam_alice: { customers: [555] }
+    """))
+    monkeypatch.setenv("LOGAN_USER", "cam_alice")
+    _patch_initialize_core_dependencies(monkeypatch, tmp_path, settings)
+
     with pytest.raises(AccessConfigError):
-        build_profile(_cfg(tmp_path), "cam_alice", ["999_other"])
+        await OCILogAnalyticsMCPServer().initialize_core()
 ```
 
-- [ ] **Step 2: Run test to verify it fails / passes**
+- [ ] **Step 2: Run test to verify it fails**
 
 Run: `pytest tests/test_cam_enforcement.py -q`
-Expected: PASS for the two precondition tests (they exercise `build_profile`). They lock in the fail-closed contract that `initialize_core` must call.
+Expected: FAIL because `Settings.enforce_access` is not wired into startup and `initialize_core` does not yet build/pass an `AccessProfile`.
 
 - [ ] **Step 3: Wire fail-closed startup in `server.py`**
 
@@ -866,7 +1023,7 @@ In `initialize_core`, after the OCI client is created and BEFORE the server begi
             self.oci_client = None
 ```
 
-Then, after the OCI client block, add profile construction:
+Add `self.access_profile = None` early in `initialize_core`. Build the profile after the `UserStore` has been constructed (so CAM identity comes from the same source as learned queries, preferences, secrets, reports, and audit user ids), but before `MCPHandlers(...)` is constructed:
 
 ```python
         self.access_profile = None
@@ -883,7 +1040,7 @@ Then, after the OCI client block, add profile construction:
             all_entities = [
                 e["name"] for e in (await self.oci_client.list_entities() or [])
             ]
-            user_id = os.environ.get("LOGAN_USER") or os.environ.get("USER", "default")
+            user_id = self.user_store.user_id
             self.access_profile = build_profile(ac_config, user_id, all_entities)
             self.oci_client.access_profile = self.access_profile   # client enforcement (Task 8)
             logger.info(
@@ -892,17 +1049,32 @@ Then, after the OCI client block, add profile construction:
             )
 ```
 
-Ensure `import os` is present at the top of `server.py` (add if missing). `AccessConfigError` and any exception here must propagate out of `initialize_core` so the process exits non-zero before stdio serving.
+`AccessConfigError` and any exception here must propagate out of `initialize_core` so the process exits non-zero before stdio serving.
 
 - [ ] **Step 4: Pass the handlers/client the profile**
 
-The handlers are constructed as `self.handlers = MCPHandlers(...)` at `server.py:274`. The profile build above happens earlier in `initialize_core`, so after the `MCPHandlers(...)` construction add:
+The handlers are constructed as `self.handlers = MCPHandlers(...)` at `server.py:274`. Pass the profile in the constructor, not by setting an attribute afterward; `MCPHandlers.__init__` constructs `ReportStore`, and CAM mode must be known before legacy shared reports can import.
 
 ```python
-            self.handlers.access_profile = self.access_profile
+            self.handlers = MCPHandlers(
+                settings=self.settings,
+                oci_client=self.oci_client,
+                cache=self.cache,
+                query_logger=self.query_logger,
+                context_manager=self.context_manager,
+                user_store=self.user_store,
+                preference_store=self.preference_store,
+                secret_store=self.secret_store,
+                audit_logger=self.audit_logger,
+                access_profile=self.access_profile,
+            )
 ```
 
-(Or add an `access_profile=None` parameter to `MCPHandlers.__init__` - Task 9 Step 3 - and pass it in the constructor call.)
+In `MCPHandlers.__init__`, add `access_profile=None` to the signature and set it before any helper services are constructed:
+
+```python
+        self.access_profile = access_profile
+```
 
 - [ ] **Step 5: Run tests + manual smoke**
 
@@ -913,7 +1085,7 @@ Manual: `OCI_LOGAN_MCP_ENFORCE_ACCESS=1 LOGAN_USER=cam_ghost python -m oci_logan
 - [ ] **Step 6: Commit**
 
 ```bash
-git add src/oci_logan_mcp/server.py tests/test_cam_enforcement.py
+git add src/oci_logan_mcp/server.py src/oci_logan_mcp/handlers.py tests/test_cam_enforcement.py
 git commit -m "feat(access-control): fail-closed startup builds AccessProfile before serving"
 ```
 
@@ -929,25 +1101,95 @@ git commit -m "feat(access-control): fail-closed startup builds AccessProfile be
 
 ```python
 # append to tests/test_cam_enforcement.py
-from oci_logan_mcp.access_control import scope_query
+from types import SimpleNamespace
+import pytest
 
-def test_client_scopes_query_via_profile():
-    # The client must rewrite the query string with the profile's predicate before
-    # building QueryDetails. We assert scope_query is the transform used.
-    from oci_logan_mcp.access_control import AccessProfile
-    prof = AccessProfile(
-        user_id="cam_alice", customer_numbers=(223,),
-        entity_names=frozenset({"223_x"}), entity_field="Entity",
-        compartment_id="c", namespace="ns", allow_delivery=True,
+from oci_logan_mcp.access_control import AccessProfile
+
+
+def _profile():
+    return AccessProfile(
+        user_id="cam_alice",
+        customer_numbers=(223,),
+        entity_names=frozenset({"223_x"}),
+        entity_field="Entity",
+        compartment_id="allowed_compartment",
+        namespace="ns",
+        allow_delivery=True,
     )
-    scoped = scope_query("* | stats count", prof.entity_names, prof.entity_field)
-    assert scoped == "'Entity' in ('223_x') | stats count"
+
+
+@pytest.mark.asyncio
+async def test_client_query_scopes_and_pins_scope(monkeypatch):
+    from oci_logan_mcp.client import OCILogAnalyticsClient
+
+    client = OCILogAnalyticsClient.__new__(OCILogAnalyticsClient)
+    client.settings = SimpleNamespace(query=SimpleNamespace(max_results=100))
+    client._compartment_id = "default_compartment"
+    client._namespace = "ns"
+    client.access_profile = _profile()
+    client.access_audit_logger = None
+    captured = {}
+
+    async def fake_execute(query_string, time_start, time_end, max_results,
+                           compartment_id, include_subcompartments):
+        captured.update({
+            "query": query_string,
+            "compartment_id": compartment_id,
+            "include_subcompartments": include_subcompartments,
+        })
+        return {"rows": [], "columns": []}
+
+    monkeypatch.setattr(client, "_execute_single_query", fake_execute)
+
+    await OCILogAnalyticsClient.query(
+        client,
+        query_string="* | stats count",
+        time_start="2026-06-01T00:00:00+00:00",
+        time_end="2026-06-01T01:00:00+00:00",
+        compartment_id="attacker_compartment",
+        include_subcompartments=True,
+    )
+
+    assert captured["query"] == "'Entity' in ('223_x') | stats count"
+    assert captured["compartment_id"] == "allowed_compartment"
+    assert captured["include_subcompartments"] is False
+
+
+@pytest.mark.asyncio
+async def test_notification_topic_listing_does_not_walk_compartments_for_cam(monkeypatch):
+    from oci_logan_mcp.client import OCILogAnalyticsClient
+
+    client = OCILogAnalyticsClient.__new__(OCILogAnalyticsClient)
+    client._compartment_id = "default_compartment"
+    client.access_profile = _profile()
+    client.access_audit_logger = None
+    listed = []
+
+    async def fake_list_topics(compartment_id):
+        listed.append(compartment_id)
+        return []
+
+    async def fail_list_compartments():
+        raise AssertionError("CAM notification topic listing must not enumerate compartments")
+
+    monkeypatch.setattr(client, "_list_notification_topics_in_compartment", fake_list_topics)
+    monkeypatch.setattr(client, "list_compartments", fail_list_compartments)
+
+    await OCILogAnalyticsClient.list_notification_topics(
+        client,
+        compartment_id="attacker_compartment",
+        include_subcompartments=True,
+    )
+
+    assert listed == ["allowed_compartment"]
+
 ```
 
-- [ ] **Step 2: Run test to verify it passes**
+- [ ] **Step 2: Run test to verify it fails**
 
-Run: `pytest tests/test_cam_enforcement.py::test_client_scopes_query_via_profile -q`
-Expected: PASS (locks the transform contract the client must use).
+Run: `pytest tests/test_cam_enforcement.py::test_client_query_scopes_and_pins_scope tests/test_cam_enforcement.py::test_notification_topic_listing_does_not_walk_compartments_for_cam -q`
+Expected: FAIL because `OCILogAnalyticsClient.query()` does not scope/pin yet and notification topic listing still honors caller subtree walking.
 
 - [ ] **Step 3: Implement client enforcement**
 
@@ -968,14 +1210,15 @@ In `client.query(...)`, at the very top of the method body (before any compartme
             include_subcompartments = False
 ```
 
-In every other OCI-facing method that accepts a `compartment_id` argument (e.g. `list_log_sources`, `list_entities`, notification/topic listing), add at the top:
+In every other OCI-facing method that accepts a `compartment_id` argument (e.g. `list_log_sources`, `list_entities`, notification/topic listing), pin the compartment at the top. If the method also accepts `include_subcompartments`, force it off in CAM mode:
 
 ```python
         if self.access_profile is not None:
             compartment_id = self.access_profile.compartment_id
+            include_subcompartments = False
 ```
 
-so a caller-supplied `compartment_id` cannot redirect a CAM. (Namespace is already pinned at startup in Task 7.)
+so a caller-supplied `compartment_id`, namespace, or subtree walk cannot redirect a CAM. (Namespace is already pinned at startup in Task 7.)
 
 - [ ] **Step 4: Run tests**
 
@@ -994,37 +1237,133 @@ git commit -m "feat(access-control): client-level query scoping and compartment 
 ## Task 9: Tool gate, list_entities filtering, run_saved_search scoping
 
 **Files:**
-- Modify: `src/oci_logan_mcp/handlers.py` (`__init__` to accept `access_profile`; `handle_tool_call` gate after line 319; `_list_entities` ~756; `_run_saved_search` ~1002)
+- Modify: `src/oci_logan_mcp/handlers.py` (`handle_tool_call` gate after line 319; `_list_entities` ~756; `_run_saved_search` ~1002; uses the `access_profile` constructor arg from Task 7)
 - Test: `tests/test_cam_enforcement.py`
 
 - [ ] **Step 1: Write the failing test**
 
 ```python
 # append to tests/test_cam_enforcement.py
-def test_is_tool_allowed_blocks_and_allows():
-    from oci_logan_mcp.access_control import is_tool_allowed, AccessProfile
-    prof = AccessProfile("cam_alice", (223,), frozenset({"223_x"}), "Entity", "c", "ns", True)
-    assert not is_tool_allowed(prof, "investigate_incident")
-    assert is_tool_allowed(prof, "run_query")
+import json
+from unittest.mock import AsyncMock
 
 
-def test_list_entities_filtered_to_profile():
-    # Pure helper used by _list_entities: keep only entities in the profile set.
-    from oci_logan_mcp.access_control import resolve_entities
-    allowed = frozenset({"223_x", "66_y"})
-    live = [{"name": "223_x"}, {"name": "66_y"}, {"name": "232_z"}]
-    filtered = [e for e in live if e["name"] in allowed]
-    assert {e["name"] for e in filtered} == {"223_x", "66_y"}
+_HANDLER_METHODS = (
+    "_list_log_sources", "_list_fields", "_list_entities", "_list_parsers",
+    "_list_labels", "_list_saved_searches", "_list_log_groups",
+    "_validate_query", "_run_query", "_run_saved_search", "_run_batch_queries",
+    "_diff_time_windows", "_pivot_on_entity", "_ingestion_health",
+    "_parser_failure_triage", "_investigate_incident",
+    "_investigate_and_generate_report", "_generate_incident_report",
+    "_get_report_delivery_options", "_prepare_report_delivery",
+    "_list_notification_topics", "_get_incident_report", "_list_incident_reports",
+    "_deliver_report", "_why_did_this_fire", "_find_rare_events",
+    "_create_log_source_from_sample", "_trace_request_id",
+    "_related_dashboards_and_searches", "_visualize", "_export_results",
+    "_set_compartment", "_set_namespace", "_get_current_context",
+    "_list_compartments", "_test_connection", "_find_compartment",
+    "_get_query_examples", "_get_log_summary", "_setup_confirmation_secret",
+    "_save_learned_query", "_update_tenancy_context", "_get_preferences",
+    "_remember_preference", "_create_alert", "_list_alerts", "_update_alert",
+    "_delete_alert", "_create_saved_search", "_update_saved_search",
+    "_delete_saved_search", "_create_dashboard", "_list_dashboards",
+    "_add_dashboard_tile", "_delete_dashboard", "_send_to_slack",
+    "_send_to_telegram", "_explain_query", "_get_session_budget",
+    "_export_transcript", "_record_investigation", "_list_playbooks",
+    "_get_playbook", "_delete_playbook",
+)
+
+
+def _handler_with_profile():
+    from oci_logan_mcp.handlers import MCPHandlers
+
+    h = MCPHandlers.__new__(MCPHandlers)
+    h.access_profile = _profile()
+    h.settings = SimpleNamespace(read_only=False)
+    h.user_store = SimpleNamespace(user_id="cam_alice")
+    h.audit_logger = None
+    h._write_audit_event = lambda **kwargs: True
+    h._extract_audit_ref = lambda args: None
+    h._audit_strictness = lambda name, args: "best_effort"
+    h._clean_args_for_audit = lambda name, args: args
+    h._summarize_tool_result = lambda result, elapsed_ms: {"success": True}
+    h.confirmation_manager = SimpleNamespace(is_guarded_call=lambda name, args: False)
+    for method in _HANDLER_METHODS:
+        setattr(h, method, AsyncMock(return_value=[{"type": "text", "text": "{}"}]))
+    return h
+
+
+@pytest.mark.asyncio
+async def test_handle_tool_call_blocks_disallowed_cam_tool():
+    from oci_logan_mcp.handlers import MCPHandlers
+
+    h = _handler_with_profile()
+    result = await MCPHandlers.handle_tool_call(
+        h, "investigate_incident", {"incident_id": "i-1"}
+    )
+
+    payload = json.loads(result[0]["text"])
+    assert payload["status"] == "access_denied"
+    h._investigate_incident.assert_not_awaited()
+
+
+@pytest.mark.asyncio
+async def test_list_entities_filters_via_handler():
+    from oci_logan_mcp.handlers import MCPHandlers
+
+    h = MCPHandlers.__new__(MCPHandlers)
+    h.access_profile = _profile()
+    h.schema_manager = SimpleNamespace(
+        get_entities=AsyncMock(return_value=[
+            {"name": "223_x"},
+            {"name": "999_other"},
+        ])
+    )
+
+    result = await MCPHandlers._list_entities(h, {})
+    payload = json.loads(result[0]["text"])
+
+    assert [e["name"] for e in payload] == ["223_x"]
+
+
+@pytest.mark.asyncio
+async def test_run_saved_search_preserves_scope_and_time_args():
+    from oci_logan_mcp.handlers import MCPHandlers
+
+    h = MCPHandlers.__new__(MCPHandlers)
+    h.saved_search = SimpleNamespace(
+        get_search_by_name=AsyncMock(),
+        get_search_by_id=AsyncMock(return_value={"query": "* | stats count"}),
+    )
+    h.query_engine = SimpleNamespace(execute=AsyncMock(return_value={"data": []}))
+    h._resolve_scope = lambda args: ("allowed_compartment", False)
+
+    await MCPHandlers._run_saved_search(
+        h,
+        {
+            "id": "saved-1",
+            "time_range": "last_24_hours",
+            "time_start": "2026-06-01T00:00:00Z",
+            "time_end": "2026-06-02T00:00:00Z",
+        },
+    )
+
+    h.query_engine.execute.assert_awaited_once_with(
+        query="* | stats count",
+        time_range="last_24_hours",
+        time_start="2026-06-01T00:00:00Z",
+        time_end="2026-06-02T00:00:00Z",
+        include_subcompartments=False,
+        compartment_id="allowed_compartment",
+    )
 ```
 
-- [ ] **Step 2: Run test to verify it passes**
+- [ ] **Step 2: Run test to verify it fails**
 
-Run: `pytest tests/test_cam_enforcement.py -q`
-Expected: PASS (these assert the helper contracts wired below).
+Run: `pytest tests/test_cam_enforcement.py::test_handle_tool_call_blocks_disallowed_cam_tool tests/test_cam_enforcement.py::test_list_entities_filters_via_handler tests/test_cam_enforcement.py::test_run_saved_search_preserves_scope_and_time_args -q`
+Expected: FAIL because `handle_tool_call` has no CAM gate, `_list_entities` returns the full entity roster, and `_run_saved_search` ignores scope/time arguments.
 
 - [ ] **Step 3: Add the gate to `handle_tool_call`**
-
-In `handlers.py`, accept the profile in `__init__` (default `None`): add a parameter `access_profile=None` and `self.access_profile = access_profile`.
 
 Insert the CAM gate immediately after the unknown-tool check returns (after line 319, before the read-only guard at line 321):
 
@@ -1104,17 +1443,41 @@ git commit -m "feat(access-control): tool gate, list_entities filtering, run_sav
 
 ```python
 # append to tests/test_cam_enforcement.py
-def test_resource_allow_block_sets():
-    from oci_logan_mcp.access_control import is_resource_allowed
-    assert is_resource_allowed("loganalytics://query-templates")
-    assert not is_resource_allowed("loganalytics://tenancy-context")
-    assert not is_resource_allowed("loganalytics://recent-queries")
+@pytest.mark.asyncio
+async def test_handle_resource_read_blocks_roster_resources():
+    from oci_logan_mcp.handlers import MCPHandlers
+
+    h = MCPHandlers.__new__(MCPHandlers)
+    h.access_profile = _profile()
+
+    result = await MCPHandlers.handle_resource_read(h, "loganalytics://tenancy-context")
+
+    assert result["error"].startswith("Resource not permitted")
+
+
+@pytest.mark.asyncio
+async def test_schema_resource_filters_entities():
+    from oci_logan_mcp.handlers import MCPHandlers
+
+    h = MCPHandlers.__new__(MCPHandlers)
+    h.access_profile = _profile()
+    h.schema_manager = SimpleNamespace(
+        get_full_schema=AsyncMock(return_value={
+            "entities": [{"name": "223_x"}, {"name": "999_other"}],
+            "fields": [{"name": "Log Source"}],
+        })
+    )
+
+    schema = await MCPHandlers.handle_resource_read(h, "loganalytics://schema")
+
+    assert [e["name"] for e in schema["entities"]] == ["223_x"]
+    assert schema["fields"] == [{"name": "Log Source"}]
 ```
 
-- [ ] **Step 2: Run test to verify it passes**
+- [ ] **Step 2: Run test to verify it fails**
 
-Run: `pytest tests/test_cam_enforcement.py::test_resource_allow_block_sets -q`
-Expected: PASS.
+Run: `pytest tests/test_cam_enforcement.py::test_handle_resource_read_blocks_roster_resources tests/test_cam_enforcement.py::test_schema_resource_filters_entities -q`
+Expected: FAIL because blocked resources are still readable and `loganalytics://schema` still returns the full entity roster.
 
 - [ ] **Step 3: Gate `handle_resource_read`**
 
@@ -1199,24 +1562,101 @@ git commit -m "feat(access-control): resource gating, schema entity filtering, l
 **Files:**
 - Modify: `src/oci_logan_mcp/handlers.py` (`_list_log_sources` ~728 and `_list_fields` ~738 auto-capture; delivery handlers `_send_to_telegram`/`_deliver_report`)
 - Modify: `src/oci_logan_mcp/report_store.py` (`_import_legacy_shared_reports` ~271)
+- Modify: `src/oci_logan_mcp/access_control.py` (`destination_override_blocked`)
 - Test: `tests/test_cam_enforcement.py`
 
 - [ ] **Step 1: Write the failing test**
 
 ```python
 # append to tests/test_cam_enforcement.py
-def test_delivery_destination_lockdown_helper():
-    # The handler must reject caller-supplied destinations in CAM mode.
-    from oci_logan_mcp.access_control import destination_override_blocked
-    assert destination_override_blocked({"chat_id": "12345"})
-    assert destination_override_blocked({"recipients": {"telegram_chat_id": "x"}})
-    assert not destination_override_blocked({})
+@pytest.mark.asyncio
+async def test_send_to_telegram_rejects_destination_override():
+    from oci_logan_mcp.handlers import MCPHandlers
+
+    h = MCPHandlers.__new__(MCPHandlers)
+    h.access_profile = _profile()
+    h.notification_service = SimpleNamespace(send_to_telegram=AsyncMock())
+
+    result = await MCPHandlers._send_to_telegram(
+        h, {"message": "capacity report", "chat_id": "12345"}
+    )
+
+    payload = json.loads(result[0]["text"])
+    assert payload["status"] == "access_denied"
+    h.notification_service.send_to_telegram.assert_not_awaited()
+
+
+@pytest.mark.asyncio
+async def test_deliver_report_rejects_recipient_override():
+    from oci_logan_mcp.handlers import MCPHandlers
+
+    h = MCPHandlers.__new__(MCPHandlers)
+    h.access_profile = _profile()
+    h.report_delivery_service = SimpleNamespace(deliver=AsyncMock())
+
+    result = await MCPHandlers._deliver_report(
+        h,
+        {
+            "report": {"markdown": "report body", "metadata": {}},
+            "recipients": {"telegram_chat_id": "12345"},
+        },
+    )
+
+    payload = json.loads(result[0]["text"])
+    assert payload["status"] == "access_denied"
+    h.report_delivery_service.deliver.assert_not_awaited()
+
+
+@pytest.mark.asyncio
+async def test_list_fields_does_not_auto_capture_for_cam():
+    from oci_logan_mcp.handlers import MCPHandlers
+
+    h = MCPHandlers.__new__(MCPHandlers)
+    h.access_profile = _profile()
+    h.settings = SimpleNamespace(read_only=False)
+    h.schema_manager = SimpleNamespace(
+        get_fields=AsyncMock(return_value=[
+            SimpleNamespace(
+                name="Log Source",
+                data_type="string",
+                description="",
+                possible_values=[],
+                hint="",
+            )
+        ])
+    )
+    h.context_manager = SimpleNamespace(
+        update_confirmed_fields=lambda fields: (_ for _ in ()).throw(
+            AssertionError("CAM metadata reads must not update shared context")
+        )
+    )
+
+    result = await MCPHandlers._list_fields(h, {})
+
+    payload = json.loads(result[0]["text"])
+    assert payload[0]["name"] == "Log Source"
+
+
+def test_report_store_skips_legacy_shared_import_in_cam_mode(tmp_path):
+    from oci_logan_mcp.report_store import ReportStore
+
+    legacy_id = "rpt_" + ("a" * 32)
+    legacy_dir = tmp_path / "store" / legacy_id
+    legacy_dir.mkdir(parents=True)
+    (legacy_dir / "report.md").write_text("legacy result content", encoding="utf-8")
+    (legacy_dir / "metadata.json").write_text(
+        json.dumps({"report_id": legacy_id}), encoding="utf-8"
+    )
+
+    ReportStore(tmp_path, user_id="cam_alice", enforce_access=True)
+
+    assert not (tmp_path / "users" / "cam_alice" / "store" / legacy_id).exists()
 ```
 
 - [ ] **Step 2: Run test to verify it fails**
 
-Run: `pytest tests/test_cam_enforcement.py::test_delivery_destination_lockdown_helper -q`
-Expected: FAIL (`ImportError: cannot import name 'destination_override_blocked'`).
+Run: `pytest tests/test_cam_enforcement.py::test_send_to_telegram_rejects_destination_override tests/test_cam_enforcement.py::test_deliver_report_rejects_recipient_override tests/test_cam_enforcement.py::test_list_fields_does_not_auto_capture_for_cam tests/test_cam_enforcement.py::test_report_store_skips_legacy_shared_import_in_cam_mode -q`
+Expected: FAIL because delivery overrides are still honored, metadata reads still update shared context, and `ReportStore` does not yet accept `enforce_access`.
 
 - [ ] **Step 3: Add the destination helper and suppression hooks**
 
@@ -1263,7 +1703,17 @@ In `_list_log_sources` and `_list_fields`, the auto-capture is currently `if not
             self.context_manager.update_log_sources(sources)   # (or update_confirmed_fields)
 ```
 
-In `report_store.py` `_import_legacy_shared_reports`, skip when access control is active. Add an `enforce_access: bool = False` parameter to `ReportStore.__init__` (passed from the handlers when a profile exists) and short-circuit:
+In `MCPHandlers.__init__`, pass the flag through when constructing `ReportStore`:
+
+```python
+        self.report_store = ReportStore(
+            self.settings.report_delivery.artifact_dir,
+            user_id=user_store.user_id,
+            enforce_access=self.access_profile is not None,
+        )
+```
+
+In `report_store.py` `_import_legacy_shared_reports`, skip when access control is active. Add an `enforce_access: bool = False` parameter to `ReportStore.__init__`, persist it as `self._enforce_access`, and short-circuit:
 
 ```python
     def _import_legacy_shared_reports(self) -> None:
@@ -1295,34 +1745,84 @@ so this is hardening, not a fix for a present leak.
 **Files:**
 - Modify: `src/oci_logan_mcp/client.py` (`query`, the scoping block from Task 8)
 - Modify: `src/oci_logan_mcp/query_engine.py` (`_make_cache_key` ~line 92 caller; the method definition)
+- Modify: `src/oci_logan_mcp/server.py` (`initialize_core`, attach the audit logger to the client)
 - Test: `tests/test_cam_enforcement.py`
 
 - [ ] **Step 1: Write the failing test**
 
 ```python
 # append to tests/test_cam_enforcement.py
-import inspect
+from datetime import datetime, timezone
 
 
-def test_cache_key_namespaced_by_profile():
+def test_cache_key_namespaced_by_profile_behavior():
     from oci_logan_mcp.query_engine import QueryEngine
-    src = inspect.getsource(QueryEngine._make_cache_key)
-    # key material must incorporate the per-process identity so two identities
-    # can never share a cache entry even if the cache backend is ever shared
-    assert "access_profile" in src or "user_id" in src
+
+    engine = QueryEngine(
+        oci_client=SimpleNamespace(access_profile=_profile()),
+        cache=SimpleNamespace(),
+        logger=SimpleNamespace(),
+    )
+    start = datetime(2026, 6, 1, tzinfo=timezone.utc)
+    end = datetime(2026, 6, 2, tzinfo=timezone.utc)
+
+    key_a = engine._make_cache_key("* | stats count", start, end, False, "c")
+    engine.oci_client.access_profile = AccessProfile(
+        user_id="cam_bob",
+        customer_numbers=(999,),
+        entity_names=frozenset({"999_y"}),
+        entity_field="Entity",
+        compartment_id="allowed_compartment",
+        namespace="ns",
+        allow_delivery=True,
+    )
+    key_b = engine._make_cache_key("* | stats count", start, end, False, "c")
+
+    assert key_a != key_b
 
 
-def test_client_logs_effective_scoped_query():
+@pytest.mark.asyncio
+async def test_client_audits_effective_scoped_query(monkeypatch):
     from oci_logan_mcp.client import OCILogAnalyticsClient
-    src = inspect.getsource(OCILogAnalyticsClient.query)
-    # the enforcement point must emit the effective (scoped) query for the audit trail
-    assert "scoped" in src.lower() and "logger" in src
+
+    events = []
+    client = OCILogAnalyticsClient.__new__(OCILogAnalyticsClient)
+    client.settings = SimpleNamespace(query=SimpleNamespace(max_results=100))
+    client._compartment_id = "default_compartment"
+    client._namespace = "ns"
+    client.access_profile = _profile()
+    client.access_audit_logger = SimpleNamespace(log=lambda **kwargs: events.append(kwargs))
+
+    async def fake_execute(query_string, time_start, time_end, max_results,
+                           compartment_id, include_subcompartments):
+        return {"rows": [], "columns": []}
+
+    monkeypatch.setattr(client, "_execute_single_query", fake_execute)
+
+    await OCILogAnalyticsClient.query(
+        client,
+        query_string="* | stats count",
+        time_start="2026-06-01T00:00:00+00:00",
+        time_end="2026-06-01T01:00:00+00:00",
+        compartment_id="attacker_compartment",
+        include_subcompartments=True,
+    )
+
+    assert events
+    event = events[-1]
+    assert event["user"] == "cam_alice"
+    assert event["tool"] == "__access_control"
+    assert event["outcome"] == "query_scoped"
+    assert event["args"]["original_query"] == "* | stats count"
+    assert event["args"]["effective_query"] == "'Entity' in ('223_x') | stats count"
+    assert event["args"]["compartment_id"] == "allowed_compartment"
+    assert event["args"]["include_subcompartments"] is False
 ```
 
 - [ ] **Step 2: Run test to verify it fails**
 
-Run: `pytest tests/test_cam_enforcement.py::test_cache_key_namespaced_by_profile tests/test_cam_enforcement.py::test_client_logs_effective_scoped_query -q`
-Expected: FAIL (cache key has no profile material; client doesn't log the scoped query yet).
+Run: `pytest tests/test_cam_enforcement.py::test_cache_key_namespaced_by_profile_behavior tests/test_cam_enforcement.py::test_client_audits_effective_scoped_query -q`
+Expected: FAIL (cache key has no profile material; client does not audit the effective scoped query yet).
 
 - [ ] **Step 3: Implement**
 
@@ -1332,42 +1832,56 @@ In `query_engine.py` `_make_cache_key`, prepend the access-profile user id (if a
     def _make_cache_key(self, query, start, end, include_subcompartments, compartment_id):
         prof = getattr(self.oci_client, "access_profile", None)
         user_part = prof.user_id if prof is not None else ""
-        # ... existing key material, but include user_part in the hashed string ...
+        # ... existing key material, but include user_part in the string ...
         material = f"{user_part}|{query}|{start.isoformat()}|{end.isoformat()}|{include_subcompartments}|{compartment_id}"
-        return hashlib.sha256(material.encode("utf-8")).hexdigest()
+        return material
 ```
 
-(Keep the existing hashing approach; just add `user_part` to the material. Ensure `hashlib` is imported.)
+In `client.py` `__init__`, add `self.access_audit_logger = None`. In `server.py`, after the `AuditLogger` is constructed, attach it to the client when the client exists:
 
-In `client.py` `query`, in the Task-8 scoping block, after computing the scoped `query_string`, emit the audit log line:
+```python
+        if self.oci_client is not None:
+            self.oci_client.access_audit_logger = self.audit_logger
+```
+
+In `client.py` `query`, in the Task-8 scoping block, preserve the original query and emit a structured audit event after computing the scoped `query_string`:
 
 ```python
         if self.access_profile is not None:
             from .access_control import scope_query
+            original_query = query_string
             query_string = scope_query(
                 query_string,
                 self.access_profile.entity_names,
                 self.access_profile.entity_field,
             )
-            logger.info(
-                "access-control: scoped query for %s -> %s",
-                self.access_profile.user_id, query_string,
-            )
             compartment_id = self.access_profile.compartment_id
             include_subcompartments = False
+            audit_logger = getattr(self, "access_audit_logger", None)
+            if audit_logger is not None:
+                audit_logger.log(
+                    user=self.access_profile.user_id,
+                    tool="__access_control",
+                    args={
+                        "original_query": original_query,
+                        "effective_query": query_string,
+                        "compartment_id": compartment_id,
+                        "include_subcompartments": include_subcompartments,
+                    },
+                    outcome="query_scoped",
+                    result_summary={"success": True},
+                )
 ```
-
-(Ensure `logger` is the module logger already defined in `client.py`.)
 
 - [ ] **Step 4: Run test to verify it passes**
 
-Run: `pytest tests/test_cam_enforcement.py::test_cache_key_namespaced_by_profile tests/test_cam_enforcement.py::test_client_logs_effective_scoped_query -q`
+Run: `pytest tests/test_cam_enforcement.py::test_cache_key_namespaced_by_profile_behavior tests/test_cam_enforcement.py::test_client_audits_effective_scoped_query -q`
 Expected: PASS.
 
 - [ ] **Step 5: Commit**
 
 ```bash
-git add src/oci_logan_mcp/query_engine.py src/oci_logan_mcp/client.py tests/test_cam_enforcement.py
+git add src/oci_logan_mcp/query_engine.py src/oci_logan_mcp/client.py src/oci_logan_mcp/server.py tests/test_cam_enforcement.py
 git commit -m "feat(access-control): audit effective scoped query, namespace cache key by profile"
 ```
 
@@ -1382,17 +1896,54 @@ git commit -m "feat(access-control): audit effective scoped query, namespace cac
 
 ```python
 # append to tests/test_cam_enforcement.py
-def test_no_profile_means_no_enforcement():
-    """With access_profile=None every gate is a no-op."""
-    from oci_logan_mcp.access_control import is_tool_allowed, is_resource_allowed
-    # is_tool_allowed/is_resource_allowed are only ever called when a profile exists;
-    # the handlers/client guard on `self.access_profile is not None`. This test
-    # documents and locks that invariant by asserting the guards' shape.
-    import inspect
-    from oci_logan_mcp.handlers import MCPHandlers
+@pytest.mark.asyncio
+async def test_client_without_profile_preserves_caller_query_and_scope(monkeypatch):
     from oci_logan_mcp.client import OCILogAnalyticsClient
-    assert "self.access_profile is not None" in inspect.getsource(MCPHandlers.handle_tool_call)
-    assert "self.access_profile is not None" in inspect.getsource(OCILogAnalyticsClient.query)
+
+    client = OCILogAnalyticsClient.__new__(OCILogAnalyticsClient)
+    client.settings = SimpleNamespace(query=SimpleNamespace(max_results=100))
+    client._compartment_id = "default_compartment"
+    client._namespace = "ns"
+    client.access_profile = None
+    client.access_audit_logger = SimpleNamespace(log=AsyncMock())
+    captured = {}
+
+    async def fake_execute(query_string, time_start, time_end, max_results,
+                           compartment_id, include_subcompartments):
+        captured.update({
+            "query": query_string,
+            "compartment_id": compartment_id,
+            "include_subcompartments": include_subcompartments,
+        })
+        return {"rows": [], "columns": []}
+
+    monkeypatch.setattr(client, "_execute_single_query", fake_execute)
+
+    await OCILogAnalyticsClient.query(
+        client,
+        query_string="Entity = '999_other' | stats count",
+        time_start="2026-06-01T00:00:00+00:00",
+        time_end="2026-06-01T01:00:00+00:00",
+        compartment_id="caller_compartment",
+        include_subcompartments=True,
+    )
+
+    assert captured["query"] == "Entity = '999_other' | stats count"
+    assert captured["compartment_id"] == "caller_compartment"
+    assert captured["include_subcompartments"] is True
+    client.access_audit_logger.log.assert_not_called()
+
+
+@pytest.mark.asyncio
+async def test_handler_without_profile_does_not_apply_cam_tool_gate():
+    from oci_logan_mcp.handlers import MCPHandlers
+
+    h = _handler_with_profile()
+    h.access_profile = None
+
+    await MCPHandlers.handle_tool_call(h, "investigate_incident", {"incident_id": "i-1"})
+
+    h._investigate_incident.assert_awaited_once_with({"incident_id": "i-1"})
 ```
 
 - [ ] **Step 2: Run the full suite**
