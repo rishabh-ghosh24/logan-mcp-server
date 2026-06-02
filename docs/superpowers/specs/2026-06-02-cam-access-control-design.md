@@ -30,14 +30,24 @@ customer numbers, across every MCP tool, enforced inside the MCP layer, with zer
 change to general-purpose users.
 
 ### Security boundary (guiding principle)
-The hard boundary is **query result data** - the actual rows/values returned from
-a customer's logs, and any artifact that embeds them (reports, result previews,
-audit result summaries, raw log excerpts). A CAM must never obtain another
-customer's result data. **Query text and configuration metadata are not the
-boundary**: a CAM seeing another customer's query *text*, learned-query syntax,
-log-source / log-group / parser / label names, or entity *names* is acceptable -
-these carry no result data. This principle decides every allow/block call below:
-result-bearing paths are strictly entity-scoped or blocked; text/metadata paths
+Two things are protected:
+1. **Query result data** (the hard boundary) - the actual rows/values returned
+   from a customer's logs, and any artifact that embeds them (reports, result
+   previews, audit result summaries, raw log excerpts). A CAM must never obtain
+   another customer's result data.
+2. **The customer entity roster** - the *bulk list* of which customers/entities
+   exist. A CAM sees only their own entities; we do not hand over the full
+   customer list. Enforced cheaply by filtering `list_entities` (6.7), filtering
+   `schema` resource entities, and blocking `tenancy-context` (6.12).
+
+**Not the boundary (shareable):** query *text* / learned-query syntax / query
+templates, and generic configuration metadata (log-source / log-group / parser /
+label names). These carry no result data, and an entity name appearing
+*incidentally* inside a shared query's text is acceptable - that is different from
+bulk-enumerating the roster, which protection (2) prevents.
+
+This principle decides every allow/block call below: result-bearing paths and
+roster enumeration are scoped or blocked; query-text and config-metadata paths
 can be shared.
 
 ### Non-goals
@@ -153,7 +163,7 @@ like this:
 # OCI scope scoped users are pinned to (Assurance deployment example)
 tenancy_id: ocid1.tenancy.oc1..aaaaaaaacwe5cve7esnjg5lkllxdqjagivfsp6hvczk3pqajjlfga3qub4ja
 compartment_id: ocid1.compartment.oc1..aaaaaaaaqvparsvna5cozzy65r4xasbecrkdk5mucyhtfu7pktmutd6bwajq
-namespace: <assurance4emea-object-storage-namespace>   # fill at deploy time
+namespace: frdul02gvsni       # assurance4emea object-storage namespace (confirmed live)
 entity_field: "Entity"        # confirmed; overridable if the field ever changes
 
 defaults:
@@ -260,7 +270,15 @@ Algorithm:
    and the lookup family (`lookup`, `searchlookup`). In CAM mode the query is
    **rejected** if (a) it contains sub-query brackets `[` / `]` anywhere, or
    (b) any pipeline command (the token after a top-level `|`) is not in the exact
-   v1 allowlist below. The allowlist is a fixed constant, not a fuzzy guideline:
+   v1 allowlist below, or (c) the **head segment** (before the first top-level
+   `|`) is not a pure search/filter expression - i.e. it begins with a command
+   keyword rather than a field predicate or `*`. Rule (c) is essential because
+   `searchlookup` (and `lookup`) are **not bracketed** and can appear as the very
+   first command, opening lookup-table contents that no leading predicate would
+   constrain. So the head must parse as a search expression; any leading command
+   token (`searchlookup`, `lookup`, `createview`, `map`, `updatetable`, `link`,
+   `classify`, `addfields`, ...) is rejected. The allowlist is a fixed constant,
+   not a fuzzy guideline:
 
    ```
    CAM_QUERY_COMMANDS = {stats, timestats, eventstats, where, eval, sort,
@@ -337,8 +355,9 @@ A new tool is blocked until classified.
   `list_fields`, `list_labels`, `list_parsers`, `list_saved_searches`,
   `list_compartments`, `find_compartment`.
 - Query helpers (must operate on the scoped query / not execute unscoped):
-  `validate_query`, `explain_query`, `get_query_examples` (built-in +
-  personal + `cam_safe` shared entries only, 6.11).
+  `validate_query`, `explain_query`, `get_query_examples` (built-in + personal +
+  shared query text - shared text is shareable under the result-data boundary,
+  6.11).
 - Saved-search execution: `run_saved_search`, but it must fetch the saved query
   and then run it through the same CAM query-scoping path as `run_query`.
 - Reporting / visualization: `visualize`, `export_results`.
@@ -373,8 +392,11 @@ tool is still scoped through the client before results are sent.
   `investigate_and_generate_report`, `generate_incident_report`,
   `get_incident_report`, `list_incident_reports`, `why_did_this_fire`,
   `find_rare_events`, `trace_request_id`, `related_dashboards_and_searches`.
-- Cross-customer or shared artifacts not yet made CAM-safe: `list_dashboards`,
-  `list_alerts`, `list_playbooks`, `get_playbook`.
+- Metadata-only discovery/management tools that are not part of the CAM v1
+  read+report workflow (blocked for *relevance*, not because they leak result
+  data - they return only names/ids/query text, which the boundary permits; may
+  be revisited): `list_dashboards`, `list_alerts`, `list_playbooks`,
+  `get_playbook`.
 - All OCI mutations: `create_alert`, `update_alert`, `delete_alert`,
   `create_saved_search`, `update_saved_search`, `delete_saved_search`,
   `create_dashboard`, `add_dashboard_tile`, `delete_dashboard`,
@@ -382,11 +404,20 @@ tool is still scoped through the client before results are sent.
 - Audit / investigation state: `export_transcript`, `record_investigation`,
   `delete_playbook`.
 
-`list_alerts` exposes stored Logan alert queries (`alarm_service.py`),
-`why_did_this_fire` fetches arbitrary alarm metadata and runs its stored query
-(`alarm_postmortem.py`), and `export_transcript` can include result summaries
-for arbitrary session ids (`audit.py`) - all confirmed cross-customer leak
-vectors, hence blocked.
+Two distinct reasons drive the block list, and the rationale must stay honest:
+- **Relevance** (most of the above): these tools return only names, ids, or query
+  *text* - which the result-data boundary explicitly permits - but they are not
+  part of the CAM v1 read+report workflow, so they are blocked to keep the surface
+  tight. `related_dashboards_and_searches` was verified live to return only
+  `id`/`name`/`score`/`reason` (no result data); `list_alerts` exposes only stored
+  alert query text. These can be revisited if a CAM workflow needs them.
+- **Result-data / state**: `export_transcript` is the one genuine result-data
+  concern - its export can include result summaries/previews, and (separately) a
+  pre-existing bug let any user export another session by id (`audit.py`; filed
+  and fixed on main as session-ownership enforcement). `why_did_this_fire` runs a
+  stored alarm query (results would be entity-scoped via the chokepoint, but it is
+  a troubleshooting flow). Mutations and state writes are blocked because CAMs are
+  read-only.
 
 ### 6.7 list_entities filtering
 - `list_entities` results are filtered to the CAM's resolved entity set before
@@ -452,8 +483,9 @@ report *result content* may not. Verified in code (workflow round 2):
   into the per-user store is **skipped** (`report_store.py`
   `_import_legacy_shared_reports`, verified to copy full report markdown/HTML, i.e.
   result content), so a CAM never inherits another customer's report data.
-- `related_dashboards_and_searches` is blocked (also in 6.6) - it surfaces
-  saved-search/dashboard artifacts that can carry result content, not just text.
+- `related_dashboards_and_searches` is blocked (also in 6.6) for *relevance* (not
+  a CAM v1 workflow); verified live to return only `id`/`name`/`score`/`reason` -
+  no result data.
 
 ### 6.12 MCP resource gating (separate protocol surface)
 MCP resources are served by `read_resource`/`list_resources` (`server.py`),
@@ -461,10 +493,14 @@ which is a **separate path from `handle_tool_call`** and therefore not covered b
 tool gating. In CAM mode:
 - `loganalytics://schema` (returns `get_full_schema()`, which includes **all
   entities**, `schema_manager.py`) has its entity list filtered to the CAM's
-  resolved set.
-- `loganalytics://tenancy-context` (persisted entities/compartments,
-  `context_manager.py`), `loganalytics://recent-queries` (query history), and
-  `loganalytics://query-templates` (shared queries) are **blocked**.
+  resolved set (roster protection, Section 2).
+- `loganalytics://tenancy-context` (persisted **all** entities/compartments,
+  `context_manager.py`) is **blocked** - it bulk-enumerates the entity roster.
+- `loganalytics://query-templates` (shared query *text*, `catalog.py`) is
+  **allowed** - query text is shareable under the result-data boundary and is
+  useful for query-building. (Aligned with `get_query_examples` in 6.6.)
+- `loganalytics://recent-queries` (query history) is **blocked** for relevance -
+  not part of the CAM workflow and may expose other sessions' query activity.
 - Static resources `loganalytics://syntax-guide` and
   `loganalytics://reference-docs` remain available.
 - `list_resources` advertises only the resources a CAM may read.
@@ -477,9 +513,11 @@ too, so CAMs neither read nor pollute shared tenancy context.
 ## 7. Threat model - what this does and does not protect
 
 Protects (under Layer 1 + Layer 2):
-- A CAM reading another customer's data through any MCP tool, **MCP resource**, or
-  shared artifact that can contain result content or unapproved query text
-  (dashboard/alert/playbook/audit transcript/legacy report).
+- A CAM reading another customer's **result data** through any MCP tool, MCP
+  resource, or result-bearing artifact (report, result preview, audit transcript
+  summary, legacy report).
+- A CAM bulk-enumerating the customer **entity roster** (list_entities filtered,
+  schema entities filtered, tenancy-context blocked).
 - A CAM widening scope via raw queries (incl. sub-queries/lookups - rejected),
   compartment/namespace switching, unfiltered entity enumeration, saved-search
   execution, or troubleshooting tools.
@@ -523,12 +561,17 @@ Does not protect against (accepted):
 
 ## 9. Outstanding items (non-blocking for build)
 
-- Object-storage **namespace** for the `assurance4emea` tenancy - needed in
-  `access_control.yaml` at deploy time.
-- Smoke tests run against the Assurance VM MCP connection, which the user will
-  set up when the feature is ready for testing. This run also yields the
-  namespace value above. (Instance-principal auth to the tenancy is already in
-  place - see Section 8.)
+- **Resolved:** the `assurance4emea` object-storage namespace is `frdul02gvsni`
+  (confirmed live via `get_current_context`; now in the §6.2 config example).
+- **Deployment drift to fix before smoke tests:** the build currently deployed on
+  the Assurance VM is *behind* this repo. Confirmed live: `list_fields(source_name=...)`
+  returns `list_fields got unknown kwargs: ['source_name']`, though the repo
+  handler supports `source_name` (`handlers.py`). Redeploy the current code to the
+  VM before smoke-testing, and add a smoke check that asserts the deployed tool
+  schemas match the repo.
+- Smoke tests run against the Assurance VM MCP connection (now connected as
+  `assurance-logan`). Instance-principal auth to the tenancy is already in place
+  (Section 8).
 
 ## 10. Testing strategy (TDD)
 
@@ -539,18 +582,26 @@ Unit:
   `and`/`or`; first-pipe split respecting quotes; multi-pipe pipelines;
   adversarial widen attempts (`Entity = 'other'` -> empty); unparseable ->
   reject (never unscoped).
-- Query-scope grammar validation (6.5 step 1): reject sub-query brackets `[`/`]`
-  and the lookup/view family (`lookup`, `searchlookup`, `createview`, `map`,
-  `updatetable`); allowlisted reporting commands pass; reject command not on the
-  allowlist.
+- Query-scope grammar validation (6.5 step 1): reject sub-query brackets `[`/`]`;
+  reject a **command-form head** - `searchlookup`/`lookup`/`createview`/`map`/
+  `updatetable`/`link`/`classify`/`addfields` at query start (before the first
+  pipe) must be rejected, since `searchlookup`/`lookup` are unbracketed and would
+  otherwise slip past the bracket rule; reject these and any non-allowlisted
+  command after a pipe; allowlisted reporting commands pass.
 - Tool gating: CAM allowlist; blocked tools error; **drift test** that every
   registered tool AND every MCP resource is classified (allowed/blocked).
-- MCP resource gating (6.12): `schema` entity list filtered; `tenancy-context`,
-  `recent-queries`, `query-templates` blocked; static resources allowed;
-  `list_resources` advertises only permitted resources.
-- Shared-catalog isolation (6.11): `get_query_examples` includes only builtin,
-  personal, and explicitly `cam_safe` shared entries; legacy shared-report import
-  skipped; shared-state auto-capture suppressed.
+- MCP resource gating (6.12): `schema` entity list filtered; `tenancy-context` and
+  `recent-queries` blocked; `query-templates` **allowed** (shared query text);
+  static resources allowed; `list_resources` advertises only permitted resources.
+- Catalog (6.11): `get_query_examples` includes builtin + personal + **shared**
+  query text (shared text is shareable); legacy learned-query migration kept (text
+  only); legacy shared-**report** import skipped (result content); shared-state
+  auto-capture suppressed.
+- Delivery destination lock-down (6.6): in CAM mode, reject arbitrary destination
+  overrides - explicit cases: `send_to_telegram.chat_id`,
+  `deliver_report.recipients.telegram_chat_id`,
+  `deliver_report.recipients.email_topic_ocid`, and any non-preapproved
+  notification topic.
 - Fail-closed startup: unknown CAM -> refuse; empty `customers` -> refuse; zero
   resolved entities -> refuse; OCI unreachable / client-init failure at startup
   -> process exits non-zero (overrides the swallow-and-continue path).
@@ -574,6 +625,8 @@ Integration:
 Deployment verification (documented, run against the Assurance compartment):
 - Confirm `Entity` (`mtgt`) is populated with `<number>_<name>` values where the
   real data lives, and a scoped query returns only the assigned entities.
+- Confirm the deployed build matches the repo (the VM is currently behind - see
+  Section 9): `list_fields(source_name=...)` must not error with `unknown kwargs`.
 
 ## 11. Out of scope / future
 
