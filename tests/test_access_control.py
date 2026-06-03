@@ -75,3 +75,45 @@ def test_resolve_entities_union():
         {"223_d360_silicone", "66_flsmidth_co_as"}
     )
     assert resolve_entities((9999,), all_entities) == frozenset()
+
+
+from oci_logan_mcp.access_control import AccessProfile, build_profile
+
+
+def _cfg(tmp_path):
+    return load_access_config(_write(tmp_path, """
+        tenancy_id: ocid1.tenancy.oc1..t
+        compartment_id: ocid1.compartment.oc1..c
+        namespace: ns123
+        cams:
+          cam_alice: { customers: [223, 66] }
+          cam_empty: { customers: [] }
+    """))
+
+
+ALL = ["223_d360_silicone", "66_flsmidth_co_as", "232_elca"]
+
+
+def test_build_profile_resolves(tmp_path):
+    prof = build_profile(_cfg(tmp_path), "cam_alice", ALL)
+    assert isinstance(prof, AccessProfile)
+    assert prof.entity_names == frozenset({"223_d360_silicone", "66_flsmidth_co_as"})
+    assert prof.compartment_id == "ocid1.compartment.oc1..c"
+    assert prof.namespace == "ns123"
+    assert prof.allow_delivery is True
+
+
+def test_build_profile_unknown_cam_fails_closed(tmp_path):
+    with pytest.raises(AccessConfigError):
+        build_profile(_cfg(tmp_path), "cam_ghost", ALL)
+
+
+def test_build_profile_empty_customers_fails_closed(tmp_path):
+    with pytest.raises(AccessConfigError):
+        build_profile(_cfg(tmp_path), "cam_empty", ALL)
+
+
+def test_build_profile_zero_resolved_fails_closed(tmp_path):
+    # cam_alice's numbers don't match any live entity -> refuse (misconfig/typo)
+    with pytest.raises(AccessConfigError):
+        build_profile(_cfg(tmp_path), "cam_alice", ["999_other"])

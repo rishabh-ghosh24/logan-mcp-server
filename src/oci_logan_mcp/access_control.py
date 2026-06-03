@@ -85,3 +85,52 @@ def resolve_entities(numbers: Iterable[int], all_entity_names: Iterable[str]) ->
     return frozenset(
         name for name in all_entity_names if any(entity_matches(name, n) for n in nums)
     )
+
+
+from typing import List
+
+
+@dataclass(frozen=True)
+class AccessProfile:
+    """Resolved per-process authorization context for one CAM."""
+    user_id: str
+    customer_numbers: Tuple[int, ...]
+    entity_names: FrozenSet[str]
+    entity_field: str
+    compartment_id: str
+    namespace: str
+    allow_delivery: bool
+
+
+def build_profile(
+    config: AccessControlConfig, user_id: str, all_entity_names: List[str]
+) -> AccessProfile:
+    """Build a CAM's AccessProfile, failing closed on any misconfiguration.
+
+    Raises AccessConfigError if the user is unknown, has no customers, or resolves
+    to zero live entities. Callers must treat a raise as process-fatal.
+    """
+    entry = config.cams.get(user_id)
+    if entry is None:
+        raise AccessConfigError(
+            f"--enforce-access set but user '{user_id}' is not in access_control.yaml"
+        )
+    if not entry.customers:
+        raise AccessConfigError(f"CAM '{user_id}' has an empty customers list")
+
+    entity_names = resolve_entities(entry.customers, all_entity_names)
+    if not entity_names:
+        raise AccessConfigError(
+            f"CAM '{user_id}' customer numbers {list(entry.customers)} matched no live "
+            f"entities in compartment {config.compartment_id}"
+        )
+
+    return AccessProfile(
+        user_id=user_id,
+        customer_numbers=entry.customers,
+        entity_names=entity_names,
+        entity_field=config.entity_field,
+        compartment_id=config.compartment_id,
+        namespace=config.namespace,
+        allow_delivery=entry.allow_delivery,
+    )
