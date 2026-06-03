@@ -517,3 +517,53 @@ async def test_client_audits_effective_scoped_query(monkeypatch):
     assert event["args"]["effective_query"] == "'Entity' in ('223_x') | stats count"
     assert event["args"]["compartment_id"] == "allowed_compartment"
     assert event["args"]["include_subcompartments"] is False
+
+
+@pytest.mark.asyncio
+async def test_client_without_profile_preserves_caller_query_and_scope(monkeypatch):
+    from oci_logan_mcp.client import OCILogAnalyticsClient
+
+    client = OCILogAnalyticsClient.__new__(OCILogAnalyticsClient)
+    client.settings = SimpleNamespace(query=SimpleNamespace(max_results=100))
+    client._compartment_id = "default_compartment"
+    client._namespace = "ns"
+    client.access_profile = None
+    client.access_audit_logger = SimpleNamespace(log=AsyncMock())
+    captured = {}
+
+    async def fake_execute(query_string, time_start, time_end, max_results,
+                           compartment_id, include_subcompartments):
+        captured.update({
+            "query": query_string,
+            "compartment_id": compartment_id,
+            "include_subcompartments": include_subcompartments,
+        })
+        return {"rows": [], "columns": []}
+
+    monkeypatch.setattr(client, "_execute_single_query", fake_execute)
+
+    await OCILogAnalyticsClient.query(
+        client,
+        query_string="Entity = '999_other' | stats count",
+        time_start="2026-06-01T00:00:00+00:00",
+        time_end="2026-06-01T01:00:00+00:00",
+        compartment_id="caller_compartment",
+        include_subcompartments=True,
+    )
+
+    assert captured["query"] == "Entity = '999_other' | stats count"
+    assert captured["compartment_id"] == "caller_compartment"
+    assert captured["include_subcompartments"] is True
+    client.access_audit_logger.log.assert_not_called()
+
+
+@pytest.mark.asyncio
+async def test_handler_without_profile_does_not_apply_cam_tool_gate():
+    from oci_logan_mcp.handlers import MCPHandlers
+
+    h = _handler_with_profile()
+    h.access_profile = None
+
+    await MCPHandlers.handle_tool_call(h, "investigate_incident", {"incident_id": "i-1"})
+
+    h._investigate_incident.assert_awaited_once_with({"incident_id": "i-1"})
