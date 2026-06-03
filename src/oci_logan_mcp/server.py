@@ -102,6 +102,10 @@ class OCILogAnalyticsMCPServer:
         async def list_tools() -> list[Tool]:
             """Return list of available tools."""
             tool_defs = get_tools()
+            prof = getattr(self.handlers, "access_profile", None)
+            if prof is not None:
+                from .access_control import is_tool_allowed
+                tool_defs = [t for t in tool_defs if is_tool_allowed(prof, t["name"])]
             tools = []
             for t in tool_defs:
                 kwargs = {
@@ -121,6 +125,10 @@ class OCILogAnalyticsMCPServer:
         async def list_resources() -> list[Resource]:
             """Return list of available resources."""
             resource_defs = get_resources()
+            prof = getattr(self.handlers, "access_profile", None)
+            if prof is not None:
+                from .access_control import is_resource_allowed
+                resource_defs = [r for r in resource_defs if is_resource_allowed(r["uri"])]
             return [
                 Resource(
                     uri=r["uri"],

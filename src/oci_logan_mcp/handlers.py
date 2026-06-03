@@ -719,8 +719,18 @@ class MCPHandlers:
 
     async def handle_resource_read(self, uri: str) -> Any:
         """Handle resource read requests."""
+        if self.access_profile is not None:
+            from .access_control import is_resource_allowed
+            if not is_resource_allowed(uri):
+                return {"error": "Resource not permitted in access-controlled (CAM) mode."}
         if uri == "loganalytics://schema":
-            return await self.schema_manager.get_full_schema()
+            schema = await self.schema_manager.get_full_schema()
+            if self.access_profile is not None:
+                allowed = self.access_profile.entity_names
+                schema["entities"] = [
+                    e for e in schema.get("entities", []) if e.get("name") in allowed
+                ]
+            return schema
         elif uri == "loganalytics://query-templates":
             entries = self.catalog.for_templates_resource()
             return {"templates": [self._catalog_entry_to_dict(e) for e in entries]}

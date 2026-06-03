@@ -315,3 +315,34 @@ async def test_run_saved_search_preserves_scope_and_time_args():
         include_subcompartments=False,
         compartment_id="allowed_compartment",
     )
+
+
+@pytest.mark.asyncio
+async def test_handle_resource_read_blocks_roster_resources():
+    from oci_logan_mcp.handlers import MCPHandlers
+
+    h = MCPHandlers.__new__(MCPHandlers)
+    h.access_profile = _profile()
+
+    result = await MCPHandlers.handle_resource_read(h, "loganalytics://tenancy-context")
+
+    assert result["error"].startswith("Resource not permitted")
+
+
+@pytest.mark.asyncio
+async def test_schema_resource_filters_entities():
+    from oci_logan_mcp.handlers import MCPHandlers
+
+    h = MCPHandlers.__new__(MCPHandlers)
+    h.access_profile = _profile()
+    h.schema_manager = SimpleNamespace(
+        get_full_schema=AsyncMock(return_value={
+            "entities": [{"name": "223_x"}, {"name": "999_other"}],
+            "fields": [{"name": "Log Source"}],
+        })
+    )
+
+    schema = await MCPHandlers.handle_resource_read(h, "loganalytics://schema")
+
+    assert [e["name"] for e in schema["entities"]] == ["223_x"]
+    assert schema["fields"] == [{"name": "Log Source"}]
