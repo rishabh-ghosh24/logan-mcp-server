@@ -178,35 +178,35 @@ def _leading_token(segment: str) -> str:
     return segment.strip().split(None, 1)[0].lower() if segment.strip() else ""
 
 
-_SEARCH_HEAD_RE = re.compile(
-    r"""^\s*(
-        \*$
-        |
-        \([^)]*
-        |
-        not\s+
-        |
-        '[^']+'\s*(=|!=|<>|<=|>=|<|>|\bin\b|\blike\b|\bcontains\b|\bis\b)
-        |
-        "[^"]+"\s*(=|!=|<>|<=|>=|<|>|\bin\b|\blike\b|\bcontains\b|\bis\b)
-        |
-        [A-Za-z_][\w.]*\s*(=|!=|<>|<=|>=|<|>|\bin\b|\blike\b|\bcontains\b|\bis\b)
-    )""",
-    re.IGNORECASE | re.VERBOSE,
+_FIELD = r"(?:'[^']+'|\"[^\"]+\"|[A-Za-z_][\w.]*)"
+_SCALAR = r"(?:'[^']*'|\"[^\"]*\"|-?\d+(?:\.\d+)?|[A-Za-z_][\w.]*)"
+_INLIST = r"\(\s*" + _SCALAR + r"(?:\s*,\s*" + _SCALAR + r")*\s*\)"
+_PREDICATE = (
+    r"(?:"
+    + _FIELD + r"\s*(?:=|!=|<>|<=|>=|<|>)\s*" + _SCALAR
+    + r"|" + _FIELD + r"\s+in\s+" + _INLIST
+    + r"|" + _FIELD + r"\s+(?:like|contains)\s+" + _SCALAR
+    + r"|" + _FIELD + r"\s+is\s+(?:not\s+)?null"
+    + r")"
+)
+_TERM = r"(?:not\s+)?(?:\(\s*" + _PREDICATE + r"\s*\)|" + _PREDICATE + r")"
+_HEAD_GRAMMAR = re.compile(
+    _TERM + r"(?:\s+(?:and|or)\s+" + _TERM + r")*",
+    re.IGNORECASE,
 )
 
 
 def _head_is_search_expression(head: str) -> bool:
-    """Conservative check for a base search/filter expression.
+    """Full-match check that the head is a pure search/filter expression.
 
-    CAM mode does not need free-text or command-form heads for capacity reports.
-    If this does not look like `*`, a parenthesized/filter expression, or a field
-    predicate, reject it before injecting the entity predicate.
+    Fail-closed: the ENTIRE head must be field predicates joined by and/or
+    (optionally negated or single-paren-wrapped), or '*'. Any trailing or
+    embedded command text causes a non-match and is rejected.
     """
     stripped = head.strip()
     if stripped in ("", "*"):
         return True
-    return bool(_SEARCH_HEAD_RE.match(stripped))
+    return _HEAD_GRAMMAR.fullmatch(stripped) is not None
 
 
 def validate_cam_query(query: str) -> None:
@@ -242,9 +242,14 @@ _ALL_KNOWN_COMMANDS: FrozenSet[str] = CAM_QUERY_COMMANDS | frozenset({
 })
 
 
+_SAFE_ENTITY_RE = re.compile(r"[A-Za-z0-9_.\- ]+")
+
+
 def _quote_value(value: str) -> str:
-    if "'" in value:
-        raise QueryNotAllowed(f"Entity name {value!r} contains a quote; cannot scope safely.")
+    if _SAFE_ENTITY_RE.fullmatch(value) is None:
+        raise QueryNotAllowed(
+            f"Entity name {value!r} contains unsafe characters; cannot scope safely."
+        )
     return f"'{value}'"
 
 

@@ -190,3 +190,38 @@ def test_scope_query_widen_attempt_becomes_empty_intersection():
 def test_scope_query_rejects_unsafe_via_validate():
     with pytest.raises(QueryNotAllowed):
         scope_query("searchlookup table='t'", ENTS, "Entity")
+
+
+@pytest.mark.parametrize("bad_head_query", [
+    "foo = 1 searchlookup table=x",
+    "'Log Source' = 'x'\nlookup table=t",
+    "( anything searchlookup",
+    "not searchlookup table=x",
+    "foo = 1 madeupcommand x",
+])
+def test_validate_rejects_trailing_command_in_head(bad_head_query):
+    with pytest.raises(QueryNotAllowed):
+        validate_cam_query(bad_head_query)
+
+
+@pytest.mark.parametrize("good_head", [
+    "*",
+    "'Log Source' = 'Assurance_Image'",
+    "'Entity' = '223_x'",
+    "'Entity' in ('223_x', '66_y')",
+    "Severity = error",
+    "a = 1 and b = 2",
+    "'x' = '1' or 'y' = '2'",
+])
+def test_validate_accepts_valid_search_heads(good_head):
+    validate_cam_query(good_head + " | stats count")
+
+
+def test_scope_query_head_has_no_command_keyword():
+    out = scope_query("'Log Source' = 'X' | stats count", frozenset({"223_x"}), "Entity")
+    assert "searchlookup" not in out and "lookup" not in out
+
+
+def test_quote_value_rejects_unsafe_entity_name():
+    with pytest.raises(QueryNotAllowed):
+        scope_query("* | stats count", frozenset({"bad') or '1'='1"}), "Entity")
