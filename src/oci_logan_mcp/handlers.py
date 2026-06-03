@@ -322,6 +322,23 @@ class MCPHandlers:
             )
             return [{"type": "text", "text": f"Unknown tool: {name}"}]
 
+        # --- CAM access-control gate (runs after unknown-tool, before read-only) ---
+        if self.access_profile is not None:
+            from .access_control import is_tool_allowed
+            if not is_tool_allowed(self.access_profile, name):
+                self._write_audit_event(
+                    user=user_id, tool=name, args=arguments,
+                    outcome="access_denied", trace_id=trace_id,
+                    audit_ref=audit_ref, audit_strictness=audit_strictness,
+                    result_summary={"success": False, "error": "not permitted"},
+                    blocked=True, block_reason="access_control",
+                )
+                return [{"type": "text", "text": json.dumps({
+                    "status": "access_denied",
+                    "tool": name,
+                    "error": "This tool is not permitted in access-controlled (CAM) mode.",
+                }, indent=2)}]
+
         # --- Read-only guard (runs BEFORE confirmation gate) ---
         try:
             raise_if_read_only(name, read_only=self.settings.read_only)
@@ -762,6 +779,9 @@ class MCPHandlers:
         entities = await self.schema_manager.get_entities(
             entity_type=args.get("entity_type")
         )
+        if self.access_profile is not None:
+            allowed = self.access_profile.entity_names
+            entities = [e for e in entities if e.get("name") in allowed]
         return [{"type": "text", "text": json.dumps(entities, indent=2)}]
 
     async def _list_parsers(self, args: Dict) -> List[Dict]:
@@ -1009,8 +1029,14 @@ class MCPHandlers:
         if not query:
             return [{"type": "text", "text": "Saved search has no query defined"}]
 
+        compartment_id, include_subs = self._resolve_scope(args)
         result = await self.query_engine.execute(
-            query=query, time_range="last_1_hour"
+            query=query,
+            time_range=args.get("time_range", "last_1_hour"),
+            time_start=args.get("time_start"),
+            time_end=args.get("time_end"),
+            include_subcompartments=include_subs,
+            compartment_id=compartment_id,
         )
         return [{"type": "text", "text": json.dumps(result, indent=2, default=str)}]
 

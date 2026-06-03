@@ -201,3 +201,117 @@ async def test_notification_topic_listing_does_not_walk_compartments_for_cam(mon
     )
 
     assert listed == ["allowed_compartment"]
+
+
+import json
+from unittest.mock import AsyncMock
+
+
+_HANDLER_METHODS = (
+    "_list_log_sources", "_list_fields", "_list_entities", "_list_parsers",
+    "_list_labels", "_list_saved_searches", "_list_log_groups",
+    "_validate_query", "_run_query", "_run_saved_search", "_run_batch_queries",
+    "_diff_time_windows", "_pivot_on_entity", "_ingestion_health",
+    "_parser_failure_triage", "_investigate_incident",
+    "_investigate_and_generate_report", "_generate_incident_report",
+    "_get_report_delivery_options", "_prepare_report_delivery",
+    "_list_notification_topics", "_get_incident_report", "_list_incident_reports",
+    "_deliver_report", "_why_did_this_fire", "_find_rare_events",
+    "_create_log_source_from_sample", "_trace_request_id",
+    "_related_dashboards_and_searches", "_visualize", "_export_results",
+    "_set_compartment", "_set_namespace", "_get_current_context",
+    "_list_compartments", "_test_connection", "_find_compartment",
+    "_get_query_examples", "_get_log_summary", "_setup_confirmation_secret",
+    "_save_learned_query", "_update_tenancy_context", "_get_preferences",
+    "_remember_preference", "_create_alert", "_list_alerts", "_update_alert",
+    "_delete_alert", "_create_saved_search", "_update_saved_search",
+    "_delete_saved_search", "_create_dashboard", "_list_dashboards",
+    "_add_dashboard_tile", "_delete_dashboard", "_send_to_slack",
+    "_send_to_telegram", "_explain_query", "_get_session_budget",
+    "_export_transcript", "_record_investigation", "_list_playbooks",
+    "_get_playbook", "_delete_playbook",
+)
+
+
+def _handler_with_profile():
+    from oci_logan_mcp.handlers import MCPHandlers
+
+    h = MCPHandlers.__new__(MCPHandlers)
+    h.access_profile = _profile()
+    h.settings = SimpleNamespace(read_only=False)
+    h.user_store = SimpleNamespace(user_id="cam_alice")
+    h.audit_logger = None
+    h._write_audit_event = lambda **kwargs: True
+    h._extract_audit_ref = lambda args: None
+    h._audit_strictness = lambda name, args: "best_effort"
+    h._clean_args_for_audit = lambda name, args: args
+    h._summarize_tool_result = lambda result, elapsed_ms: {"success": True}
+    h.confirmation_manager = SimpleNamespace(is_guarded_call=lambda name, args: False)
+    for method in _HANDLER_METHODS:
+        setattr(h, method, AsyncMock(return_value=[{"type": "text", "text": "{}"}]))
+    return h
+
+
+@pytest.mark.asyncio
+async def test_handle_tool_call_blocks_disallowed_cam_tool():
+    from oci_logan_mcp.handlers import MCPHandlers
+
+    h = _handler_with_profile()
+    result = await MCPHandlers.handle_tool_call(
+        h, "investigate_incident", {"incident_id": "i-1"}
+    )
+
+    payload = json.loads(result[0]["text"])
+    assert payload["status"] == "access_denied"
+    h._investigate_incident.assert_not_awaited()
+
+
+@pytest.mark.asyncio
+async def test_list_entities_filters_via_handler():
+    from oci_logan_mcp.handlers import MCPHandlers
+
+    h = MCPHandlers.__new__(MCPHandlers)
+    h.access_profile = _profile()
+    h.schema_manager = SimpleNamespace(
+        get_entities=AsyncMock(return_value=[
+            {"name": "223_x"},
+            {"name": "999_other"},
+        ])
+    )
+
+    result = await MCPHandlers._list_entities(h, {})
+    payload = json.loads(result[0]["text"])
+
+    assert [e["name"] for e in payload] == ["223_x"]
+
+
+@pytest.mark.asyncio
+async def test_run_saved_search_preserves_scope_and_time_args():
+    from oci_logan_mcp.handlers import MCPHandlers
+
+    h = MCPHandlers.__new__(MCPHandlers)
+    h.saved_search = SimpleNamespace(
+        get_search_by_name=AsyncMock(),
+        get_search_by_id=AsyncMock(return_value={"query": "* | stats count"}),
+    )
+    h.query_engine = SimpleNamespace(execute=AsyncMock(return_value={"data": []}))
+    h._resolve_scope = lambda args: ("allowed_compartment", False)
+
+    await MCPHandlers._run_saved_search(
+        h,
+        {
+            "id": "saved-1",
+            "time_range": "last_24_hours",
+            "time_start": "2026-06-01T00:00:00Z",
+            "time_end": "2026-06-02T00:00:00Z",
+        },
+    )
+
+    h.query_engine.execute.assert_awaited_once_with(
+        query="* | stats count",
+        time_range="last_24_hours",
+        time_start="2026-06-01T00:00:00Z",
+        time_end="2026-06-02T00:00:00Z",
+        include_subcompartments=False,
+        compartment_id="allowed_compartment",
+    )
