@@ -87,6 +87,9 @@ class OCILogAnalyticsClient:
         self._namespace = settings.log_analytics.namespace
         self._compartment_id = settings.log_analytics.default_compartment_id
 
+        # CAM access control profile (None unless --enforce-access is active).
+        self.access_profile = None
+
     @property
     def monitoring_client(self):
         """Lazy accessor for OCI Monitoring client."""
@@ -176,6 +179,17 @@ class OCILogAnalyticsClient:
         Raises:
             oci.exceptions.ServiceError: If OCI API call fails.
         """
+        if self.access_profile is not None:
+            from .access_control import scope_query
+            query_string = scope_query(
+                query_string,
+                self.access_profile.entity_names,
+                self.access_profile.entity_field,
+            )
+            # Pin scope: ignore caller overrides for CAMs.
+            compartment_id = self.access_profile.compartment_id
+            include_subcompartments = False
+
         effective_compartment = compartment_id or self._compartment_id
 
         _debug(f"=== QUERY START ===")
@@ -329,6 +343,9 @@ class OCILogAnalyticsClient:
     async def list_log_sources(self, compartment_id: Optional[str] = None) -> List[Dict[str, Any]]:
         """List all log sources (auto-paginates across all pages)."""
         await self._rate_limiter.acquire()
+
+        if self.access_profile is not None:
+            compartment_id = self.access_profile.compartment_id
 
         compartment = compartment_id or self._compartment_id
 
@@ -703,9 +720,13 @@ class OCILogAnalyticsClient:
         """List monitored entities (auto-paginates across all pages)."""
         await self._rate_limiter.acquire()
 
+        compartment_id = self._compartment_id
+        if self.access_profile is not None:
+            compartment_id = self.access_profile.compartment_id
+
         kwargs = {
             "namespace_name": self._namespace,
-            "compartment_id": self._compartment_id,
+            "compartment_id": compartment_id,
         }
         if entity_type:
             kwargs["entity_type_name"] = [entity_type]
@@ -1046,6 +1067,10 @@ class OCILogAnalyticsClient:
         lifecycle_state: Optional[str] = None,
     ) -> List[Dict[str, Any]]:
         """List OCI Notifications topics available for report delivery."""
+        if self.access_profile is not None:
+            compartment_id = self.access_profile.compartment_id
+            include_subcompartments = False
+
         base_compartment = compartment_id or self._compartment_id or self.tenancy_id
         if not base_compartment:
             return []
