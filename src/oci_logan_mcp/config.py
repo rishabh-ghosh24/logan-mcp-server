@@ -153,6 +153,8 @@ class Settings:
     ingestion_health: IngestionHealthConfig = field(default_factory=IngestionHealthConfig)
     report_delivery: ReportDeliveryConfig = field(default_factory=ReportDeliveryConfig)
     read_only: bool = False
+    enforce_access: bool = False
+    access_control_path: str = ""   # optional override; default resolved in server
     transcript_dir: Path = field(default_factory=lambda: Path.home() / ".oci-logan-mcp" / "transcripts")
 
     def to_dict(self) -> dict:
@@ -449,6 +451,11 @@ def _apply_env_overrides(settings: Settings) -> Settings:
                 "1/true/yes/on or 0/false/no/off. Leaving read_only unchanged.",
                 raw,
             )
+
+    if os.environ.get("OCI_LOGAN_MCP_ENFORCE_ACCESS"):
+        settings.enforce_access = True
+    if os.environ.get("OCI_LOGAN_MCP_ACCESS_CONFIG"):
+        settings.access_control_path = os.environ["OCI_LOGAN_MCP_ACCESS_CONFIG"]
 
     return settings
 

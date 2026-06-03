@@ -290,3 +290,10 @@ def test_resource_sets_partition_the_registry():
     assert registered - classified == set(), f"unclassified: {registered - classified}"
     assert classified - registered == set(), f"stale: {classified - registered}"
     assert (CAM_ALLOWED_RESOURCES & CAM_BLOCKED_RESOURCES) == set()
+
+
+from oci_logan_mcp.config import Settings
+
+
+def test_settings_has_enforce_access_default_false():
+    assert Settings().enforce_access is False

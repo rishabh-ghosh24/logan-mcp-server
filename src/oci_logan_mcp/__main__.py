@@ -51,6 +51,12 @@ def main():
         help="Disable all mutating tools (alarms, saved searches, dashboards, "
              "notifications, preference writes). Reads remain allowed.",
     )
+    parser.add_argument(
+        "--enforce-access",
+        action="store_true",
+        help="Enable CAM access control (Assurance). Requires access_control.yaml; "
+             "refuses to start if the --user is not a configured CAM.",
+    )
     args = parser.parse_args()
 
     # Reject invalid flag combinations
@@ -83,6 +89,8 @@ def main():
             os.environ["LOGAN_USER"] = args.user
         if args.read_only:
             os.environ["OCI_LOGAN_MCP_READ_ONLY"] = "1"
+        if args.enforce_access:
+            os.environ["OCI_LOGAN_MCP_ENFORCE_ACCESS"] = "1"
         server_main()
 
 
