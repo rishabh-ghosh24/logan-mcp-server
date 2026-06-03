@@ -262,6 +262,10 @@ class OCILogAnalyticsMCPServer:
         self.audit_logger = AuditLogger(log_dir=base_dir / "logs", session_id=session_id)
         self._session_id = session_id
 
+        # Let the client audit the effective scoped query (Task 12).
+        if self.oci_client is not None:
+            self.oci_client.access_audit_logger = self.audit_logger
+
         # Deprecation warning for old env var
         if os.environ.get("OCI_LA_CONFIRMATION_SECRET"):
             logger.warning(

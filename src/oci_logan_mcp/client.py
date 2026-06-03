@@ -90,6 +90,9 @@ class OCILogAnalyticsClient:
         # CAM access control profile (None unless --enforce-access is active).
         self.access_profile = None
 
+        # Audit logger for the effective scoped query (attached by the server).
+        self.access_audit_logger = None
+
     @property
     def monitoring_client(self):
         """Lazy accessor for OCI Monitoring client."""
@@ -181,6 +184,7 @@ class OCILogAnalyticsClient:
         """
         if self.access_profile is not None:
             from .access_control import scope_query
+            original_query = query_string
             query_string = scope_query(
                 query_string,
                 self.access_profile.entity_names,
@@ -189,6 +193,20 @@ class OCILogAnalyticsClient:
             # Pin scope: ignore caller overrides for CAMs.
             compartment_id = self.access_profile.compartment_id
             include_subcompartments = False
+            # Audit the effective scoped query (defense-in-depth, spec 6.10).
+            if self.access_audit_logger is not None:
+                self.access_audit_logger.log(
+                    user=self.access_profile.user_id,
+                    tool="__access_control",
+                    args={
+                        "original_query": original_query,
+                        "effective_query": query_string,
+                        "compartment_id": compartment_id,
+                        "include_subcompartments": include_subcompartments,
+                    },
+                    outcome="query_scoped",
+                    result_summary={"success": True},
+                )
 
         effective_compartment = compartment_id or self._compartment_id
 

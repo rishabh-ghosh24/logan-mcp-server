@@ -450,3 +450,70 @@ def test_report_store_imports_legacy_shared_import_without_enforce(tmp_path):
     ReportStore(tmp_path, user_id="cam_alice", enforce_access=False)
 
     assert (tmp_path / "users" / "cam_alice" / "store" / legacy_id).exists()
+
+
+from datetime import datetime, timezone
+
+
+def test_cache_key_namespaced_by_profile_behavior():
+    from oci_logan_mcp.query_engine import QueryEngine
+
+    engine = QueryEngine(
+        oci_client=SimpleNamespace(access_profile=_profile()),
+        cache=SimpleNamespace(),
+        logger=SimpleNamespace(),
+    )
+    start = datetime(2026, 6, 1, tzinfo=timezone.utc)
+    end = datetime(2026, 6, 2, tzinfo=timezone.utc)
+
+    key_a = engine._make_cache_key("* | stats count", start, end, False, "c")
+    engine.oci_client.access_profile = AccessProfile(
+        user_id="cam_bob",
+        customer_numbers=(999,),
+        entity_names=frozenset({"999_y"}),
+        entity_field="Entity",
+        compartment_id="allowed_compartment",
+        namespace="ns",
+        allow_delivery=True,
+    )
+    key_b = engine._make_cache_key("* | stats count", start, end, False, "c")
+
+    assert key_a != key_b
+
+
+@pytest.mark.asyncio
+async def test_client_audits_effective_scoped_query(monkeypatch):
+    from oci_logan_mcp.client import OCILogAnalyticsClient
+
+    events = []
+    client = OCILogAnalyticsClient.__new__(OCILogAnalyticsClient)
+    client.settings = SimpleNamespace(query=SimpleNamespace(max_results=100))
+    client._compartment_id = "default_compartment"
+    client._namespace = "ns"
+    client.access_profile = _profile()
+    client.access_audit_logger = SimpleNamespace(log=lambda **kwargs: events.append(kwargs))
+
+    async def fake_execute(query_string, time_start, time_end, max_results,
+                           compartment_id, include_subcompartments):
+        return {"rows": [], "columns": []}
+
+    monkeypatch.setattr(client, "_execute_single_query", fake_execute)
+
+    await OCILogAnalyticsClient.query(
+        client,
+        query_string="* | stats count",
+        time_start="2026-06-01T00:00:00+00:00",
+        time_end="2026-06-01T01:00:00+00:00",
+        compartment_id="attacker_compartment",
+        include_subcompartments=True,
+    )
+
+    assert events
+    event = events[-1]
+    assert event["user"] == "cam_alice"
+    assert event["tool"] == "__access_control"
+    assert event["outcome"] == "query_scoped"
+    assert event["args"]["original_query"] == "* | stats count"
+    assert event["args"]["effective_query"] == "'Entity' in ('223_x') | stats count"
+    assert event["args"]["compartment_id"] == "allowed_compartment"
+    assert event["args"]["include_subcompartments"] is False

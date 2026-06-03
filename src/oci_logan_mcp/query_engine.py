@@ -248,4 +248,6 @@ class QueryEngine:
         """Generate cache key for a query."""
         sub_flag = "sub" if include_subcompartments else "nosub"
         comp = compartment_id or "default"
-        return f"{query}:{start.isoformat()}:{end.isoformat()}:{sub_flag}:{comp}"
+        prof = getattr(self.oci_client, "access_profile", None)
+        user_part = prof.user_id if prof is not None else ""
+        return f"{user_part}:{query}:{start.isoformat()}:{end.isoformat()}:{sub_flag}:{comp}"
