@@ -64,3 +64,24 @@ def load_access_config(path: Path) -> AccessControlConfig:
         default_allow_delivery=default_allow_delivery,
         cams=cams,
     )
+
+
+from typing import FrozenSet, Iterable
+
+
+def entity_matches(entity_name: str, number: int) -> bool:
+    """True iff entity_name is `<number>` or starts with `<number>_`.
+
+    The number is matched as the exact integer string at the very start; the
+    portion after the first '_' (the customer name) is never inspected.
+    """
+    prefix = str(number)
+    return entity_name == prefix or entity_name.startswith(prefix + "_")
+
+
+def resolve_entities(numbers: Iterable[int], all_entity_names: Iterable[str]) -> FrozenSet[str]:
+    """Return the subset of all_entity_names matching any of the given numbers."""
+    nums = tuple(numbers)
+    return frozenset(
+        name for name in all_entity_names if any(entity_matches(name, n) for n in nums)
+    )

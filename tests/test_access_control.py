@@ -49,3 +49,29 @@ def test_missing_required_field_raises(tmp_path):
     """)  # no compartment_id
     with pytest.raises(AccessConfigError):
         load_access_config(path)
+
+
+from oci_logan_mcp.access_control import entity_matches, resolve_entities
+
+
+def test_entity_matches_anchored():
+    # number must be at the start, followed by '_' (or be the whole name)
+    assert entity_matches("223_d360_silicone", 223)
+    assert entity_matches("66_flsmidth_co_as", 66)
+    assert entity_matches("223", 223)            # whole-name match
+    # the digits inside the name part are never inspected
+    assert not entity_matches("223_d360_silicone", 36)
+    assert not entity_matches("223_d360_silicone", 360)
+    # prefix collisions are rejected: next char must be '_'
+    assert not entity_matches("232_elca", 2)
+    assert not entity_matches("223_x", 22)
+    assert not entity_matches("1400_indra", 140)
+    assert entity_matches("1400_indra", 1400)
+
+
+def test_resolve_entities_union():
+    all_entities = ["223_d360_silicone", "66_flsmidth_co_as", "232_elca", "1400_indra"]
+    assert resolve_entities((223, 66), all_entities) == frozenset(
+        {"223_d360_silicone", "66_flsmidth_co_as"}
+    )
+    assert resolve_entities((9999,), all_entities) == frozenset()
