@@ -117,3 +117,76 @@ def test_build_profile_zero_resolved_fails_closed(tmp_path):
     # cam_alice's numbers don't match any live entity -> refuse (misconfig/typo)
     with pytest.raises(AccessConfigError):
         build_profile(_cfg(tmp_path), "cam_alice", ["999_other"])
+
+
+from oci_logan_mcp.access_control import (
+    CAM_QUERY_COMMANDS,
+    QueryNotAllowed,
+    scope_query,
+    validate_cam_query,
+)
+
+ENTS = frozenset({"223_d360_silicone", "66_flsmidth_co_as"})
+
+
+def test_validate_accepts_plain_reporting_query():
+    validate_cam_query("* | stats count by 'Log Source' | sort -count | head 10")
+    validate_cam_query("'Log Source' = 'Assurance_Image' | timestats count")
+
+
+def test_validate_rejects_brackets_anywhere():
+    with pytest.raises(QueryNotAllowed):
+        validate_cam_query("* | addfields [ * | stats count ] as c")
+
+
+def test_validate_rejects_command_form_head():
+    # These commands may appear before the first pipe; CAM mode requires the head
+    # to be a pure search/filter expression instead.
+    for query in [
+        "searchlookup table='t' | fields *",
+        "lookup table='t'",
+        "createview view='v' [ * | stats count ]",
+        "map [ * | stats count ]",
+        "updatetable table='t' [ * | stats count ]",
+        "link Entity",
+        "classify Severity",
+        "addfields [ * | stats count ] as c",
+    ]:
+        with pytest.raises(QueryNotAllowed):
+            validate_cam_query(query)
+
+
+def test_validate_rejects_unknown_bare_command_form_head():
+    # Fail closed: a bare leading token with command-style arguments is not a
+    # field predicate, even if the command is not in our explicit command list.
+    with pytest.raises(QueryNotAllowed):
+        validate_cam_query("madeupcommand arg=value | stats count")
+
+
+def test_validate_rejects_non_allowlisted_pipeline_command():
+    with pytest.raises(QueryNotAllowed):
+        validate_cam_query("* | classify Severity")
+
+
+def test_scope_query_prepends_predicate():
+    out = scope_query("* | stats count", ENTS, "Entity")
+    assert out.startswith("'Entity' in (")
+    assert "'223_d360_silicone'" in out and "'66_flsmidth_co_as'" in out
+    assert out.endswith("| stats count")
+
+
+def test_scope_query_wraps_non_star_head():
+    out = scope_query("'Log Source' = 'X' | stats count", ENTS, "Entity")
+    assert " and ('Log Source' = 'X') | stats count" in out
+
+
+def test_scope_query_widen_attempt_becomes_empty_intersection():
+    out = scope_query("Entity = '999_other' | stats count", ENTS, "Entity")
+    # the user predicate is ANDed under the allowed-set predicate
+    assert out.startswith("'Entity' in (")
+    assert "and (Entity = '999_other')" in out
+
+
+def test_scope_query_rejects_unsafe_via_validate():
+    with pytest.raises(QueryNotAllowed):
+        scope_query("searchlookup table='t'", ENTS, "Entity")

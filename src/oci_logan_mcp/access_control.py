@@ -134,3 +134,140 @@ def build_profile(
         namespace=config.namespace,
         allow_delivery=entry.allow_delivery,
     )
+
+
+import re
+
+
+class QueryNotAllowed(Exception):
+    """Raised when a CAM query cannot be safely scoped (fail-closed)."""
+
+
+# Exact allowlist of pipeline commands that operate only on the already-scoped
+# record set (no sub-query, no source/time/entity re-selector). See spec 6.5.
+CAM_QUERY_COMMANDS: FrozenSet[str] = frozenset({
+    "stats", "timestats", "eventstats", "where", "eval", "sort",
+    "head", "tail", "fields", "fieldsummary", "distinct",
+    "top", "bottom", "rename",
+})
+
+
+def _split_top_level_pipes(query: str) -> List[str]:
+    """Split on '|' that are not inside single/double quotes."""
+    segments, buf, quote = [], [], None
+    for ch in query:
+        if quote:
+            buf.append(ch)
+            if ch == quote:
+                quote = None
+        elif ch in ("'", '"'):
+            quote = ch
+            buf.append(ch)
+        elif ch == "|":
+            segments.append("".join(buf))
+            buf = []
+        else:
+            buf.append(ch)
+    if quote is not None:
+        raise QueryNotAllowed("Unbalanced quote in query; cannot scope safely.")
+    segments.append("".join(buf))
+    return segments
+
+
+def _leading_token(segment: str) -> str:
+    return segment.strip().split(None, 1)[0].lower() if segment.strip() else ""
+
+
+_SEARCH_HEAD_RE = re.compile(
+    r"""^\s*(
+        \*$
+        |
+        \([^)]*
+        |
+        not\s+
+        |
+        '[^']+'\s*(=|!=|<>|<=|>=|<|>|\bin\b|\blike\b|\bcontains\b|\bis\b)
+        |
+        "[^"]+"\s*(=|!=|<>|<=|>=|<|>|\bin\b|\blike\b|\bcontains\b|\bis\b)
+        |
+        [A-Za-z_][\w.]*\s*(=|!=|<>|<=|>=|<|>|\bin\b|\blike\b|\bcontains\b|\bis\b)
+    )""",
+    re.IGNORECASE | re.VERBOSE,
+)
+
+
+def _head_is_search_expression(head: str) -> bool:
+    """Conservative check for a base search/filter expression.
+
+    CAM mode does not need free-text or command-form heads for capacity reports.
+    If this does not look like `*`, a parenthesized/filter expression, or a field
+    predicate, reject it before injecting the entity predicate.
+    """
+    stripped = head.strip()
+    if stripped in ("", "*"):
+        return True
+    return bool(_SEARCH_HEAD_RE.match(stripped))
+
+
+def validate_cam_query(query: str) -> None:
+    """Reject anything that could open an unscoped data context. See spec 6.5."""
+    if "[" in query or "]" in query:
+        raise QueryNotAllowed("Sub-query brackets are not permitted in access-controlled mode.")
+    segments = _split_top_level_pipes(query)
+    head = segments[0].strip()
+    # (c) head must be a pure search expression, not a command invocation
+    head_token = _leading_token(head)
+    if head_token and head_token != "*" and head_token in _ALL_KNOWN_COMMANDS:
+        raise QueryNotAllowed(
+            f"Query may not begin with the command '{head_token}'; the leading "
+            f"segment must be a search expression."
+        )
+    if not _head_is_search_expression(head):
+        raise QueryNotAllowed(
+            "The leading query segment must be a field predicate or '*'; "
+            "command-form heads are not permitted in access-controlled mode."
+        )
+    # (b) every pipeline command must be in the allowlist
+    for seg in segments[1:]:
+        cmd = _leading_token(seg)
+        if cmd not in CAM_QUERY_COMMANDS:
+            raise QueryNotAllowed(f"Pipeline command '{cmd}' is not permitted in access-controlled mode.")
+
+
+# Known command keywords that must never start a query head (context-openers and
+# any pipeline command). Used only by validate_cam_query rule (c).
+_ALL_KNOWN_COMMANDS: FrozenSet[str] = CAM_QUERY_COMMANDS | frozenset({
+    "searchlookup", "lookup", "createview", "map", "updatetable",
+    "link", "classify", "addfields", "nlp", "cluster", "regex", "extract",
+})
+
+
+def _quote_value(value: str) -> str:
+    if "'" in value:
+        raise QueryNotAllowed(f"Entity name {value!r} contains a quote; cannot scope safely.")
+    return f"'{value}'"
+
+
+def scope_query(query: str, entity_names: FrozenSet[str], entity_field: str) -> str:
+    """Validate then rewrite a query so it is constrained to entity_names.
+
+    Result: `'<field>' in (<entities>) [and (<head>)] | <rest>`. Raises
+    QueryNotAllowed if the query is unsafe to scope.
+    """
+    if not entity_names:
+        raise QueryNotAllowed("No entities resolved for this user; refusing to run query.")
+    validate_cam_query(query)
+    values = ", ".join(_quote_value(e) for e in sorted(entity_names))
+    predicate = f"'{entity_field}' in ({values})"
+
+    segments = _split_top_level_pipes(query)
+    head = segments[0].strip()
+    tail = segments[1:]
+
+    if head in ("", "*"):
+        scoped_head = predicate
+    else:
+        scoped_head = f"{predicate} and ({head})"
+
+    parts = [scoped_head] + [seg.strip() for seg in tail]
+    return " | ".join(parts)
