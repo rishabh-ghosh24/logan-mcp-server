@@ -87,6 +87,7 @@ class MCPHandlers:
         preference_store: Optional[PreferenceStore] = None,
         secret_store: Optional[SecretStore] = None,
         audit_logger: Optional[AuditLogger] = None,
+        access_profile=None,
     ):
         """Initialize MCP handlers."""
         self.settings = settings
@@ -97,6 +98,9 @@ class MCPHandlers:
         self.user_store = user_store
         self.preference_store = preference_store
         self.audit_logger = audit_logger
+        # CAM access profile must be known before any helper service (notably
+        # ReportStore) is constructed so CAM mode is established up front.
+        self.access_profile = access_profile
 
         if secret_store is None:
             from pathlib import Path

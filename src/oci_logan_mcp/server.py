@@ -186,6 +186,11 @@ class OCILogAnalyticsMCPServer:
 
         self.settings = load_config()
 
+        # Strict identity check: the real Settings.enforce_access is a bool, but
+        # loosely-mocked settings in unit tests are truthy for every attribute.
+        # `is True` keeps real behavior identical while not firing on a MagicMock.
+        enforce_access = self.settings.enforce_access is True
+
         # Initialize components
         self.cache = CacheManager(self.settings.cache)
         self.query_logger = QueryLogger(self.settings.logging)
@@ -196,6 +201,10 @@ class OCILogAnalyticsMCPServer:
                 f"Connected to OCI Log Analytics (namespace: {self.oci_client.namespace})"
             )
         except Exception as e:
+            if enforce_access:
+                raise RuntimeError(
+                    f"--enforce-access requires a working OCI client; init failed: {e}"
+                ) from e
             logger.error(f"Failed to initialize OCI client: {e}")
             logger.warning("Server will start but OCI operations will fail")
             self.oci_client = None
@@ -210,6 +219,30 @@ class OCILogAnalyticsMCPServer:
             user_dir=base_dir / "users" / self.user_store.user_id
         )
         logger.info(f"User identity: {self.user_store.user_id}")
+
+        # Build the CAM access profile fail-closed before serving. The CAM
+        # identity comes from the same UserStore that drives learned queries,
+        # preferences, secrets, reports, and audit user ids.
+        self.access_profile = None
+        if enforce_access:
+            from .access_control import build_profile, load_access_config
+            ac_path = self.settings.access_control_path or str(
+                CONFIG_PATH.parent / "access_control.yaml"
+            )
+            ac_config = load_access_config(ac_path)  # raises AccessConfigError -> fatal
+            # Pin OCI scope to the access-control config
+            self.oci_client.namespace = ac_config.namespace
+            self.oci_client.compartment_id = ac_config.compartment_id
+            all_entities = [
+                e["name"] for e in (await self.oci_client.list_entities() or [])
+            ]
+            user_id = self.user_store.user_id
+            self.access_profile = build_profile(ac_config, user_id, all_entities)
+            self.oci_client.access_profile = self.access_profile   # client enforcement (Task 8)
+            logger.info(
+                f"CAM access control active for '{user_id}': "
+                f"{len(self.access_profile.entity_names)} entities"
+            )
 
         # Initialize per-user secret store
         secret_path = base_dir / "users" / self.user_store.user_id / "confirmation_secret.hash"
@@ -281,6 +314,7 @@ class OCILogAnalyticsMCPServer:
                 preference_store=self.preference_store,
                 secret_store=self.secret_store,
                 audit_logger=self.audit_logger,
+                access_profile=self.access_profile,
             )
 
         logger.info("OCI Log Analytics MCP Server initialized")
