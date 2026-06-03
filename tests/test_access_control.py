@@ -225,3 +225,68 @@ def test_scope_query_head_has_no_command_keyword():
 def test_quote_value_rejects_unsafe_entity_name():
     with pytest.raises(QueryNotAllowed):
         scope_query("* | stats count", frozenset({"bad') or '1'='1"}), "Entity")
+
+
+from oci_logan_mcp.access_control import (
+    CAM_ALLOWED_TOOLS,
+    CAM_CONDITIONAL_TOOLS,
+    CAM_BLOCKED_TOOLS,
+    CAM_ALLOWED_RESOURCES,
+    is_tool_allowed,
+    is_resource_allowed,
+)
+from oci_logan_mcp.tools import get_tools
+from oci_logan_mcp.resources import get_resources
+
+
+def test_tool_sets_partition_the_registry():
+    registered = {t["name"] for t in get_tools()}
+    classified = CAM_ALLOWED_TOOLS | CAM_CONDITIONAL_TOOLS | CAM_BLOCKED_TOOLS
+    # every registered tool is classified exactly once; no stale names
+    assert registered - classified == set(), f"unclassified: {registered - classified}"
+    assert classified - registered == set(), f"stale: {classified - registered}"
+    assert (CAM_ALLOWED_TOOLS & CAM_BLOCKED_TOOLS) == set()
+    assert (CAM_ALLOWED_TOOLS & CAM_CONDITIONAL_TOOLS) == set()
+    assert (CAM_CONDITIONAL_TOOLS & CAM_BLOCKED_TOOLS) == set()
+
+
+def test_known_blocked_and_allowed():
+    assert "set_compartment" in CAM_BLOCKED_TOOLS
+    assert "investigate_incident" in CAM_BLOCKED_TOOLS
+    assert "export_transcript" in CAM_BLOCKED_TOOLS
+    assert "run_query" in CAM_ALLOWED_TOOLS
+    assert "list_entities" in CAM_ALLOWED_TOOLS
+    assert "deliver_report" in CAM_CONDITIONAL_TOOLS
+
+
+def test_is_tool_allowed_respects_delivery_flag(tmp_path):
+    prof_yes = build_profile(_cfg(tmp_path), "cam_alice", ALL)            # allow_delivery True
+    assert is_tool_allowed(prof_yes, "run_query")
+    assert is_tool_allowed(prof_yes, "deliver_report")
+    assert not is_tool_allowed(prof_yes, "set_compartment")
+
+    cfg2 = load_access_config(_write(tmp_path, """
+        compartment_id: c
+        namespace: ns
+        cams:
+          cam_alice: { customers: [223], allow_delivery: false }
+    """))
+    prof_no = build_profile(cfg2, "cam_alice", ALL)
+    assert not is_tool_allowed(prof_no, "deliver_report")   # gated off
+
+
+def test_resource_gating():
+    assert is_resource_allowed("loganalytics://query-templates")
+    assert is_resource_allowed("loganalytics://schema")        # filtered, but readable
+    assert not is_resource_allowed("loganalytics://tenancy-context")
+    assert not is_resource_allowed("loganalytics://recent-queries")
+
+
+def test_resource_sets_partition_the_registry():
+    from oci_logan_mcp.access_control import CAM_BLOCKED_RESOURCES
+
+    registered = {r["uri"] for r in get_resources()}
+    classified = CAM_ALLOWED_RESOURCES | CAM_BLOCKED_RESOURCES
+    assert registered - classified == set(), f"unclassified: {registered - classified}"
+    assert classified - registered == set(), f"stale: {classified - registered}"
+    assert (CAM_ALLOWED_RESOURCES & CAM_BLOCKED_RESOURCES) == set()

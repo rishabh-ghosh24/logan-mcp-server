@@ -276,3 +276,65 @@ def scope_query(query: str, entity_names: FrozenSet[str], entity_field: str) -> 
 
     parts = [scoped_head] + [seg.strip() for seg in tail]
     return " | ".join(parts)
+
+
+# --- Tool gating (default-deny). See spec 6.6. Keep in sync with the registry;
+# the drift test in tests/test_access_control.py fails if a new tool is unclassified.
+CAM_ALLOWED_TOOLS: FrozenSet[str] = frozenset({
+    "run_query", "run_batch_queries", "get_log_summary",
+    "run_saved_search",                       # scoped at the handler (Task 9)
+    "list_entities",                          # filtered (Task 9)
+    "list_log_groups", "list_log_sources", "list_fields", "list_labels",
+    "list_parsers", "list_saved_searches", "list_compartments", "find_compartment",
+    "validate_query", "explain_query", "get_query_examples",
+    "visualize", "export_results",
+    "save_learned_query", "get_preferences", "remember_preference",
+    "setup_confirmation_secret",
+    "get_current_context", "get_session_budget", "test_connection",
+})
+
+# Allowed only when the profile's allow_delivery is True.
+CAM_CONDITIONAL_TOOLS: FrozenSet[str] = frozenset({
+    "get_report_delivery_options", "prepare_report_delivery", "deliver_report",
+    "send_to_slack", "send_to_telegram", "list_notification_topics",
+})
+
+CAM_BLOCKED_TOOLS: FrozenSet[str] = frozenset({
+    "set_compartment", "set_namespace", "update_tenancy_context",
+    "diff_time_windows", "pivot_on_entity", "ingestion_health",
+    "parser_failure_triage", "investigate_incident",
+    "investigate_and_generate_report", "generate_incident_report",
+    "get_incident_report", "list_incident_reports", "why_did_this_fire",
+    "find_rare_events", "trace_request_id", "related_dashboards_and_searches",
+    "list_dashboards", "list_alerts", "list_playbooks", "get_playbook",
+    "create_alert", "update_alert", "delete_alert",
+    "create_saved_search", "update_saved_search", "delete_saved_search",
+    "create_dashboard", "add_dashboard_tile", "delete_dashboard",
+    "create_log_source_from_sample",
+    "export_transcript", "record_investigation", "delete_playbook",
+})
+
+
+def is_tool_allowed(profile: AccessProfile, tool_name: str) -> bool:
+    if tool_name in CAM_ALLOWED_TOOLS:
+        return True
+    if tool_name in CAM_CONDITIONAL_TOOLS:
+        return profile.allow_delivery
+    return False   # default-deny (blocked or unknown)
+
+
+# --- Resource gating. See spec 6.12.
+CAM_ALLOWED_RESOURCES: FrozenSet[str] = frozenset({
+    "loganalytics://schema",            # entities filtered before return
+    "loganalytics://query-templates",   # shared query text is shareable
+    "loganalytics://syntax-guide",
+    "loganalytics://reference-docs",
+})
+CAM_BLOCKED_RESOURCES: FrozenSet[str] = frozenset({
+    "loganalytics://tenancy-context",   # bulk entity roster
+    "loganalytics://recent-queries",
+})
+
+
+def is_resource_allowed(uri: str) -> bool:
+    return uri in CAM_ALLOWED_RESOURCES
