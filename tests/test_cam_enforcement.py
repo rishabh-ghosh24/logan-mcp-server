@@ -567,3 +567,107 @@ async def test_handler_without_profile_does_not_apply_cam_tool_gate():
     await MCPHandlers.handle_tool_call(h, "investigate_incident", {"incident_id": "i-1"})
 
     h._investigate_incident.assert_awaited_once_with({"incident_id": "i-1"})
+
+
+def test_destination_override_blocked_walks_lists():
+    """Defense-in-depth: an override key hidden inside a list-of-dicts is caught."""
+    from oci_logan_mcp.access_control import destination_override_blocked
+
+    assert destination_override_blocked({"items": [{"chat_id": "x"}]}) is True
+    assert destination_override_blocked({"items": [1, 2]}) is False
+
+
+@pytest.mark.asyncio
+async def test_batch_queries_each_scoped_at_chokepoint(monkeypatch):
+    """Every query a batch runs is entity-scoped at the client chokepoint.
+
+    run_batch_queries -> QueryEngine.execute_batch -> _execute_inner ->
+    OCILogAnalyticsClient.query (the single scoping point). Driving query()
+    twice with different query strings proves each batch member is scoped.
+    """
+    from oci_logan_mcp.client import OCILogAnalyticsClient
+
+    client = OCILogAnalyticsClient.__new__(OCILogAnalyticsClient)
+    client.settings = SimpleNamespace(query=SimpleNamespace(max_results=100))
+    client._compartment_id = "default_compartment"
+    client._namespace = "ns"
+    client.access_profile = _profile()
+    client.access_audit_logger = None
+    captured = []
+
+    async def fake_execute(query_string, time_start, time_end, max_results,
+                           compartment_id, include_subcompartments):
+        captured.append(query_string)
+        return {"rows": [], "columns": []}
+
+    monkeypatch.setattr(client, "_execute_single_query", fake_execute)
+
+    for q in ("* | stats count", "Severity = error | stats count"):
+        await OCILogAnalyticsClient.query(
+            client,
+            query_string=q,
+            time_start="2026-06-01T00:00:00+00:00",
+            time_end="2026-06-01T01:00:00+00:00",
+            compartment_id="attacker_compartment",
+            include_subcompartments=True,
+        )
+
+    assert len(captured) == 2
+    assert all(q.startswith("'Entity' in (") for q in captured)
+
+
+@pytest.mark.asyncio
+async def test_get_log_summary_query_is_entity_scoped(monkeypatch):
+    """get_log_summary scoping is enforced at the client, not the handler.
+
+    The handler passes a raw summary query to query_engine.execute(); the
+    OCILogAnalyticsClient.query chokepoint rewrites it to be entity-scoped.
+    So we assert at both levels: (1) the handler sends the known summary
+    query string, and (2) that exact query string comes out entity-scoped
+    when it passes through the client.
+    """
+    from oci_logan_mcp.handlers import MCPHandlers
+    from oci_logan_mcp.client import OCILogAnalyticsClient
+
+    # (1) Handler-level: capture the query the handler hands to query_engine.
+    h = MCPHandlers.__new__(MCPHandlers)
+    h.access_profile = _profile()
+    h._resolve_scope = lambda args: ("allowed_compartment", False)
+    captured_handler = {}
+
+    async def fake_engine_execute(**kwargs):
+        captured_handler.update(kwargs)
+        return {"data": {"rows": [], "columns": []}, "metadata": {}}
+
+    h.query_engine = SimpleNamespace(execute=fake_engine_execute)
+
+    await MCPHandlers._get_log_summary(h, {})
+
+    summary_query = captured_handler["query"]
+    assert summary_query == "* | stats count by 'Log Source' | sort -count"
+
+    # (2) Client-level: that same summary query comes out entity-scoped.
+    client = OCILogAnalyticsClient.__new__(OCILogAnalyticsClient)
+    client.settings = SimpleNamespace(query=SimpleNamespace(max_results=100))
+    client._compartment_id = "default_compartment"
+    client._namespace = "ns"
+    client.access_profile = _profile()
+    client.access_audit_logger = None
+    captured_client = {}
+
+    async def fake_execute(query_string, time_start, time_end, max_results,
+                           compartment_id, include_subcompartments):
+        captured_client["query"] = query_string
+        return {"rows": [], "columns": []}
+
+    monkeypatch.setattr(client, "_execute_single_query", fake_execute)
+
+    await OCILogAnalyticsClient.query(
+        client,
+        query_string=summary_query,
+        time_start="2026-06-01T00:00:00+00:00",
+        time_end="2026-06-01T01:00:00+00:00",
+    )
+
+    assert captured_client["query"].startswith("'Entity' in (")
+    assert captured_client["query"].endswith("| stats count by 'Log Source' | sort -count")

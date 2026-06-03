@@ -357,5 +357,9 @@ def destination_override_blocked(args: dict) -> bool:
                 return True
             if isinstance(v, dict) and _walk(v):
                 return True
+            if isinstance(v, (list, tuple)):
+                for item in v:
+                    if isinstance(item, dict) and _walk(item):
+                        return True
         return False
     return _walk(args or {})
