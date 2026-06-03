@@ -338,3 +338,24 @@ CAM_BLOCKED_RESOURCES: FrozenSet[str] = frozenset({
 
 def is_resource_allowed(uri: str) -> bool:
     return uri in CAM_ALLOWED_RESOURCES
+
+
+# --- Delivery destination lockdown. See spec 6.13.
+# Keys that, if present in a delivery tool's args, would override the pre-approved
+# destination. In CAM mode any of these is rejected.
+_DESTINATION_OVERRIDE_KEYS: FrozenSet[str] = frozenset({
+    "chat_id", "telegram_chat_id", "webhook", "webhook_url",
+    "topic_ocid", "email_topic_ocid", "recipients",
+})
+
+
+def destination_override_blocked(args: dict) -> bool:
+    """True if delivery args try to set an explicit destination (CAM mode rejects this)."""
+    def _walk(d):
+        for k, v in d.items():
+            if k in _DESTINATION_OVERRIDE_KEYS:
+                return True
+            if isinstance(v, dict) and _walk(v):
+                return True
+        return False
+    return _walk(args or {})

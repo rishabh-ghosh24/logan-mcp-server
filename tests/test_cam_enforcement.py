@@ -346,3 +346,107 @@ async def test_schema_resource_filters_entities():
 
     assert [e["name"] for e in schema["entities"]] == ["223_x"]
     assert schema["fields"] == [{"name": "Log Source"}]
+
+
+@pytest.mark.asyncio
+async def test_send_to_telegram_rejects_destination_override():
+    from oci_logan_mcp.handlers import MCPHandlers
+
+    h = MCPHandlers.__new__(MCPHandlers)
+    h.access_profile = _profile()
+    h.notification_service = SimpleNamespace(send_to_telegram=AsyncMock())
+
+    result = await MCPHandlers._send_to_telegram(
+        h, {"message": "capacity report", "chat_id": "12345"}
+    )
+
+    payload = json.loads(result[0]["text"])
+    assert payload["status"] == "access_denied"
+    h.notification_service.send_to_telegram.assert_not_awaited()
+
+
+@pytest.mark.asyncio
+async def test_deliver_report_rejects_recipient_override():
+    from oci_logan_mcp.handlers import MCPHandlers
+
+    h = MCPHandlers.__new__(MCPHandlers)
+    h.access_profile = _profile()
+    h.report_delivery_service = SimpleNamespace(deliver=AsyncMock())
+
+    result = await MCPHandlers._deliver_report(
+        h,
+        {
+            "report": {"markdown": "report body", "metadata": {}},
+            "recipients": {"telegram_chat_id": "12345"},
+        },
+    )
+
+    payload = json.loads(result[0]["text"])
+    assert payload["status"] == "access_denied"
+    h.report_delivery_service.deliver.assert_not_awaited()
+
+
+@pytest.mark.asyncio
+async def test_list_fields_does_not_auto_capture_for_cam():
+    from oci_logan_mcp.handlers import MCPHandlers
+
+    h = MCPHandlers.__new__(MCPHandlers)
+    h.access_profile = _profile()
+    h.settings = SimpleNamespace(read_only=False)
+    h.schema_manager = SimpleNamespace(
+        get_fields=AsyncMock(return_value=[
+            SimpleNamespace(
+                name="Log Source",
+                data_type="string",
+                description="",
+                possible_values=[],
+                hint="",
+            )
+        ])
+    )
+    h.context_manager = SimpleNamespace(
+        update_confirmed_fields=lambda fields: (_ for _ in ()).throw(
+            AssertionError("CAM metadata reads must not update shared context")
+        )
+    )
+
+    result = await MCPHandlers._list_fields(h, {})
+
+    payload = json.loads(result[0]["text"])
+    assert payload[0]["name"] == "Log Source"
+
+
+def _write_legacy_report(tmp_path, legacy_id):
+    legacy_dir = tmp_path / "store" / legacy_id
+    legacy_dir.mkdir(parents=True)
+    (legacy_dir / "report.md").write_text("legacy result content", encoding="utf-8")
+    (legacy_dir / "metadata.json").write_text(
+        json.dumps({"report_id": legacy_id}), encoding="utf-8"
+    )
+
+
+def test_report_store_skips_legacy_shared_import_in_cam_mode(tmp_path):
+    from oci_logan_mcp.report_store import ReportStore
+
+    legacy_id = "rpt_" + ("a" * 32)
+    _write_legacy_report(tmp_path, legacy_id)
+
+    ReportStore(tmp_path, user_id="cam_alice", enforce_access=True)
+
+    assert not (tmp_path / "users" / "cam_alice" / "store" / legacy_id).exists()
+
+
+def test_report_store_imports_legacy_shared_import_without_enforce(tmp_path):
+    """Inverse: prove the enforce_access flag is what drives the skip.
+
+    Without enforce_access the legacy report (whose id satisfies the real
+    REPORT_ID_RE) IS imported, so the skip test above is not passing trivially.
+    """
+    from oci_logan_mcp.report_store import ReportStore
+
+    legacy_id = "rpt_" + ("a" * 32)
+    _write_legacy_report(tmp_path, legacy_id)
+
+    ReportStore(tmp_path, user_id="cam_alice", enforce_access=False)
+
+    assert (tmp_path / "users" / "cam_alice" / "store" / legacy_id).exists()

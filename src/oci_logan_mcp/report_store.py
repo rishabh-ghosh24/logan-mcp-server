@@ -28,9 +28,15 @@ class ReportStoreCorruptError(ReportStoreError):
 
 
 class ReportStore:
-    def __init__(self, artifact_dir: Path | str, user_id: str | None = None) -> None:
+    def __init__(
+        self,
+        artifact_dir: Path | str,
+        user_id: str | None = None,
+        enforce_access: bool = False,
+    ) -> None:
         self.artifact_dir = Path(artifact_dir).expanduser()
         self.user_id = user_id
+        self._enforce_access = enforce_access
         if user_id is not None:
             if not USER_ID_RE.fullmatch(user_id):
                 raise ReportStoreError(
@@ -269,6 +275,8 @@ class ReportStore:
         return report_dir
 
     def _import_legacy_shared_reports(self) -> None:
+        if self._enforce_access:
+            return
         legacy_root = self.artifact_dir / "store"
         if legacy_root == self.root or legacy_root.is_symlink() or not legacy_root.is_dir():
             return

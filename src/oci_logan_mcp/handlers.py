@@ -158,6 +158,7 @@ class MCPHandlers:
         self.report_store = ReportStore(
             self.settings.report_delivery.artifact_dir,
             user_id=user_store.user_id,
+            enforce_access=self.access_profile is not None,
         )
         self.trace_request_id_tool = TraceRequestIdTool(self.pivot_tool)
         self.log_source_builder_tool = LogSourceFromSampleTool(
@@ -761,8 +762,8 @@ class MCPHandlers:
         sources = await self.schema_manager.get_log_sources(
             compartment_id=args.get("compartment_id")
         )
-        # Auto-capture to tenancy context (suppressed in read-only mode)
-        if not self.settings.read_only:
+        # Auto-capture to tenancy context (suppressed in read-only and CAM mode)
+        if not self.settings.read_only and self.access_profile is None:
             self.context_manager.update_log_sources(sources)
         return [{"type": "text", "text": json.dumps(sources, indent=2)}]
 
@@ -779,8 +780,8 @@ class MCPHandlers:
             }
             for f in fields
         ]
-        # Auto-capture to tenancy context (suppressed in read-only mode)
-        if not self.settings.read_only:
+        # Auto-capture to tenancy context (suppressed in read-only and CAM mode)
+        if not self.settings.read_only and self.access_profile is None:
             self.context_manager.update_confirmed_fields(field_dicts)
         return [{"type": "text", "text": json.dumps(field_dicts, indent=2)}]
 
@@ -1479,6 +1480,14 @@ class MCPHandlers:
         return resolved, None, None
 
     async def _deliver_report(self, args: Dict) -> List[Dict]:
+        if self.access_profile is not None:
+            from .access_control import destination_override_blocked
+            if destination_override_blocked(args):
+                return [{"type": "text", "text": json.dumps({
+                    "status": "access_denied",
+                    "error": "Custom delivery destinations are not permitted in CAM mode; "
+                             "use the pre-approved destination.",
+                }, indent=2)}]
         raw_report = args.get("report")
         if not isinstance(raw_report, dict):
             return self._error_response("missing_report", "report must be an object")
@@ -2641,6 +2650,14 @@ class MCPHandlers:
     # ── Notification handlers ──────────────────────────────────────────
 
     async def _send_to_slack(self, args: Dict) -> List[Dict]:
+        if self.access_profile is not None:
+            from .access_control import destination_override_blocked
+            if destination_override_blocked(args):
+                return [{"type": "text", "text": json.dumps({
+                    "status": "access_denied",
+                    "error": "Custom delivery destinations are not permitted in CAM mode; "
+                             "use the pre-approved destination.",
+                }, indent=2)}]
         query_result = None
         if query := args.get("query"):
             query_result = await self.query_engine.execute(
@@ -2655,6 +2672,14 @@ class MCPHandlers:
         return [{"type": "text", "text": json.dumps(result, indent=2)}]
 
     async def _send_to_telegram(self, args: Dict) -> List[Dict]:
+        if self.access_profile is not None:
+            from .access_control import destination_override_blocked
+            if destination_override_blocked(args):
+                return [{"type": "text", "text": json.dumps({
+                    "status": "access_denied",
+                    "error": "Custom delivery destinations are not permitted in CAM mode; "
+                             "use the pre-approved destination.",
+                }, indent=2)}]
         query_result = None
         if query := args.get("query"):
             query_result = await self.query_engine.execute(
