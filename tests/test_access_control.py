@@ -36,6 +36,28 @@ def test_load_minimal_config(tmp_path):
     assert cfg.cams["cam_bob"].allow_delivery is False    # per-cam override
 
 
+@pytest.mark.parametrize("body", [
+    """
+        compartment_id: c
+        namespace: ns
+        defaults:
+          allow_delivery: "false"
+        cams:
+          cam_alice: { customers: [223] }
+    """,
+    """
+        compartment_id: c
+        namespace: ns
+        cams:
+          cam_alice: { customers: [223], allow_delivery: "false" }
+    """,
+])
+def test_allow_delivery_must_be_boolean(tmp_path, body):
+    path = _write(tmp_path, body)
+    with pytest.raises(AccessConfigError):
+        load_access_config(path)
+
+
 def test_missing_file_raises(tmp_path):
     with pytest.raises(AccessConfigError):
         load_access_config(tmp_path / "nope.yaml")

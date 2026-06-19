@@ -92,6 +92,7 @@ class OCILogAnalyticsMCPServer:
         self.user_store = None
         self.preference_store = None
         self.handlers = None
+        self.access_profile = None
 
         self._setup_handlers()
 
@@ -369,7 +370,12 @@ class OCILogAnalyticsMCPServer:
         logger.info("Starting MCP server on stdio...")
         async with stdio_server() as (read_stream, write_stream):
             schema_task = None
-            if self.oci_client and ENABLE_STARTUP_SCHEMA_REFRESH and not (self.settings and self.settings.read_only):
+            if (
+                self.oci_client
+                and ENABLE_STARTUP_SCHEMA_REFRESH
+                and not (self.settings and self.settings.read_only)
+                and self.access_profile is None
+            ):
                 schema_task = asyncio.create_task(self._refresh_schema_background())
             elif self.oci_client:
                 logger.info(

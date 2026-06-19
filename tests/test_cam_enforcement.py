@@ -387,6 +387,119 @@ async def test_deliver_report_rejects_recipient_override():
 
 
 @pytest.mark.asyncio
+async def test_prepare_report_delivery_rejects_recipient_override_in_cam_mode(tmp_path):
+    from oci_logan_mcp.handlers import MCPHandlers
+    from oci_logan_mcp.report_store import ReportStore
+
+    report_id = "rpt_" + ("1" * 32)
+    store = ReportStore(tmp_path, user_id="cam_alice", enforce_access=True)
+    store.save({
+        "report_id": report_id,
+        "markdown": "allowed customer result content",
+        "metadata": {"title": "CAM report"},
+    })
+    h = MCPHandlers.__new__(MCPHandlers)
+    h.access_profile = _profile()
+    h.report_store = store
+    h.preference_store = None
+    h.settings = SimpleNamespace(
+        notifications=SimpleNamespace(ons=SimpleNamespace(default_topic_ocid=""))
+    )
+
+    result = await MCPHandlers._prepare_report_delivery(
+        h,
+        {
+            "report_id": report_id,
+            "channel": "email",
+            "recipients": {"email_topic_ocid": "ocid1.onstopic.oc1..attacker"},
+        },
+    )
+
+    payload = json.loads(result[0]["text"])
+    assert payload["status"] == "access_denied"
+    assert store.get(report_id)["metadata"].get("delivery_state") is None
+
+
+@pytest.mark.asyncio
+async def test_prepare_report_delivery_ignores_saved_topic_in_cam_mode(tmp_path):
+    from oci_logan_mcp.handlers import MCPHandlers, REPORT_EMAIL_TOPIC_PREFERENCE_KEY
+    from oci_logan_mcp.report_store import ReportStore
+
+    report_id = "rpt_" + ("2" * 32)
+    store = ReportStore(tmp_path, user_id="cam_alice", enforce_access=True)
+    store.save({
+        "report_id": report_id,
+        "markdown": "allowed customer result content",
+        "metadata": {"title": "CAM report"},
+    })
+    h = MCPHandlers.__new__(MCPHandlers)
+    h.access_profile = _profile()
+    h.report_store = store
+    h.preference_store = SimpleNamespace(
+        get=lambda key: {
+            "resolved_value": json.dumps({"topic_id": "ocid1.onstopic.oc1..user_saved"})
+        } if key == REPORT_EMAIL_TOPIC_PREFERENCE_KEY else None
+    )
+    h.settings = SimpleNamespace(
+        notifications=SimpleNamespace(ons=SimpleNamespace(default_topic_ocid=""))
+    )
+
+    result = await MCPHandlers._prepare_report_delivery(
+        h, {"report_id": report_id, "channel": "email"}
+    )
+
+    payload = json.loads(result[0]["text"])
+    assert payload["selected_topic"] is None
+    metadata = store.get(report_id)["metadata"]
+    assert metadata["delivery_state"]["recipients"]["email_topic_ocid"] is None
+
+
+@pytest.mark.asyncio
+async def test_deliver_report_rejects_stored_explicit_topic_in_cam_mode(tmp_path):
+    from oci_logan_mcp.handlers import MCPHandlers
+    from oci_logan_mcp.report_store import ReportStore
+
+    report_id = "rpt_" + ("3" * 32)
+    token = "delivery-token"
+    store = ReportStore(tmp_path, user_id="cam_alice", enforce_access=True)
+    store.save({
+        "report_id": report_id,
+        "markdown": "allowed customer result content",
+        "metadata": {
+            "title": "CAM report",
+            "delivery_state": {
+                "status": "awaiting_final_confirmation",
+                "selected_topic": {
+                    "topic_id": "ocid1.onstopic.oc1..attacker",
+                    "source": "explicit",
+                },
+                "recipients": {
+                    "email_topic_ocid": "ocid1.onstopic.oc1..attacker",
+                },
+                "confirmation_token": token,
+            },
+        },
+    })
+    h = MCPHandlers.__new__(MCPHandlers)
+    h.access_profile = _profile()
+    h.report_store = store
+    h.report_delivery_service = SimpleNamespace(deliver=AsyncMock())
+
+    result = await MCPHandlers._deliver_report(
+        h,
+        {
+            "report": {"report_id": report_id},
+            "channels": ["email"],
+            "delivery_confirmation_token": token,
+        },
+    )
+
+    payload = json.loads(result[0]["text"])
+    assert payload["status"] == "access_denied"
+    h.report_delivery_service.deliver.assert_not_awaited()
+
+
+@pytest.mark.asyncio
 async def test_list_fields_does_not_auto_capture_for_cam():
     from oci_logan_mcp.handlers import MCPHandlers
 
@@ -414,6 +527,80 @@ async def test_list_fields_does_not_auto_capture_for_cam():
 
     payload = json.loads(result[0]["text"])
     assert payload[0]["name"] == "Log Source"
+
+
+@pytest.mark.asyncio
+async def test_list_compartments_does_not_auto_capture_for_cam():
+    from oci_logan_mcp.handlers import MCPHandlers
+
+    h = MCPHandlers.__new__(MCPHandlers)
+    h.access_profile = _profile()
+    h.settings = SimpleNamespace(read_only=False)
+    h.oci_client = SimpleNamespace(
+        list_compartments=AsyncMock(return_value=[{"id": "c", "name": "Assurance"}])
+    )
+    h.context_manager = SimpleNamespace(
+        update_compartments=lambda compartments: (_ for _ in ()).throw(
+            AssertionError("CAM compartment reads must not update shared context")
+        )
+    )
+
+    result = await MCPHandlers._list_compartments(h, {})
+
+    payload = json.loads(result[0]["text"])
+    assert payload == [{"id": "c", "name": "Assurance"}]
+
+
+@pytest.mark.asyncio
+async def test_startup_schema_refresh_is_suppressed_for_cam(monkeypatch):
+    import oci_logan_mcp.server as server_mod
+    from oci_logan_mcp.server import OCILogAnalyticsMCPServer
+
+    class FakeStdio:
+        async def __aenter__(self):
+            return object(), object()
+
+        async def __aexit__(self, exc_type, exc, tb):
+            return False
+
+    class FakeTask:
+        def __init__(self, coro):
+            self.name = getattr(getattr(coro, "cr_code", None), "co_name", "")
+            coro.close()
+
+        def cancel(self):
+            pass
+
+        def __await__(self):
+            async def done():
+                return None
+            return done().__await__()
+
+    created_tasks = []
+    srv = OCILogAnalyticsMCPServer()
+
+    async def fake_initialize_core():
+        srv.settings = SimpleNamespace(read_only=False)
+        srv.oci_client = object()
+        srv.access_profile = _profile()
+
+    async def fake_server_run(*args, **kwargs):
+        return None
+
+    def fake_create_task(coro):
+        task = FakeTask(coro)
+        created_tasks.append(task.name)
+        return task
+
+    monkeypatch.setattr(server_mod, "ENABLE_STARTUP_SCHEMA_REFRESH", True)
+    monkeypatch.setattr(server_mod, "stdio_server", lambda: FakeStdio())
+    monkeypatch.setattr(server_mod.asyncio, "create_task", fake_create_task)
+    monkeypatch.setattr(srv, "initialize_core", fake_initialize_core)
+    monkeypatch.setattr(srv.server, "run", fake_server_run)
+
+    await srv.run()
+
+    assert "_refresh_schema_background" not in created_tasks
 
 
 def _write_legacy_report(tmp_path, legacy_id):

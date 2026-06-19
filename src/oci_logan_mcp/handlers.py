@@ -1349,6 +1349,11 @@ class MCPHandlers:
         return self._json_response(payload)
 
     async def _prepare_report_delivery(self, args: Dict) -> List[Dict]:
+        if self.access_profile is not None:
+            from .access_control import destination_override_blocked
+            if destination_override_blocked(args):
+                return self._cam_delivery_denied_response()
+
         report_id = str(args.get("report_id", ""))
         channel = args.get("channel", "email")
         if channel != "email":
@@ -1368,6 +1373,8 @@ class MCPHandlers:
             return self._error_response("report_store_error", str(e))
 
         recipients, topic = self._report_email_recipients(["email"], args.get("recipients"))
+        if self._cam_delivery_topic_unapproved(topic):
+            return self._cam_delivery_denied_response()
         token = secrets.token_urlsafe(24)
         metadata = stored.get("metadata") or {}
         title = metadata.get("title") or "Incident Report"
@@ -1479,15 +1486,35 @@ class MCPHandlers:
             resolved["title"] = title
         return resolved, None, None
 
+    def _cam_delivery_denied_response(self) -> List[Dict[str, str]]:
+        return [{"type": "text", "text": json.dumps({
+            "status": "access_denied",
+            "error": "Custom delivery destinations are not permitted in CAM mode; "
+                     "use the pre-approved destination.",
+        }, indent=2)}]
+
+    def _cam_delivery_topic_unapproved(self, topic: Optional[Dict[str, Any]]) -> bool:
+        if getattr(self, "access_profile", None) is None or not topic:
+            return False
+        return topic.get("source") != "server_config"
+
+    def _cam_delivery_state_has_unapproved_destination(self, report: Dict[str, Any]) -> bool:
+        if getattr(self, "access_profile", None) is None:
+            return False
+        state = (report.get("metadata") or {}).get("delivery_state") or {}
+        if not isinstance(state, dict):
+            return False
+        selected_topic = state.get("selected_topic") or {}
+        if isinstance(selected_topic, dict) and selected_topic:
+            return self._cam_delivery_topic_unapproved(selected_topic)
+        recipients = state.get("recipients") or {}
+        return isinstance(recipients, dict) and bool(recipients.get("email_topic_ocid"))
+
     async def _deliver_report(self, args: Dict) -> List[Dict]:
         if self.access_profile is not None:
             from .access_control import destination_override_blocked
             if destination_override_blocked(args):
-                return [{"type": "text", "text": json.dumps({
-                    "status": "access_denied",
-                    "error": "Custom delivery destinations are not permitted in CAM mode; "
-                             "use the pre-approved destination.",
-                }, indent=2)}]
+                return self._cam_delivery_denied_response()
         raw_report = args.get("report")
         if not isinstance(raw_report, dict):
             return self._error_response("missing_report", "report must be an object")
@@ -1495,6 +1522,8 @@ class MCPHandlers:
         report, error_code, message = self._resolve_report_for_delivery(raw_report)
         if error_code:
             return self._error_response(error_code, message or "")
+        if self._cam_delivery_state_has_unapproved_destination(report):
+            return self._cam_delivery_denied_response()
 
         channels = args.get("channels", ["telegram"])
         recipients_arg = args.get("recipients")
@@ -1697,6 +1726,8 @@ class MCPHandlers:
         }
 
     def _saved_report_email_topic(self) -> Optional[Dict[str, Any]]:
+        if getattr(self, "access_profile", None) is not None:
+            return None
         if not self.preference_store:
             return None
         pref = self.preference_store.get(REPORT_EMAIL_TOPIC_PREFERENCE_KEY)
@@ -2149,8 +2180,8 @@ class MCPHandlers:
     async def _list_compartments(self, args: Dict) -> List[Dict]:
         """List compartments."""
         compartments = await self.oci_client.list_compartments()
-        # Auto-capture to tenancy context (suppressed in read-only mode)
-        if not self.settings.read_only:
+        # Auto-capture to tenancy context (suppressed in read-only and CAM mode)
+        if not self.settings.read_only and self.access_profile is None:
             self.context_manager.update_compartments(compartments)
         return [{"type": "text", "text": json.dumps(compartments, indent=2)}]
 

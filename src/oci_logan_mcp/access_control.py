@@ -41,19 +41,33 @@ def load_access_config(path: Path) -> AccessControlConfig:
         raw = yaml.safe_load(Path(path).read_text(encoding="utf-8")) or {}
     except yaml.YAMLError as exc:
         raise AccessConfigError(f"access_control.yaml is not valid YAML: {exc}") from exc
+    if not isinstance(raw, dict):
+        raise AccessConfigError("access_control.yaml top-level value must be a mapping")
 
     for required in ("compartment_id", "namespace"):
         if not raw.get(required):
             raise AccessConfigError(f"access_control.yaml missing required field '{required}'")
 
-    defaults = raw.get("defaults") or {}
-    default_allow_delivery = bool(defaults.get("allow_delivery", True))
+    defaults = _mapping(raw.get("defaults", {}), "defaults")
+    default_allow_delivery = _bool_field(
+        defaults, "allow_delivery", True, "defaults.allow_delivery"
+    )
 
     cams: Dict[str, CamEntry] = {}
-    for cam_id, entry in (raw.get("cams") or {}).items():
-        entry = entry or {}
-        customers = tuple(int(n) for n in (entry.get("customers") or []))
-        allow_delivery = bool(entry.get("allow_delivery", default_allow_delivery))
+    for cam_id, entry in _mapping(raw.get("cams", {}), "cams").items():
+        entry = _mapping(entry if entry is not None else {}, f"cams.{cam_id}")
+        try:
+            customers = tuple(int(n) for n in (entry.get("customers") or []))
+        except (TypeError, ValueError) as exc:
+            raise AccessConfigError(
+                f"access_control.yaml field 'cams.{cam_id}.customers' must be a list of integers"
+            ) from exc
+        allow_delivery = _bool_field(
+            entry,
+            "allow_delivery",
+            default_allow_delivery,
+            f"cams.{cam_id}.allow_delivery",
+        )
         cams[cam_id] = CamEntry(customers=customers, allow_delivery=allow_delivery)
 
     return AccessControlConfig(
@@ -64,6 +78,23 @@ def load_access_config(path: Path) -> AccessControlConfig:
         default_allow_delivery=default_allow_delivery,
         cams=cams,
     )
+
+
+def _mapping(value: object, field_path: str) -> dict:
+    if not isinstance(value, dict):
+        raise AccessConfigError(f"access_control.yaml field '{field_path}' must be a mapping")
+    return value
+
+
+def _bool_field(mapping: dict, key: str, default: bool, field_path: str) -> bool:
+    if key not in mapping:
+        return default
+    value = mapping[key]
+    if not isinstance(value, bool):
+        raise AccessConfigError(
+            f"access_control.yaml field '{field_path}' must be a boolean"
+        )
+    return value
 
 
 from typing import FrozenSet, Iterable
