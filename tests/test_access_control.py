@@ -137,6 +137,49 @@ def test_load_access_config_keeps_empty_list_for_runtime_fail_closed_check(tmp_p
     assert load_access_config(path).cams["cam_empty"].customers == ()
 
 
+@pytest.mark.parametrize(
+    "entity_field",
+    ["Entity", "Log Source", "entity.name", "Customer-Entity", "field_2"],
+)
+def test_validate_entity_field_accepts_safe_quoted_identifiers(entity_field):
+    from oci_logan_mcp.access_control import validate_entity_field
+
+    assert validate_entity_field(entity_field) == entity_field
+
+
+@pytest.mark.parametrize(
+    "entity_field",
+    [
+        "",
+        " Entity",
+        "Entity ",
+        "Entity' | stats count",
+        "Entity\\name",
+        "Entity\nName",
+        "a" * 129,
+        123,
+    ],
+)
+def test_load_access_config_rejects_unsafe_entity_field(tmp_path, entity_field):
+    import yaml
+
+    path = tmp_path / "access_control.yaml"
+    path.write_text(
+        yaml.safe_dump(
+            {
+                "compartment_id": "c",
+                "namespace": "ns",
+                "entity_field": entity_field,
+                "cams": {},
+            }
+        ),
+        encoding="utf-8",
+    )
+
+    with pytest.raises(AccessConfigError, match="entity_field"):
+        load_access_config(path)
+
+
 from oci_logan_mcp.access_control import entity_matches, resolve_entities
 
 
@@ -276,6 +319,11 @@ def test_scope_query_widen_attempt_becomes_empty_intersection():
 def test_scope_query_rejects_unsafe_via_validate():
     with pytest.raises(QueryNotAllowed):
         scope_query("searchlookup table='t'", ENTS, "Entity")
+
+
+def test_scope_query_rejects_unsafe_entity_field_even_for_direct_call():
+    with pytest.raises(QueryNotAllowed, match="entity_field"):
+        scope_query("* | stats count", ENTS, "Entity' | stats count")
 
 
 @pytest.mark.parametrize("bad_head_query", [

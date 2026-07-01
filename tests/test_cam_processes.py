@@ -11,6 +11,19 @@ from oci_logan_mcp.cam_processes import (
 PYTHON = Path("/opt/logan-mcp/venv/bin/python")
 
 
+def test_rendered_cam_argv_comes_from_shared_contract():
+    from oci_logan_mcp.cam_processes import (
+        CAM_LAUNCH_ARGV_TEMPLATE,
+        render_cam_launch_argv,
+    )
+
+    expected = tuple(
+        value.format(cam_id="cam_alice") for value in CAM_LAUNCH_ARGV_TEMPLATE
+    )
+
+    assert render_cam_launch_argv("cam_alice") == expected
+
+
 def _proc(pid=101, cam_id="cam_alice", start_time=500, pgrp=101, uid=2001):
     return ProcessIdentity(
         pid=pid,

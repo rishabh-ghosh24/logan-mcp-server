@@ -271,11 +271,13 @@ def test_root_prefix_is_rejected_outside_explicit_test_mode(tmp_path):
 
 def test_golden_manifest_freezes_forced_ssh_and_cli_contract():
     import json
+    import re
 
     from oci_logan_mcp.cam_admin_store import (
         ProvisionRequest,
         build_forced_key_line,
     )
+    from oci_logan_mcp.cam_processes import CAM_LAUNCH_ARGV_TEMPLATE
 
     manifest = json.loads(CONTRACT_MANIFEST.read_text(encoding="utf-8"))
 
@@ -285,15 +287,18 @@ def test_golden_manifest_freezes_forced_ssh_and_cli_contract():
         "operation_failure": 1,
         "usage_error": 2,
     }
-    assert manifest["ssh"]["launcher_argv"] == [
-        "/opt/logan-mcp/venv/bin/python",
-        "-I",
-        "-m",
-        "oci_logan_mcp",
-        "--enforce-access",
-        "--user",
-        "{cam_id}",
-    ]
+    assert manifest["ssh"]["launcher_argv"] == list(CAM_LAUNCH_ARGV_TEMPLATE)
+    launcher_text = re.sub(
+        r"\\\n\s*",
+        " ",
+        LAUNCHER.read_text(encoding="utf-8"),
+    )
+    launcher_text = " ".join(launcher_text.split())
+    expected_launcher = " ".join(
+        '"$CAM_ID"' if value == "{cam_id}" else value
+        for value in CAM_LAUNCH_ARGV_TEMPLATE
+    )
+    assert expected_launcher in launcher_text
     assert manifest["ssh"]["environment"]["OCI_LA_MCP_CONFIG"] == (
         "/etc/logan-mcp/config.yaml"
     )

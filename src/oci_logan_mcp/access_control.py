@@ -20,6 +20,8 @@ class AccessConfigError(Exception):
 
 CAM_ID_RE = re.compile(r"^[a-z][a-z0-9]*(?:[._-][a-z0-9]+)*$")
 MAX_CAM_ID_LENGTH = 64
+ENTITY_FIELD_RE = re.compile(r"^[A-Za-z0-9_][A-Za-z0-9_. -]*$")
+MAX_ENTITY_FIELD_LENGTH = 128
 
 
 def validate_cam_id(cam_id: object) -> str:
@@ -43,6 +45,21 @@ def validate_customer_numbers(value: object, field_path: str) -> Tuple[int, ...]
             f"access_control.yaml field '{field_path}' must be a list of positive integers"
         )
     return tuple(value)
+
+
+def validate_entity_field(value: object) -> str:
+    """Return a field name that is safe inside a single-quoted query identifier."""
+    if (
+        not isinstance(value, str)
+        or not 1 <= len(value) <= MAX_ENTITY_FIELD_LENGTH
+        or value.strip() != value
+        or ENTITY_FIELD_RE.fullmatch(value) is None
+    ):
+        raise AccessConfigError(
+            "access_control.yaml field 'entity_field' must be a 1-128 character "
+            "ASCII identifier using letters, digits, spaces, '.', '_' or '-'"
+        )
+    return value
 
 
 @dataclass(frozen=True)
@@ -104,7 +121,7 @@ def load_access_config(path: Path) -> AccessControlConfig:
         tenancy_id=str(raw.get("tenancy_id", "")),
         compartment_id=str(raw["compartment_id"]),
         namespace=str(raw["namespace"]),
-        entity_field=str(raw.get("entity_field", "Entity")),
+        entity_field=validate_entity_field(raw.get("entity_field", "Entity")),
         default_allow_delivery=default_allow_delivery,
         cams=cams,
     )
@@ -313,6 +330,10 @@ def scope_query(query: str, entity_names: FrozenSet[str], entity_field: str) -> 
     """
     if not entity_names:
         raise QueryNotAllowed("No entities resolved for this user; refusing to run query.")
+    try:
+        entity_field = validate_entity_field(entity_field)
+    except AccessConfigError as exc:
+        raise QueryNotAllowed(str(exc)) from exc
     validate_cam_query(query)
     values = ", ".join(_quote_value(e) for e in sorted(entity_names))
     predicate = f"'{entity_field}' in ({values})"

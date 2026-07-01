@@ -9,6 +9,27 @@ from dataclasses import dataclass
 from pathlib import Path
 from typing import Callable, Iterable, Protocol
 
+DEFAULT_RUNTIME_PYTHON = Path("/opt/logan-mcp/venv/bin/python")
+CAM_LAUNCH_ARGV_TEMPLATE = (
+    str(DEFAULT_RUNTIME_PYTHON),
+    "-I",
+    "-m",
+    "oci_logan_mcp",
+    "--enforce-access",
+    "--user",
+    "{cam_id}",
+)
+
+
+def render_cam_launch_argv(
+    cam_id: str,
+    runtime_python: Path = DEFAULT_RUNTIME_PYTHON,
+) -> tuple[str, ...]:
+    return (
+        str(runtime_python),
+        *(value.format(cam_id=cam_id) for value in CAM_LAUNCH_ARGV_TEMPLATE[1:]),
+    )
+
 
 @dataclass(frozen=True)
 class ProcessIdentity:
@@ -88,29 +109,22 @@ class ProcessTerminator:
         sleep: Callable[[float], None] = time.sleep,
         getpgrp: Callable[[], int] = os.getpgrp,
         cam_uid: int = -1,
-        runtime_python: Path = Path("/opt/logan-mcp/venv/bin/python"),
+        runtime_python: Path = DEFAULT_RUNTIME_PYTHON,
     ):
         self.inspector = inspector
         self.killpg = killpg
         self.sleep = sleep
         self.getpgrp = getpgrp
         self.cam_uid = cam_uid
-        self.runtime_python = runtime_python.resolve(strict=False)
+        self.runtime_python_path = Path(runtime_python)
+        self.runtime_python = self.runtime_python_path.resolve(strict=False)
 
     def _is_cam(self, process: ProcessIdentity, cam_id: str) -> bool:
-        expected_tail = (
-            "-I",
-            "-m",
-            "oci_logan_mcp",
-            "--enforce-access",
-            "--user",
-            cam_id,
-        )
+        expected_argv = render_cam_launch_argv(cam_id, self.runtime_python_path)
         return (
             process.uid == self.cam_uid
             and process.executable.resolve(strict=False) == self.runtime_python
-            and len(process.argv) == 7
-            and process.argv[1:] == expected_tail
+            and process.argv == expected_argv
         )
 
     @staticmethod
