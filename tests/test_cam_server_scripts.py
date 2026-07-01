@@ -6,11 +6,13 @@ import subprocess
 import sys
 from pathlib import Path
 
-
 ROOT = Path(__file__).resolve().parents[1]
 LAUNCHER = ROOT / "cam-setup" / "server" / "cam-launch"
 ADMIN = ROOT / "cam-setup" / "server" / "cam-admin"
 BOOTSTRAP = ROOT / "cam-setup" / "server" / "bootstrap-cam-server.sh"
+CONTRACT_MANIFEST = (
+    ROOT / "tests" / "fixtures" / "cam_admin_contract_v1" / "manifest.json"
+)
 
 
 def test_server_shell_scripts_parse():
@@ -27,10 +29,7 @@ def test_forced_launcher_has_only_fixed_security_environment():
     text = LAUNCHER.read_text(encoding="utf-8")
     assert "/usr/bin/env -i" in text
     assert "OCI_LA_MCP_CONFIG=/etc/logan-mcp/config.yaml" in text
-    assert (
-        "OCI_LOGAN_MCP_ACCESS_CONFIG=/etc/logan-mcp/access_control.yaml"
-        in text
-    )
+    assert "OCI_LOGAN_MCP_ACCESS_CONFIG=/etc/logan-mcp/access_control.yaml" in text
     assert "LOGAN_USER=$CAM_ID" in text
     assert "--enforce-access --user" in text
     assert "/opt/logan-mcp/venv/bin/python -I -m oci_logan_mcp" in text
@@ -72,6 +71,8 @@ def test_bootstrap_installs_defense_in_depth_sshd_settings():
         assert setting in text
     assert "sshd -t" in text
     assert "systemctl reload sshd" in text
+    assert 'PATH="/usr/sbin:/usr/bin:/sbin:/bin"' in text
+    assert '/bin/chmod -R a+rX,go-w "$OPT_DIR"' in text
 
 
 def test_bootstrap_never_copies_policy_into_mutable_state_tree():
@@ -84,10 +85,7 @@ def test_bootstrap_never_copies_policy_into_mutable_state_tree():
 
 def test_admin_wrapper_uses_only_installed_runtime_and_forwards_arguments():
     text = ADMIN.read_text(encoding="utf-8")
-    assert (
-        "exec /opt/logan-mcp/venv/bin/python -I -m oci_logan_mcp.cam_admin"
-        in text
-    )
+    assert "exec /opt/logan-mcp/venv/bin/python -I -m oci_logan_mcp.cam_admin" in text
     assert '"$@"' in text
     assert "eval" not in text
 
@@ -100,11 +98,7 @@ def _public_key(comment="root@host"):
         + struct.pack(">I", 32)
         + b"h" * 32
     )
-    return (
-        "ssh-ed25519 "
-        + base64.b64encode(blob).decode("ascii")
-        + f" {comment}"
-    )
+    return "ssh-ed25519 " + base64.b64encode(blob).decode("ascii") + f" {comment}"
 
 
 def _write_executable(path, text):
@@ -156,15 +150,13 @@ def _bootstrap_fixture(tmp_path):
     _write_executable(
         fake_bin / "sshd",
         "#!/bin/sh\n"
-        "printf '%s\\n' \"$*\" >> \"$FAKE_SSHD_LOG\"\n"
-        "if [ \"${FAKE_SSHD_FAIL:-0}\" = 1 ] && [ \"${1:-}\" = -t ]; then exit 1; fi\n"
+        'printf \'%s\\n\' "$*" >> "$FAKE_SSHD_LOG"\n'
+        'if [ "${FAKE_SSHD_FAIL:-0}" = 1 ] && [ "${1:-}" = -t ]; then exit 1; fi\n'
         "exit 0\n",
     )
     _write_executable(
         fake_bin / "systemctl",
-        "#!/bin/sh\n"
-        "printf '%s\\n' \"$*\" >> \"$FAKE_SYSTEMCTL_LOG\"\n"
-        "exit 0\n",
+        "#!/bin/sh\n" 'printf \'%s\\n\' "$*" >> "$FAKE_SYSTEMCTL_LOG"\n' "exit 0\n",
     )
     env = {
         **os.environ,
@@ -275,6 +267,57 @@ def test_root_prefix_is_rejected_outside_explicit_test_mode(tmp_path):
     result = subprocess.run(command, env=env, capture_output=True, text=True)
 
     assert result.returncode == 64
+
+
+def test_golden_manifest_freezes_forced_ssh_and_cli_contract():
+    import json
+
+    from oci_logan_mcp.cam_admin_store import (
+        ProvisionRequest,
+        build_forced_key_line,
+    )
+
+    manifest = json.loads(CONTRACT_MANIFEST.read_text(encoding="utf-8"))
+
+    assert manifest["contract_version"] == 1
+    assert manifest["cli"]["exit_codes"] == {
+        "success": 0,
+        "operation_failure": 1,
+        "usage_error": 2,
+    }
+    assert manifest["ssh"]["launcher_argv"] == [
+        "/opt/logan-mcp/venv/bin/python",
+        "-I",
+        "-m",
+        "oci_logan_mcp",
+        "--enforce-access",
+        "--user",
+        "{cam_id}",
+    ]
+    assert manifest["ssh"]["environment"]["OCI_LA_MCP_CONFIG"] == (
+        "/etc/logan-mcp/config.yaml"
+    )
+    assert (
+        manifest["ssh"]["environment"]["OCI_LOGAN_MCP_ACCESS_CONFIG"]
+        == "/etc/logan-mcp/access_control.yaml"
+    )
+    request = ProvisionRequest.from_json(
+        json.loads(
+            (CONTRACT_MANIFEST.parent / "provision.request.json").read_text(
+                encoding="utf-8"
+            )
+        )
+    )
+    forced_line = build_forced_key_line(
+        request.cam_id,
+        request.key,
+        Path("/opt/logan-mcp/bin/cam-launch"),
+    )
+    prefix = ",".join(
+        option.format(cam_id=request.cam_id)
+        for option in manifest["ssh"]["authorized_key_options"]
+    )
+    assert forced_line.startswith(prefix + " ssh-ed25519 ")
 
 
 def test_fake_root_bootstrap_rejects_invalid_policy_before_sshd_change(tmp_path):

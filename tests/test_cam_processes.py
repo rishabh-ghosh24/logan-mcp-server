@@ -8,7 +8,6 @@ from oci_logan_mcp.cam_processes import (
     TerminationResult,
 )
 
-
 PYTHON = Path("/opt/logan-mcp/venv/bin/python")
 
 

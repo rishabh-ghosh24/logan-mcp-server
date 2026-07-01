@@ -1,0 +1,10 @@
+{
+  "access_revoked": true,
+  "backup_dir": "<BACKUP_DIR>",
+  "cam_id": "cam_alice",
+  "failures": [],
+  "fingerprint": "SHA256:sArVyTbDlP2ByuRNM59Xf/iwOUmdy69sxylyNl3iUQQ",
+  "shared_account_fallback": false,
+  "status": "SUCCESS",
+  "warnings": []
+}

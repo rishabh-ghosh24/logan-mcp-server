@@ -1,0 +1,13 @@
+{
+  "allow_delivery": false,
+  "cam_id": "cam_alice",
+  "connection": {
+    "host": "130.162.53.112",
+    "host_public_key": "ssh-ed25519 AAAAC3NzaC1lZDI1NTE5AAAAIGhoaGhoaGhoaGhoaGhoaGhoaGhoaGhoaGhoaGhoaGho root@host",
+    "port": 22,
+    "remote_user": "cam"
+  },
+  "customers": [223],
+  "fingerprint": "SHA256:sArVyTbDlP2ByuRNM59Xf/iwOUmdy69sxylyNl3iUQQ",
+  "status": "SUCCESS"
+}

@@ -192,8 +192,7 @@ class ProcessTerminator:
             {
                 process.process_group
                 for process in self.inspector.iter_processes()
-                if process.uid == self.cam_uid
-                and process.process_group != own_group
+                if process.uid == self.cam_uid and process.process_group != own_group
             }
         )
         for process_group in groups:
@@ -207,8 +206,7 @@ class ProcessTerminator:
         live_groups = {
             process.process_group
             for process in self.inspector.iter_processes()
-            if process.uid == self.cam_uid
-            and process.process_group != own_group
+            if process.uid == self.cam_uid and process.process_group != own_group
         }
         killed = 0
         for process_group in sorted(live_groups):
@@ -224,8 +222,7 @@ class ProcessTerminator:
             {
                 process.process_group
                 for process in self.inspector.iter_processes()
-                if process.uid == self.cam_uid
-                and process.process_group != own_group
+                if process.uid == self.cam_uid and process.process_group != own_group
             }
         )
         if survivors:

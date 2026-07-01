@@ -84,6 +84,10 @@ if [ "$TEST_MODE" != "1" ] && [ "$EUID" -ne 0 ]; then
     echo "bootstrap-cam-server.sh must run as root" >&2
     exit 1
 fi
+if [ "$TEST_MODE" != "1" ]; then
+    PATH="/usr/sbin:/usr/bin:/sbin:/bin"
+    export PATH
+fi
 
 if ! [[ "$PORT" =~ ^[0-9]+$ ]] || [ "$PORT" -lt 1 ] || [ "$PORT" -gt 65535 ]; then
     usage
@@ -241,6 +245,7 @@ fi
 
 /usr/bin/install -m 0755 "$REPO/cam-setup/server/cam-launch" "$OPT_DIR/bin/cam-launch"
 /usr/bin/install -m 0755 "$REPO/cam-setup/server/cam-admin" "$OPT_DIR/bin/cam-admin"
+/bin/chmod -R a+rX,go-w "$OPT_DIR"
 
 /usr/bin/install -d -m 0750 "$ETC_DIR" "$CAM_HOME" "$SSH_DIR"
 /usr/bin/install -d -m 0700 "$STATE_DIR" "$BACKUP_ROOT"

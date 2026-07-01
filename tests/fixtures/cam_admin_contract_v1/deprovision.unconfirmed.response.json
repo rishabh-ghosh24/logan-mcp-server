@@ -1,0 +1,10 @@
+{
+  "access_revoked": false,
+  "backup_dir": "<BACKUP_DIR>",
+  "cam_id": "cam_alice",
+  "failures": ["policy:OSError", "authorized_keys:OSError"],
+  "fingerprint": "SHA256:sArVyTbDlP2ByuRNM59Xf/iwOUmdy69sxylyNl3iUQQ",
+  "shared_account_fallback": true,
+  "status": "FAILED_REVOCATION_UNCONFIRMED",
+  "warnings": []
+}

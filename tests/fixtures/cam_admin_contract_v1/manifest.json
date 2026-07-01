@@ -1,0 +1,57 @@
+{
+  "contract_version": 1,
+  "cli": {
+    "commands": {
+      "bootstrap_check": ["bootstrap-check", "--json"],
+      "deprovision": ["deprovision", "--json"],
+      "provision": ["provision", "--json"],
+      "show": ["show", "--cam", "{cam_id}", "--json"],
+      "verify": ["verify", "--cam", "{cam_id}", "--json"]
+    },
+    "exit_codes": {
+      "operation_failure": 1,
+      "success": 0,
+      "usage_error": 2
+    },
+    "stderr": "diagnostics_only_no_request_echo",
+    "stdout": "one_json_object_for_every_service_response"
+  },
+  "deprovision_statuses": [
+    "SUCCESS",
+    "FAILED_ACCESS_REVOKED_CLEANUP_REQUIRED",
+    "FAILED_REVOCATION_UNCONFIRMED"
+  ],
+  "immutability": "Phase 2 consumers must report mismatches and must not reinterpret or modify this contract.",
+  "ssh": {
+    "authorized_key_options": [
+      "restrict",
+      "command=\"/opt/logan-mcp/bin/cam-launch {cam_id}\"",
+      "no-pty",
+      "no-port-forwarding",
+      "no-agent-forwarding",
+      "no-X11-forwarding",
+      "no-user-rc"
+    ],
+    "environment": {
+      "HOME": "/home/cam",
+      "LANG": "C.UTF-8",
+      "LOGAN_USER": "{cam_id}",
+      "LOGNAME": "cam",
+      "OCI_LA_MCP_CONFIG": "/etc/logan-mcp/config.yaml",
+      "OCI_LOGAN_MCP_ACCESS_CONFIG": "/etc/logan-mcp/access_control.yaml",
+      "OCI_LOGAN_MCP_ENFORCE_ACCESS": "1",
+      "PATH": "/opt/logan-mcp/venv/bin:/usr/bin:/bin",
+      "USER": "cam"
+    },
+    "launcher_argv": [
+      "/opt/logan-mcp/venv/bin/python",
+      "-I",
+      "-m",
+      "oci_logan_mcp",
+      "--enforce-access",
+      "--user",
+      "{cam_id}"
+    ],
+    "remote_command_from_client": false
+  }
+}

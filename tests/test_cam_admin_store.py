@@ -93,7 +93,9 @@ def test_parse_provision_request_rejects_missing_ambiguous_or_unknown_fields(pay
 def test_parse_ed25519_key_validates_wire_format_and_fingerprint():
     line, blob = _public_key()
     parsed = parse_ed25519_public_key(line)
-    expected = base64.b64encode(hashlib.sha256(blob).digest()).decode("ascii").rstrip("=")
+    expected = (
+        base64.b64encode(hashlib.sha256(blob).digest()).decode("ascii").rstrip("=")
+    )
 
     assert parsed.fingerprint == f"SHA256:{expected}"
 
@@ -166,9 +168,7 @@ def test_forced_key_line_pins_identity_and_all_restrictions():
         Path("/opt/logan-mcp/bin/cam-launch"),
     )
 
-    assert line.startswith(
-        'restrict,command="/opt/logan-mcp/bin/cam-launch cam_alice"'
-    )
+    assert line.startswith('restrict,command="/opt/logan-mcp/bin/cam-launch cam_alice"')
     for option in (
         "no-pty",
         "no-port-forwarding",

@@ -1,0 +1,6 @@
+{
+  "allow_delivery": false,
+  "cam_id": "cam_alice",
+  "customers": [223],
+  "public_key": "ssh-ed25519 AAAAC3NzaC1lZDI1NTE5AAAAIGtra2tra2tra2tra2tra2tra2tra2tra2tra2tra2tr logan-cam:cam_alice"
+}

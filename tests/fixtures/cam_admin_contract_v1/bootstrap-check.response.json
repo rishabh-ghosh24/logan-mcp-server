@@ -1,0 +1,17 @@
+{
+  "checks": {
+    "admin_command_root_owned": true,
+    "authorized_keys_immutable": true,
+    "cam_not_admin": true,
+    "cam_password_locked": true,
+    "config_immutable": true,
+    "config_parent_immutable": true,
+    "instance_principal_init": true,
+    "launcher_root_owned": true,
+    "policy_immutable": true,
+    "runtime_root_owned": true,
+    "runtime_state_writable": true,
+    "sshd_effective_config": true
+  },
+  "status": "SUCCESS"
+}

@@ -24,6 +24,19 @@ from oci_logan_mcp.cam_admin_store import (
 )
 from oci_logan_mcp.cam_processes import TerminationResult
 
+CONTRACT_FIXTURES = Path(__file__).parent / "fixtures" / "cam_admin_contract_v1"
+
+
+def _contract_fixture(name):
+    return json.loads((CONTRACT_FIXTURES / name).read_text(encoding="utf-8"))
+
+
+def _normalize_contract_response(response):
+    normalized = dict(response)
+    if "backup_dir" in normalized:
+        normalized["backup_dir"] = "<BACKUP_DIR>"
+    return normalized
+
 
 def _key(cam_id, fill=b"k"):
     algorithm = b"ssh-ed25519"
@@ -34,28 +47,20 @@ def _key(cam_id, fill=b"k"):
         + fill * 32
     )
     return (
-        "ssh-ed25519 "
-        + base64.b64encode(blob).decode("ascii")
-        + f" logan-cam:{cam_id}"
+        "ssh-ed25519 " + base64.b64encode(blob).decode("ascii") + f" logan-cam:{cam_id}"
     )
 
 
 def _service(tmp_path, entity_names=("223_customer", "66_customer")):
     paths = CamAdminPaths(
         policy_path=tmp_path / "etc" / "logan-mcp" / "access_control.yaml",
-        authorized_keys_path=(
-            tmp_path / "home" / "cam" / ".ssh" / "authorized_keys"
-        ),
+        authorized_keys_path=(tmp_path / "home" / "cam" / ".ssh" / "authorized_keys"),
         lock_path=tmp_path / "var" / "lock" / "logan-cam-admin.lock",
-        backup_dir=(
-            tmp_path / "var" / "lib" / "logan-cam-admin" / "backups"
-        ),
+        backup_dir=(tmp_path / "var" / "lib" / "logan-cam-admin" / "backups"),
         audit_path=tmp_path / "var" / "log" / "logan-cam-admin.jsonl",
         launcher_path=Path("/opt/logan-mcp/bin/cam-launch"),
         runtime_python=Path("/opt/logan-mcp/venv/bin/python"),
-        host_key_path=(
-            tmp_path / "etc" / "ssh" / "ssh_host_ed25519_key.pub"
-        ),
+        host_key_path=(tmp_path / "etc" / "ssh" / "ssh_host_ed25519_key.pub"),
     )
     paths.policy_path.parent.mkdir(parents=True)
     paths.authorized_keys_path.parent.mkdir(parents=True)
@@ -92,6 +97,10 @@ def _service(tmp_path, entity_names=("223_customer", "66_customer")):
                 "host": "130.162.53.112",
                 "port": 22,
                 "remote_user": "cam",
+                "host_public_key": _key("host", b"h").replace(
+                    "logan-cam:host",
+                    "root@host",
+                ),
             },
             actor_provider=lambda: "test-admin",
         ),
@@ -193,9 +202,7 @@ async def test_provision_rolls_policy_back_when_key_replace_fails(
     monkeypatch.setattr(
         service.store,
         "replace_authorized_keys",
-        lambda lines, live: (_ for _ in ()).throw(
-            OSError("injected key failure")
-        ),
+        lambda lines, live: (_ for _ in ()).throw(OSError("injected key failure")),
     )
 
     with pytest.raises(OSError, match="injected key failure"):
@@ -206,9 +213,7 @@ async def test_provision_rolls_policy_back_when_key_replace_fails(
 
 
 @pytest.mark.asyncio
-async def test_provision_rolls_both_files_back_when_audit_fails(
-    tmp_path, monkeypatch
-):
+async def test_provision_rolls_both_files_back_when_audit_fails(tmp_path, monkeypatch):
     service, paths = _service(tmp_path)
     request = _provision_request(customers=(223,))
     before_policy = paths.policy_path.read_bytes()
@@ -286,6 +291,7 @@ async def test_show_and_verify_return_current_assignment(tmp_path):
     assert shown["customers"] == [223]
     assert shown["fingerprint"] == request.key.fingerprint
     assert verified["resolved_entities"] == ["223_customer"]
+    assert verified["allow_delivery"] is False
 
 
 class FakeTerminator:
@@ -330,14 +336,7 @@ async def test_deprovision_removes_policy_and_key_terminates_process_and_keeps_s
     terminator = FakeTerminator()
     service.process_terminator = terminator
     provisioned = await _provision_alice(service)
-    user_dir = (
-        tmp_path
-        / "home"
-        / "cam"
-        / ".oci-logan-mcp"
-        / "users"
-        / "cam_alice"
-    )
+    user_dir = tmp_path / "home" / "cam" / ".oci-logan-mcp" / "users" / "cam_alice"
     user_dir.mkdir(parents=True)
     (user_dir / "learned_queries.yaml").write_text(
         "queries: []\n",
@@ -414,9 +413,10 @@ async def test_deprovision_policy_removal_stays_revoked_when_key_cleanup_fails(
 
     assert response["status"] == "FAILED_ACCESS_REVOKED_CLEANUP_REQUIRED"
     assert response["access_revoked"] is True
-    assert "cam_alice" not in yaml.safe_load(
-        paths.policy_path.read_text(encoding="utf-8")
-    )["cams"]
+    assert (
+        "cam_alice"
+        not in yaml.safe_load(paths.policy_path.read_text(encoding="utf-8"))["cams"]
+    )
     assert "logan-cam:cam_alice" in paths.authorized_keys_path.read_text(
         encoding="utf-8"
     )
@@ -445,9 +445,10 @@ async def test_deprovision_reports_unconfirmed_when_both_revocation_gates_fail(
     assert response["status"] == "FAILED_REVOCATION_UNCONFIRMED"
     assert response["access_revoked"] is False
     assert service.process_terminator.fallback_calls == 1
-    assert "cam_alice" in yaml.safe_load(
-        paths.policy_path.read_text(encoding="utf-8")
-    )["cams"]
+    assert (
+        "cam_alice"
+        in yaml.safe_load(paths.policy_path.read_text(encoding="utf-8"))["cams"]
+    )
     assert "logan-cam:cam_alice" in paths.authorized_keys_path.read_text(
         encoding="utf-8"
     )
@@ -469,9 +470,7 @@ async def test_deprovision_uses_shared_fallback_when_exact_termination_is_unveri
 
 
 @pytest.mark.asyncio
-async def test_deprovision_audit_failure_does_not_restore_access(
-    tmp_path, monkeypatch
-):
+async def test_deprovision_audit_failure_does_not_restore_access(tmp_path, monkeypatch):
     service, paths = _service(tmp_path)
     service.process_terminator = FakeTerminator()
     provisioned = await _provision_alice(service)
@@ -485,9 +484,10 @@ async def test_deprovision_audit_failure_does_not_restore_access(
 
     assert response["status"] == "FAILED_ACCESS_REVOKED_CLEANUP_REQUIRED"
     assert response["access_revoked"] is True
-    assert "cam_alice" not in yaml.safe_load(
-        paths.policy_path.read_text(encoding="utf-8")
-    )["cams"]
+    assert (
+        "cam_alice"
+        not in yaml.safe_load(paths.policy_path.read_text(encoding="utf-8"))["cams"]
+    )
     assert "logan-cam:cam_alice" not in paths.authorized_keys_path.read_text(
         encoding="utf-8"
     )
@@ -667,7 +667,9 @@ class FakeSystemInspector:
         if "-T" in argv:
             return subprocess.CompletedProcess(argv, 0, self.sshd_output, "")
         if tuple(argv[:2]) == ("/usr/bin/passwd", "-S"):
-            return subprocess.CompletedProcess(argv, 0, "cam LK 2026-01-01 0 99999 7 -1\n", "")
+            return subprocess.CompletedProcess(
+                argv, 0, "cam LK 2026-01-01 0 99999 7 -1\n", ""
+            )
         return subprocess.CompletedProcess(
             argv,
             self.instance_returncode,
@@ -801,3 +803,138 @@ def test_bootstrap_check_requires_root_control_of_authorized_keys_parents(tmp_pa
 
     assert response["status"] == "FAILED"
     assert response["checks"]["authorized_keys_immutable"] is False
+
+
+@pytest.mark.asyncio
+async def test_golden_contract_provision_show_and_verify(tmp_path):
+    service, _ = _service(tmp_path)
+    request = ProvisionRequest.from_json(_contract_fixture("provision.request.json"))
+
+    provisioned = await service.provision(request)
+    shown = service.show("cam_alice")
+    verified = await service.verify("cam_alice")
+
+    assert provisioned == _contract_fixture("provision.response.json")
+    assert shown == _contract_fixture("show.response.json")
+    assert verified == _contract_fixture("verify.response.json")
+
+
+@pytest.mark.asyncio
+async def test_golden_contract_deprovision_success(tmp_path):
+    service, _ = _service(tmp_path)
+    service.process_terminator = FakeTerminator()
+    await service.provision(
+        ProvisionRequest.from_json(_contract_fixture("provision.request.json"))
+    )
+    request = DeprovisionRequest.from_json(
+        _contract_fixture("deprovision.request.json")
+    )
+
+    response = await service.deprovision(request)
+
+    assert _normalize_contract_response(response) == _contract_fixture(
+        "deprovision.success.response.json"
+    )
+
+
+@pytest.mark.asyncio
+async def test_golden_contract_deprovision_cleanup_required(tmp_path, monkeypatch):
+    service, _ = _service(tmp_path)
+    service.process_terminator = FakeTerminator()
+    await service.provision(
+        ProvisionRequest.from_json(_contract_fixture("provision.request.json"))
+    )
+    original_replace_policy = service.store.replace_policy
+
+    def fail_policy(policy, live):
+        if "cam_alice" not in policy.get("cams", {}):
+            raise OSError("injected policy cleanup failure")
+        return original_replace_policy(policy, live)
+
+    monkeypatch.setattr(service.store, "replace_policy", fail_policy)
+    response = await service.deprovision(
+        DeprovisionRequest.from_json(_contract_fixture("deprovision.request.json"))
+    )
+
+    assert _normalize_contract_response(response) == _contract_fixture(
+        "deprovision.cleanup-required.response.json"
+    )
+
+
+@pytest.mark.asyncio
+async def test_golden_contract_deprovision_unconfirmed(tmp_path, monkeypatch):
+    service, _ = _service(tmp_path)
+    service.process_terminator = FakeTerminator()
+    await service.provision(
+        ProvisionRequest.from_json(_contract_fixture("provision.request.json"))
+    )
+    monkeypatch.setattr(
+        service.store,
+        "replace_policy",
+        lambda policy, live: (_ for _ in ()).throw(OSError("policy failed")),
+    )
+    monkeypatch.setattr(
+        service.store,
+        "replace_authorized_keys",
+        lambda lines, live: (_ for _ in ()).throw(OSError("keys failed")),
+    )
+    response = await service.deprovision(
+        DeprovisionRequest.from_json(_contract_fixture("deprovision.request.json"))
+    )
+
+    assert _normalize_contract_response(response) == _contract_fixture(
+        "deprovision.unconfirmed.response.json"
+    )
+
+
+def test_golden_contract_bootstrap_check(tmp_path):
+    service, _ = _bootstrap_service(tmp_path)
+
+    assert service.bootstrap_check() == _contract_fixture(
+        "bootstrap-check.response.json"
+    )
+
+
+def test_golden_contract_cli_exit_codes():
+    exit_codes = _contract_fixture("manifest.json")["cli"]["exit_codes"]
+
+    class BootstrapService:
+        def __init__(self, status):
+            self.status = status
+
+        def bootstrap_check(self):
+            return {"status": self.status, "checks": {}}
+
+    assert (
+        main(
+            ["bootstrap-check", "--json"],
+            stdin=StringIO(),
+            stdout=StringIO(),
+            stderr=StringIO(),
+            service=BootstrapService("SUCCESS"),
+            geteuid=lambda: 0,
+        )
+        == exit_codes["success"]
+    )
+    assert (
+        main(
+            ["bootstrap-check", "--json"],
+            stdin=StringIO(),
+            stdout=StringIO(),
+            stderr=StringIO(),
+            service=BootstrapService("FAILED"),
+            geteuid=lambda: 0,
+        )
+        == exit_codes["operation_failure"]
+    )
+    assert (
+        main(
+            ["not-a-command"],
+            stdin=StringIO(),
+            stdout=StringIO(),
+            stderr=StringIO(),
+            service=object(),
+            geteuid=lambda: 0,
+        )
+        == exit_codes["usage_error"]
+    )

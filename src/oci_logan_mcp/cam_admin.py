@@ -64,11 +64,7 @@ class SystemInspector:
 
     def lookup_user(self, name: str) -> SystemAccount:
         account = pwd.getpwnam(name)
-        groups = {
-            group.gr_name
-            for group in grp.getgrall()
-            if name in group.gr_mem
-        }
+        groups = {group.gr_name for group in grp.getgrall() if name in group.gr_mem}
         try:
             groups.add(grp.getgrgid(account.pw_gid).gr_name)
         except KeyError:
@@ -218,6 +214,7 @@ class CamAdminService:
                 "status": "SUCCESS",
                 "cam_id": cam_id,
                 "customers": list(profile.customer_numbers),
+                "allow_delivery": profile.allow_delivery,
                 "resolved_entities": sorted(profile.entity_names),
                 "fingerprint": records[0].key.fingerprint,
             }
@@ -234,8 +231,7 @@ class CamAdminService:
 
             all_keys = authorized_key_records(live.authorized_key_lines)
             if any(
-                record.key.fingerprint == request.key.fingerprint
-                for record in all_keys
+                record.key.fingerprint == request.key.fingerprint for record in all_keys
             ):
                 raise CamAdminError("public-key fingerprint already exists")
 
@@ -255,18 +251,13 @@ class CamAdminService:
             )
             candidate_lines = (*live.authorized_key_lines, forced_line)
             expected_policy_hash = sha256_bytes(serialize_policy(candidate))
-            expected_key_hash = sha256_bytes(
-                serialize_authorized_keys(candidate_lines)
-            )
+            expected_key_hash = sha256_bytes(serialize_authorized_keys(candidate_lines))
             backups = self.store.back_up(live, operation_id)
 
             try:
                 policy_hash = self.store.replace_policy(candidate, live)
                 key_hash = self.store.replace_authorized_keys(candidate_lines, live)
-                if (
-                    policy_hash != expected_policy_hash
-                    or key_hash != expected_key_hash
-                ):
+                if policy_hash != expected_policy_hash or key_hash != expected_key_hash:
                     raise CamAdminError("candidate hash mismatch")
 
                 verified = self.store.read_live()
@@ -278,17 +269,14 @@ class CamAdminService:
                 verified_entry = verified.policy.get("cams", {}).get(request.cam_id)
                 verified_records = [
                     record
-                    for record in managed_key_records(
-                        verified.authorized_key_lines
-                    )
+                    for record in managed_key_records(verified.authorized_key_lines)
                     if record.managed_cam_id == request.cam_id
                 ]
                 if verified_entry != candidate["cams"][request.cam_id]:
                     raise CamAdminError("post-write policy verification failed")
                 if (
                     len(verified_records) != 1
-                    or verified_records[0].key.fingerprint
-                    != request.key.fingerprint
+                    or verified_records[0].key.fingerprint != request.key.fingerprint
                 ):
                     raise CamAdminError("post-write forced-key verification failed")
 
@@ -317,9 +305,7 @@ class CamAdminService:
                     stat.S_IMODE(live.authorized_keys_stat.st_mode),
                 )
                 if key_metadata != original_key_metadata:
-                    raise CamAdminError(
-                        "post-write key ownership verification failed"
-                    )
+                    raise CamAdminError("post-write key ownership verification failed")
 
                 self.store.append_audit(
                     {
@@ -388,18 +374,12 @@ class CamAdminService:
             ]
             entry = live.policy.get("cams", {}).get(request.cam_id)
             if not isinstance(entry, dict) or len(records) != 1:
-                raise CamAdminError(
-                    "CAM does not have one consistent policy/key pair"
-                )
+                raise CamAdminError("CAM does not have one consistent policy/key pair")
             record = records[0]
             if record.key.fingerprint != request.expected_fingerprint:
-                raise CamAdminError(
-                    "CAM key fingerprint changed; refresh show output"
-                )
+                raise CamAdminError("CAM key fingerprint changed; refresh show output")
             if self.process_terminator is None:
-                raise CamAdminError(
-                    "process terminator is required for deprovisioning"
-                )
+                raise CamAdminError("process terminator is required for deprovisioning")
 
             backups = self.store.back_up(live, operation_id)
             candidate_policy = copy.deepcopy(live.policy)
@@ -409,12 +389,8 @@ class CamAdminService:
                 for index, line in enumerate(live.authorized_key_lines)
                 if index != record.index
             )
-            expected_policy_hash = sha256_bytes(
-                serialize_policy(candidate_policy)
-            )
-            expected_key_hash = sha256_bytes(
-                serialize_authorized_keys(candidate_lines)
-            )
+            expected_policy_hash = sha256_bytes(serialize_policy(candidate_policy))
+            expected_key_hash = sha256_bytes(serialize_authorized_keys(candidate_lines))
 
             failures: list[str] = []
             try:
@@ -444,13 +420,9 @@ class CamAdminService:
             shared_fallback = not policy_removed
             exact_result = None
             try:
-                exact_result = self.process_terminator.terminate_cam(
-                    request.cam_id
-                )
+                exact_result = self.process_terminator.terminate_cam(request.cam_id)
             except Exception as exc:
-                warnings.append(
-                    f"exact_process_termination:{type(exc).__name__}"
-                )
+                warnings.append(f"exact_process_termination:{type(exc).__name__}")
                 shared_fallback = True
 
             fallback_count = 0
@@ -460,9 +432,7 @@ class CamAdminService:
                         self.process_terminator.terminate_restricted_account()
                     )
                 except Exception as exc:
-                    failures.append(
-                        f"shared_process_termination:{type(exc).__name__}"
-                    )
+                    failures.append(f"shared_process_termination:{type(exc).__name__}")
 
             if not policy_removed and not key_removed:
                 status = "FAILED_REVOCATION_UNCONFIRMED"
@@ -636,9 +606,7 @@ class CamAdminService:
                 0o750,
                 stat.S_ISDIR,
             ),
-            "config_immutable": (
-                config_file_immutable and connection_file_immutable
-            ),
+            "config_immutable": (config_file_immutable and connection_file_immutable),
             "policy_immutable": policy_file_immutable,
             "authorized_keys_immutable": (
                 cam_home_immutable
@@ -690,11 +658,8 @@ class CamAdminService:
                 pass
 
             admin_groups = {"root", "wheel", "sudo", "admin", "adm"}
-            checks["cam_not_admin"] = (
-                account.uid != 0
-                and admin_groups.isdisjoint(
-                    {group.lower() for group in account.groups}
-                )
+            checks["cam_not_admin"] = account.uid != 0 and admin_groups.isdisjoint(
+                {group.lower() for group in account.groups}
             )
 
         host = self.connection.get("host")
@@ -804,9 +769,7 @@ def _admin_actor() -> str:
 def build_default_service() -> CamAdminService:
     paths = CamAdminPaths()
     try:
-        connection = json.loads(
-            paths.connection_path.read_text(encoding="utf-8")
-        )
+        connection = json.loads(paths.connection_path.read_text(encoding="utf-8"))
     except (OSError, UnicodeError, json.JSONDecodeError) as exc:
         raise CamAdminError("connection.json cannot be loaded") from exc
     required = {"host", "port", "remote_user", "host_public_key"}

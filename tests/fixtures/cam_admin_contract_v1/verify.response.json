@@ -1,0 +1,8 @@
+{
+  "allow_delivery": false,
+  "cam_id": "cam_alice",
+  "customers": [223],
+  "fingerprint": "SHA256:sArVyTbDlP2ByuRNM59Xf/iwOUmdy69sxylyNl3iUQQ",
+  "resolved_entities": ["223_customer"],
+  "status": "SUCCESS"
+}

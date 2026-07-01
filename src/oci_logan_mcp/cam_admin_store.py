@@ -60,9 +60,7 @@ def parse_ed25519_public_key(value: object) -> ParsedPublicKey:
         raise AdminRequestError("public_key must be one OpenSSH line")
     parts = value.split()
     if len(parts) != 3 or parts[0] != "ssh-ed25519":
-        raise AdminRequestError(
-            "public_key must be one option-free ssh-ed25519 record"
-        )
+        raise AdminRequestError("public_key must be one option-free ssh-ed25519 record")
     try:
         blob = base64.b64decode(parts[1], validate=True)
     except (binascii.Error, ValueError) as exc:
@@ -413,13 +411,9 @@ def parse_authorized_key_line(
             f"malformed ed25519 record on authorized_keys line {index + 1}"
         )
     comment = (
-        tokens[key_index + 2]
-        if key_index + 2 < len(tokens)
-        else f"line-{index + 1}"
+        tokens[key_index + 2] if key_index + 2 < len(tokens) else f"line-{index + 1}"
     )
-    key = parse_ed25519_public_key(
-        f"ssh-ed25519 {tokens[key_index + 1]} {comment}"
-    )
+    key = parse_ed25519_public_key(f"ssh-ed25519 {tokens[key_index + 1]} {comment}")
     managed_cam_id = None
     if comment.startswith("logan-cam:"):
         try:
