@@ -51,7 +51,7 @@ def _patch_initialize_core_dependencies(monkeypatch, tmp_path, settings):
 
     monkeypatch.setattr(server_mod, "config_exists", lambda: True)
     monkeypatch.setattr(server_mod, "load_config", lambda: settings)
-    monkeypatch.setattr(server_mod, "CONFIG_PATH", tmp_path / "config.yaml")
+    monkeypatch.setattr(server_mod, "STATE_DIR", tmp_path)
     monkeypatch.setattr(server_mod, "OCILogAnalyticsClient", _FakeClient)
     monkeypatch.setattr(server_mod, "CacheManager", lambda cfg: object())
     monkeypatch.setattr(server_mod, "QueryLogger", lambda cfg: object())
@@ -60,6 +60,40 @@ def _patch_initialize_core_dependencies(monkeypatch, tmp_path, settings):
     monkeypatch.setattr(server_mod, "SecretStore", _FakeSecretStore)
     monkeypatch.setattr(server_mod, "AuditLogger", lambda log_dir, session_id: object())
     monkeypatch.setattr(server_mod, "MCPHandlers", _FakeHandlers)
+
+
+@pytest.mark.asyncio
+async def test_initialize_core_keeps_state_outside_overridden_config_dir(
+    monkeypatch, tmp_path
+):
+    from oci_logan_mcp.config import Settings
+    import oci_logan_mcp.server as server_mod
+
+    etc_dir = tmp_path / "etc" / "logan-mcp"
+    state_dir = tmp_path / "home" / "cam" / ".oci-logan-mcp"
+    settings = Settings()
+    settings.enforce_access = False
+    monkeypatch.setattr(server_mod, "STATE_DIR", state_dir)
+    monkeypatch.setattr(server_mod, "config_exists", lambda: True)
+    monkeypatch.setattr(server_mod, "load_config", lambda: settings)
+    monkeypatch.setattr(server_mod, "OCILogAnalyticsClient", _FakeClient)
+    monkeypatch.setattr(server_mod, "CacheManager", lambda cfg: object())
+    monkeypatch.setattr(server_mod, "QueryLogger", lambda cfg: object())
+    monkeypatch.setattr(server_mod, "ContextManager", lambda cfg: object())
+    monkeypatch.setattr(server_mod, "PreferenceStore", lambda user_dir: object())
+    monkeypatch.setattr(server_mod, "SecretStore", _FakeSecretStore)
+    monkeypatch.setattr(
+        server_mod, "AuditLogger", lambda log_dir, session_id: object()
+    )
+    monkeypatch.setattr(server_mod, "MCPHandlers", _FakeHandlers)
+    monkeypatch.setenv("OCI_LA_MCP_CONFIG", str(etc_dir / "config.yaml"))
+    monkeypatch.setenv("LOGAN_USER", "cam_alice")
+
+    server = server_mod.OCILogAnalyticsMCPServer()
+    await server.initialize_core()
+
+    assert server.user_store.base_dir == state_dir
+    assert not (etc_dir / "users").exists()
 
 
 @pytest.mark.asyncio

@@ -22,7 +22,7 @@ try:
 except ImportError:
     _HAS_ANNOTATIONS = False
 
-from .config import load_config, config_exists, CONFIG_PATH
+from .config import STATE_DIR, config_exists, load_config
 from .client import OCILogAnalyticsClient
 from .cache import CacheManager
 from .query_logger import QueryLogger
@@ -222,7 +222,7 @@ class OCILogAnalyticsMCPServer:
         self.context_manager = ContextManager(self.settings)
 
         # Initialize per-user stores
-        base_dir = CONFIG_PATH.parent  # ~/.oci-logan-mcp
+        base_dir = STATE_DIR
         self.user_store = UserStore(base_dir=base_dir)
         self.preference_store = PreferenceStore(
             user_dir=base_dir / "users" / self.user_store.user_id
@@ -236,7 +236,7 @@ class OCILogAnalyticsMCPServer:
         if enforce_access:
             from .access_control import build_profile, load_access_config
             ac_path = self.settings.access_control_path or str(
-                CONFIG_PATH.parent / "access_control.yaml"
+                STATE_DIR / "access_control.yaml"
             )
             ac_config = load_access_config(ac_path)  # raises AccessConfigError -> fatal
             # Pin OCI scope to the access-control config

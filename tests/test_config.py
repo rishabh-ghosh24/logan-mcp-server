@@ -297,3 +297,40 @@ def test_ingestion_health_roundtrip(tmp_path):
 
     assert loaded.ingestion_health.stoppage_threshold_seconds == 120
     assert loaded.ingestion_health.freshness_probe_window == "last_4_hours"
+
+
+def test_resolve_config_path_prefers_explicit_argument(monkeypatch, tmp_path):
+    from oci_logan_mcp.config import resolve_config_path
+
+    monkeypatch.setenv("OCI_LA_MCP_CONFIG", str(tmp_path / "env.yaml"))
+    explicit = tmp_path / "explicit.yaml"
+
+    assert resolve_config_path(explicit) == explicit
+
+
+def test_load_and_exists_share_environment_config_path(monkeypatch, tmp_path):
+    from oci_logan_mcp.config import config_exists, load_config
+
+    config_path = tmp_path / "etc" / "logan-mcp" / "config.yaml"
+    config_path.parent.mkdir(parents=True)
+    config_path.write_text(
+        "oci:\n  auth_type: instance_principal\n",
+        encoding="utf-8",
+    )
+    monkeypatch.setenv("OCI_LA_MCP_CONFIG", str(config_path))
+
+    assert config_exists() is True
+    assert load_config().oci.auth_type == "instance_principal"
+
+
+def test_state_dir_is_not_derived_from_environment_config(monkeypatch, tmp_path):
+    import oci_logan_mcp.config as config_mod
+
+    original_state = config_mod.STATE_DIR
+    monkeypatch.setenv(
+        "OCI_LA_MCP_CONFIG",
+        str(tmp_path / "etc" / "logan-mcp" / "config.yaml"),
+    )
+
+    assert config_mod.resolve_config_path() != original_state / "config.yaml"
+    assert config_mod.STATE_DIR == original_state

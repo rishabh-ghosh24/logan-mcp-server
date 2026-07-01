@@ -8,7 +8,7 @@ from typing import NoReturn, Optional
 
 from .server import main as server_main
 from .wizard import run_setup_wizard
-from .config import CONFIG_PATH
+from .config import STATE_DIR
 from .promote import promote_all
 
 
@@ -97,7 +97,6 @@ def main():
 def _reset_secret(user_id: str) -> None:
     """Reset confirmation secret for a user with identity verification."""
     import getpass
-    from .config import CONFIG_PATH
     from .secret_store import SecretStore
     from .audit import AuditLogger
 
@@ -106,7 +105,7 @@ def _reset_secret(user_id: str) -> None:
               file=sys.stderr)
         sys.exit(1)
 
-    base_dir = CONFIG_PATH.parent
+    base_dir = STATE_DIR
     user_dir = base_dir / "users" / user_id
 
     # Identity check: OS user must own the user directory
@@ -139,7 +138,7 @@ def _reset_secret(user_id: str) -> None:
 
 def _run_promotion(base_dir: Optional[Path]) -> NoReturn:
     """Run promote_all once and exit."""
-    resolved = base_dir or CONFIG_PATH.parent
+    resolved = base_dir or STATE_DIR
     try:
         result = promote_all(resolved)
         print(

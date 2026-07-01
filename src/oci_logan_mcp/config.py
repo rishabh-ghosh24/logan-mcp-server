@@ -9,8 +9,9 @@ from typing import Any, Dict, Literal, Optional
 import yaml
 
 
-# Default config file location
-CONFIG_PATH = Path.home() / ".oci-logan-mcp" / "config.yaml"
+# Mutable runtime state always remains under the service account's home.
+STATE_DIR = Path.home() / ".oci-logan-mcp"
+CONFIG_PATH = STATE_DIR / "config.yaml"
 
 # Legacy config directory (for migration)
 _LEGACY_CONFIG_DIR = Path.home() / ".oci-la-mcp"
@@ -233,6 +234,15 @@ class Settings:
 # --- Config Loading ---
 
 
+def resolve_config_path(config_path: Optional[Path] = None) -> Path:
+    """Resolve the config file without changing the runtime-state root."""
+    if config_path is not None:
+        return Path(config_path)
+    if env_path := os.environ.get("OCI_LA_MCP_CONFIG"):
+        return Path(env_path)
+    return CONFIG_PATH
+
+
 def load_config(config_path: Optional[Path] = None) -> Settings:
     """Load configuration from file, with environment variable overrides.
 
@@ -247,11 +257,7 @@ def load_config(config_path: Optional[Path] = None) -> Settings:
     # Migrate legacy config directory if needed
     _migrate_legacy_config_dir()
 
-    # Check for config path override from environment
-    if env_config_path := os.environ.get("OCI_LA_MCP_CONFIG"):
-        config_path = Path(env_config_path)
-    elif config_path is None:
-        config_path = CONFIG_PATH
+    config_path = resolve_config_path(config_path)
 
     # Load from file if exists
     if config_path.exists():
@@ -462,7 +468,7 @@ def _apply_env_overrides(settings: Settings) -> Settings:
 
 def _migrate_legacy_config_dir() -> None:
     """Migrate from legacy ~/.oci-la-mcp/ to ~/.oci-logan-mcp/ if needed."""
-    new_dir = CONFIG_PATH.parent
+    new_dir = STATE_DIR
     if _LEGACY_CONFIG_DIR.exists() and not new_dir.exists():
         import shutil
         import logging
@@ -488,6 +494,4 @@ def save_config(settings: Settings, config_path: Optional[Path] = None) -> None:
 
 def config_exists(config_path: Optional[Path] = None) -> bool:
     """Check if configuration file exists."""
-    if config_path is None:
-        config_path = CONFIG_PATH
-    return config_path.exists()
+    return resolve_config_path(config_path).exists()
