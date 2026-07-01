@@ -2,17 +2,20 @@ import base64
 import json
 import os
 import struct
+from io import StringIO
 from pathlib import Path
 
 import pytest
 import yaml
 
-from oci_logan_mcp.cam_admin import CamAdminError, CamAdminService
+from oci_logan_mcp.cam_admin import CamAdminError, CamAdminService, main
 from oci_logan_mcp.cam_admin_store import (
     CamAdminPaths,
     CamStateStore,
+    DeprovisionRequest,
     ProvisionRequest,
 )
+from oci_logan_mcp.cam_processes import TerminationResult
 
 
 def _key(cam_id, fill=b"k"):
@@ -276,3 +279,343 @@ async def test_show_and_verify_return_current_assignment(tmp_path):
     assert shown["customers"] == [223]
     assert shown["fingerprint"] == request.key.fingerprint
     assert verified["resolved_entities"] == ["223_customer"]
+
+
+class FakeTerminator:
+    def __init__(self, result=TerminationResult(1, 1, 0), fail_exact=False):
+        self.result = result
+        self.fail_exact = fail_exact
+        self.exact_calls = []
+        self.fallback_calls = 0
+
+    def terminate_cam(self, cam_id, grace_seconds=5.0):
+        self.exact_calls.append(cam_id)
+        if self.fail_exact:
+            raise RuntimeError("identity verification unavailable")
+        return self.result
+
+    def terminate_restricted_account(self, grace_seconds=5.0):
+        self.fallback_calls += 1
+        return 2
+
+
+async def _provision_alice(service):
+    request = _provision_request(customers=(223,))
+    await service.provision(request)
+    return request
+
+
+def _deprovision_request(provisioned, fingerprint=None):
+    return DeprovisionRequest.from_json(
+        {
+            "cam_id": "cam_alice",
+            "expected_fingerprint": fingerprint or provisioned.key.fingerprint,
+            "confirm": True,
+        }
+    )
+
+
+@pytest.mark.asyncio
+async def test_deprovision_removes_policy_and_key_terminates_process_and_keeps_state(
+    tmp_path,
+):
+    service, paths = _service(tmp_path)
+    terminator = FakeTerminator()
+    service.process_terminator = terminator
+    provisioned = await _provision_alice(service)
+    user_dir = (
+        tmp_path
+        / "home"
+        / "cam"
+        / ".oci-logan-mcp"
+        / "users"
+        / "cam_alice"
+    )
+    user_dir.mkdir(parents=True)
+    (user_dir / "learned_queries.yaml").write_text(
+        "queries: []\n",
+        encoding="utf-8",
+    )
+
+    response = await service.deprovision(_deprovision_request(provisioned))
+
+    assert response["status"] == "SUCCESS"
+    policy = yaml.safe_load(paths.policy_path.read_text(encoding="utf-8"))
+    assert "cam_alice" not in policy["cams"]
+    assert "logan-cam:cam_alice" not in paths.authorized_keys_path.read_text(
+        encoding="utf-8"
+    )
+    assert terminator.exact_calls == ["cam_alice"]
+    assert (user_dir / "learned_queries.yaml").is_file()
+
+
+@pytest.mark.asyncio
+async def test_deprovision_requires_terminator_before_mutation(tmp_path):
+    service, paths = _service(tmp_path)
+    provisioned = await _provision_alice(service)
+    before_policy = paths.policy_path.read_bytes()
+    before_keys = paths.authorized_keys_path.read_bytes()
+
+    with pytest.raises(CamAdminError, match="process terminator is required"):
+        await service.deprovision(_deprovision_request(provisioned))
+
+    assert paths.policy_path.read_bytes() == before_policy
+    assert paths.authorized_keys_path.read_bytes() == before_keys
+
+
+@pytest.mark.asyncio
+async def test_deprovision_never_restores_removed_key_after_policy_cleanup_failure(
+    tmp_path, monkeypatch
+):
+    service, paths = _service(tmp_path)
+    service.process_terminator = FakeTerminator()
+    provisioned = await _provision_alice(service)
+    original_replace_policy = service.store.replace_policy
+
+    def fail_policy(policy, live):
+        if "cam_alice" not in policy.get("cams", {}):
+            raise OSError("injected policy cleanup failure")
+        return original_replace_policy(policy, live)
+
+    monkeypatch.setattr(service.store, "replace_policy", fail_policy)
+    response = await service.deprovision(_deprovision_request(provisioned))
+
+    assert response["status"] == "FAILED_ACCESS_REVOKED_CLEANUP_REQUIRED"
+    assert response["access_revoked"] is True
+    assert "logan-cam:cam_alice" not in paths.authorized_keys_path.read_text(
+        encoding="utf-8"
+    )
+    assert service.process_terminator.fallback_calls == 1
+
+
+@pytest.mark.asyncio
+async def test_deprovision_policy_removal_stays_revoked_when_key_cleanup_fails(
+    tmp_path, monkeypatch
+):
+    service, paths = _service(tmp_path)
+    service.process_terminator = FakeTerminator()
+    provisioned = await _provision_alice(service)
+    monkeypatch.setattr(
+        service.store,
+        "replace_authorized_keys",
+        lambda lines, live: (_ for _ in ()).throw(
+            OSError("injected key cleanup failure")
+        ),
+    )
+
+    response = await service.deprovision(_deprovision_request(provisioned))
+
+    assert response["status"] == "FAILED_ACCESS_REVOKED_CLEANUP_REQUIRED"
+    assert response["access_revoked"] is True
+    assert "cam_alice" not in yaml.safe_load(
+        paths.policy_path.read_text(encoding="utf-8")
+    )["cams"]
+    assert "logan-cam:cam_alice" in paths.authorized_keys_path.read_text(
+        encoding="utf-8"
+    )
+
+
+@pytest.mark.asyncio
+async def test_deprovision_reports_unconfirmed_when_both_revocation_gates_fail(
+    tmp_path, monkeypatch
+):
+    service, paths = _service(tmp_path)
+    service.process_terminator = FakeTerminator()
+    provisioned = await _provision_alice(service)
+    monkeypatch.setattr(
+        service.store,
+        "replace_policy",
+        lambda policy, live: (_ for _ in ()).throw(OSError("policy failed")),
+    )
+    monkeypatch.setattr(
+        service.store,
+        "replace_authorized_keys",
+        lambda lines, live: (_ for _ in ()).throw(OSError("keys failed")),
+    )
+
+    response = await service.deprovision(_deprovision_request(provisioned))
+
+    assert response["status"] == "FAILED_REVOCATION_UNCONFIRMED"
+    assert response["access_revoked"] is False
+    assert service.process_terminator.fallback_calls == 1
+    assert "cam_alice" in yaml.safe_load(
+        paths.policy_path.read_text(encoding="utf-8")
+    )["cams"]
+    assert "logan-cam:cam_alice" in paths.authorized_keys_path.read_text(
+        encoding="utf-8"
+    )
+
+
+@pytest.mark.asyncio
+async def test_deprovision_uses_shared_fallback_when_exact_termination_is_unverified(
+    tmp_path,
+):
+    service, _ = _service(tmp_path)
+    service.process_terminator = FakeTerminator(fail_exact=True)
+    provisioned = await _provision_alice(service)
+
+    response = await service.deprovision(_deprovision_request(provisioned))
+
+    assert response["status"] == "SUCCESS"
+    assert response["shared_account_fallback"] is True
+    assert service.process_terminator.fallback_calls == 1
+
+
+@pytest.mark.asyncio
+async def test_deprovision_audit_failure_does_not_restore_access(
+    tmp_path, monkeypatch
+):
+    service, paths = _service(tmp_path)
+    service.process_terminator = FakeTerminator()
+    provisioned = await _provision_alice(service)
+    monkeypatch.setattr(
+        service.store,
+        "append_audit",
+        lambda event: (_ for _ in ()).throw(OSError("audit unavailable")),
+    )
+
+    response = await service.deprovision(_deprovision_request(provisioned))
+
+    assert response["status"] == "FAILED_ACCESS_REVOKED_CLEANUP_REQUIRED"
+    assert response["access_revoked"] is True
+    assert "cam_alice" not in yaml.safe_load(
+        paths.policy_path.read_text(encoding="utf-8")
+    )["cams"]
+    assert "logan-cam:cam_alice" not in paths.authorized_keys_path.read_text(
+        encoding="utf-8"
+    )
+
+
+@pytest.mark.asyncio
+async def test_deprovision_refuses_fingerprint_mismatch_without_mutation(tmp_path):
+    service, paths = _service(tmp_path)
+    service.process_terminator = FakeTerminator()
+    provisioned = await _provision_alice(service)
+    before_policy = paths.policy_path.read_bytes()
+    before_keys = paths.authorized_keys_path.read_bytes()
+
+    with pytest.raises(CamAdminError, match="fingerprint changed"):
+        await service.deprovision(
+            _deprovision_request(provisioned, fingerprint="SHA256:not-current")
+        )
+
+    assert paths.policy_path.read_bytes() == before_policy
+    assert paths.authorized_keys_path.read_bytes() == before_keys
+
+
+def test_cli_provision_reads_json_stdin_and_writes_one_json_response():
+    class FakeService:
+        async def provision(self, request):
+            return {"status": "SUCCESS", "cam_id": request.cam_id}
+
+    stdin = StringIO(
+        json.dumps(
+            {
+                "cam_id": "cam_alice",
+                "customers": [223],
+                "allow_delivery": False,
+                "public_key": _key("cam_alice"),
+            }
+        )
+    )
+    stdout = StringIO()
+    stderr = StringIO()
+
+    code = main(
+        ["provision", "--json"],
+        stdin=stdin,
+        stdout=stdout,
+        stderr=stderr,
+        service=FakeService(),
+        geteuid=lambda: 0,
+    )
+
+    assert code == 0
+    assert json.loads(stdout.getvalue()) == {
+        "status": "SUCCESS",
+        "cam_id": "cam_alice",
+    }
+    assert stdout.getvalue().count("\n") == 1
+    assert stderr.getvalue() == ""
+
+
+def test_cli_refuses_non_root_before_reading_request():
+    class UnreadableInput:
+        def read(self):
+            raise AssertionError("stdin must not be read")
+
+    stdout = StringIO()
+    stderr = StringIO()
+
+    code = main(
+        ["show", "--cam", "cam_alice", "--json"],
+        stdin=UnreadableInput(),
+        stdout=stdout,
+        stderr=stderr,
+        service=object(),
+        geteuid=lambda: 1000,
+    )
+
+    assert code == 1
+    assert stdout.getvalue() == ""
+    assert "must run as root" in stderr.getvalue()
+
+
+def test_cli_rejects_trailing_json_without_calling_service():
+    class FakeService:
+        async def provision(self, request):
+            raise AssertionError("invalid input must not reach the service")
+
+    payload = {
+        "cam_id": "cam_alice",
+        "customers": [223],
+        "allow_delivery": False,
+        "public_key": _key("cam_alice"),
+    }
+    stdout = StringIO()
+    stderr = StringIO()
+
+    code = main(
+        ["provision", "--json"],
+        stdin=StringIO(json.dumps(payload) + " {}"),
+        stdout=stdout,
+        stderr=stderr,
+        service=FakeService(),
+        geteuid=lambda: 0,
+    )
+
+    assert code != 0
+    assert stdout.getvalue() == ""
+    assert "trailing" in stderr.getvalue().lower()
+    assert _key("cam_alice") not in stderr.getvalue()
+
+
+def test_cli_emits_failed_operation_json_and_nonzero_exit():
+    class FakeService:
+        async def deprovision(self, request):
+            return {
+                "status": "FAILED_ACCESS_REVOKED_CLEANUP_REQUIRED",
+                "cam_id": request.cam_id,
+                "access_revoked": True,
+            }
+
+    stdout = StringIO()
+    stderr = StringIO()
+    payload = {
+        "cam_id": "cam_alice",
+        "expected_fingerprint": "SHA256:fixture",
+        "confirm": True,
+    }
+
+    code = main(
+        ["deprovision", "--json"],
+        stdin=StringIO(json.dumps(payload)),
+        stdout=stdout,
+        stderr=stderr,
+        service=FakeService(),
+        geteuid=lambda: 0,
+    )
+
+    assert code == 1
+    assert json.loads(stdout.getvalue())["access_revoked"] is True
+    assert stderr.getvalue() == ""

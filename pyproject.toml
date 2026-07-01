@@ -51,6 +51,7 @@ dev = [
 
 [project.scripts]
 oci-logan-mcp = "oci_logan_mcp.__main__:main"
+logan-cam-admin = "oci_logan_mcp.cam_admin:main"
 
 [build-system]
 requires = ["hatchling"]
