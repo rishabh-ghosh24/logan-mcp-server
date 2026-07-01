@@ -1,0 +1,5 @@
+#!/bin/sh
+set -eu
+
+cd /opt/logan-mcp
+exec /opt/logan-mcp/venv/bin/python -I -m oci_logan_mcp.cam_admin "$@"

@@ -99,6 +99,7 @@ class ProcessTerminator:
 
     def _is_cam(self, process: ProcessIdentity, cam_id: str) -> bool:
         expected_tail = (
+            "-I",
             "-m",
             "oci_logan_mcp",
             "--enforce-access",
@@ -108,7 +109,7 @@ class ProcessTerminator:
         return (
             process.uid == self.cam_uid
             and process.executable.resolve(strict=False) == self.runtime_python
-            and len(process.argv) == 6
+            and len(process.argv) == 7
             and process.argv[1:] == expected_tail
         )
 

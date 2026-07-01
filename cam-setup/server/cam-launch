@@ -1,0 +1,26 @@
+#!/bin/sh
+set -eu
+
+if [ "$#" -ne 1 ]; then
+    exit 64
+fi
+
+CAM_ID=$1
+if [ "${#CAM_ID}" -gt 64 ] || ! /usr/bin/printf '%s\n' "$CAM_ID" \
+    | /usr/bin/grep -Eq '^[a-z][a-z0-9]*([._-][a-z0-9]+)*$'; then
+    exit 64
+fi
+
+cd /opt/logan-mcp
+exec /usr/bin/env -i \
+    HOME=/home/cam \
+    USER=cam \
+    LOGNAME=cam \
+    LANG=C.UTF-8 \
+    PATH=/opt/logan-mcp/venv/bin:/usr/bin:/bin \
+    LOGAN_USER=$CAM_ID \
+    OCI_LA_MCP_CONFIG=/etc/logan-mcp/config.yaml \
+    OCI_LOGAN_MCP_ACCESS_CONFIG=/etc/logan-mcp/access_control.yaml \
+    OCI_LOGAN_MCP_ENFORCE_ACCESS=1 \
+    /opt/logan-mcp/venv/bin/python -I -m oci_logan_mcp \
+    --enforce-access --user "$CAM_ID"

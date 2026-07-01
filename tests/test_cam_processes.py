@@ -19,6 +19,7 @@ def _proc(pid=101, cam_id="cam_alice", start_time=500, pgrp=101, uid=2001):
         executable=PYTHON,
         argv=(
             str(PYTHON),
+            "-I",
             "-m",
             "oci_logan_mcp",
             "--enforce-access",
@@ -181,7 +182,7 @@ def _write_fake_proc(proc_root, executable):
         encoding="utf-8",
     )
     (process_root / "cmdline").write_bytes(
-        b"/opt/logan-mcp/venv/bin/python\0-m\0oci_logan_mcp\0"
+        b"/opt/logan-mcp/venv/bin/python\0-I\0-m\0oci_logan_mcp\0"
         b"--enforce-access\0--user\0cam_alice\0"
     )
     # Fields after the closing ')' begin at field 3 (state). pgrp is field 5
@@ -208,6 +209,7 @@ def test_proc_inspector_reads_exact_linux_identity(tmp_path):
         executable=executable,
         argv=(
             "/opt/logan-mcp/venv/bin/python",
+            "-I",
             "-m",
             "oci_logan_mcp",
             "--enforce-access",

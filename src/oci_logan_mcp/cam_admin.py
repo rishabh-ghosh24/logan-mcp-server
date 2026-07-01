@@ -5,19 +5,25 @@ from __future__ import annotations
 import argparse
 import asyncio
 import copy
+import grp
 import json
 import os
 import pwd
+import re
 import stat
+import subprocess
 import sys
 import uuid
+from dataclasses import dataclass
 from datetime import datetime, timezone
+from pathlib import Path
 from typing import Any, Awaitable, Callable, Mapping, Sequence, TextIO
 
 from .access_control import (
     AccessConfigError,
     AccessControlConfig,
     build_profile,
+    load_access_config,
     validate_cam_id,
 )
 from .cam_admin_store import (
@@ -30,6 +36,7 @@ from .cam_admin_store import (
     authorized_key_records,
     build_forced_key_line,
     managed_key_records,
+    parse_ed25519_public_key,
     serialize_authorized_keys,
     serialize_policy,
     sha256_bytes,
@@ -42,6 +49,99 @@ class CamAdminError(RuntimeError):
     """Raised when a CAM administration operation cannot be completed safely."""
 
 
+@dataclass(frozen=True)
+class SystemAccount:
+    uid: int
+    gid: int
+    groups: tuple[str, ...]
+
+
+class SystemInspector:
+    """Small injectable adapter for Linux ownership and command checks."""
+
+    def stat(self, path: Path) -> os.stat_result:
+        return Path(path).stat()
+
+    def lookup_user(self, name: str) -> SystemAccount:
+        account = pwd.getpwnam(name)
+        groups = {
+            group.gr_name
+            for group in grp.getgrall()
+            if name in group.gr_mem
+        }
+        try:
+            groups.add(grp.getgrgid(account.pw_gid).gr_name)
+        except KeyError:
+            pass
+        return SystemAccount(account.pw_uid, account.pw_gid, tuple(sorted(groups)))
+
+    def run(
+        self,
+        argv: Sequence[str],
+        env: Mapping[str, str] | None = None,
+    ) -> subprocess.CompletedProcess[str]:
+        return subprocess.run(
+            list(argv),
+            capture_output=True,
+            text=True,
+            timeout=30,
+            check=False,
+            env=None if env is None else dict(env),
+        )
+
+    def write_probe(self, path: Path, uid: int, gid: int) -> bool:
+        path = Path(path)
+        probe = path / f".logan-cam-write-probe-{uuid.uuid4().hex}"
+        if os.geteuid() not in (0, uid):
+            return False
+        child = os.fork()
+        if child == 0:
+            try:
+                if os.geteuid() == 0:
+                    os.setgroups([])
+                    os.setgid(gid)
+                    os.setuid(uid)
+                descriptor = os.open(
+                    probe,
+                    os.O_WRONLY | os.O_CREAT | os.O_EXCL,
+                    0o600,
+                )
+                os.close(descriptor)
+                probe.unlink()
+            except Exception:
+                os._exit(1)
+            os._exit(0)
+
+        _, wait_status = os.waitpid(child, 0)
+        try:
+            probe.unlink(missing_ok=True)
+        except OSError:
+            pass
+        return os.WIFEXITED(wait_status) and os.WEXITSTATUS(wait_status) == 0
+
+    def tree_secure(self, path: Path, uid: int) -> bool:
+        root = Path(path)
+        try:
+            entries = [root]
+            for current, directories, files in os.walk(root, followlinks=False):
+                current_path = Path(current)
+                entries.extend(current_path / name for name in directories)
+                entries.extend(current_path / name for name in files)
+            for entry in entries:
+                metadata = entry.lstat()
+                if metadata.st_uid != uid:
+                    return False
+                if stat.S_ISLNK(metadata.st_mode):
+                    target = entry.resolve(strict=True).stat()
+                    if target.st_uid != uid or stat.S_IMODE(target.st_mode) & 0o022:
+                        return False
+                elif stat.S_IMODE(metadata.st_mode) & 0o022:
+                    return False
+        except OSError:
+            return False
+        return True
+
+
 class CamAdminService:
     def __init__(
         self,
@@ -50,12 +150,14 @@ class CamAdminService:
         connection: Mapping[str, Any],
         actor_provider: Callable[[], str],
         process_terminator: Any | None = None,
+        system_inspector: Any | None = None,
     ):
         self.store = store
         self.entity_resolver = entity_resolver
         self.connection = dict(connection)
         self.actor_provider = actor_provider
         self.process_terminator = process_terminator
+        self.system_inspector = system_inspector
 
     @staticmethod
     def _operation_id(operation: str, cam_id: str) -> str:
@@ -427,6 +529,251 @@ class CamAdminService:
                 "backup_dir": str(backups.policy_path.parent),
             }
 
+    def bootstrap_check(self) -> dict[str, Any]:
+        inspector = self.system_inspector or SystemInspector()
+        paths = self.store.paths
+        runtime_root = paths.runtime_python.parents[2]
+        admin_command = runtime_root / "bin" / "cam-admin"
+        config_path = paths.policy_path.parent / "config.yaml"
+        connection_path = paths.policy_path.parent / "connection.json"
+        cam_home = paths.authorized_keys_path.parent.parent
+        ssh_dir = paths.authorized_keys_path.parent
+        state_dir = cam_home / ".oci-logan-mcp"
+
+        try:
+            account = inspector.lookup_user("cam")
+        except Exception:
+            account = None
+
+        def path_check(path, uid, gid, mode, kind):
+            try:
+                metadata = inspector.stat(path)
+            except Exception:
+                return False
+            return (
+                metadata.st_uid == uid
+                and metadata.st_gid == gid
+                and stat.S_IMODE(metadata.st_mode) == mode
+                and kind(metadata.st_mode)
+            )
+
+        root_gid = 0
+        cam_uid = -1 if account is None else account.uid
+        cam_gid = -1 if account is None else account.gid
+        runtime_root_owned = path_check(
+            runtime_root,
+            0,
+            root_gid,
+            0o755,
+            stat.S_ISDIR,
+        )
+        if runtime_root_owned:
+            try:
+                runtime_root_owned = inspector.tree_secure(runtime_root, 0)
+            except Exception:
+                runtime_root_owned = False
+        cam_home_immutable = path_check(
+            cam_home,
+            0,
+            cam_gid,
+            0o750,
+            stat.S_ISDIR,
+        )
+        ssh_parent_immutable = path_check(
+            ssh_dir,
+            0,
+            cam_gid,
+            0o750,
+            stat.S_ISDIR,
+        )
+        config_file_immutable = path_check(
+            config_path,
+            0,
+            cam_gid,
+            0o640,
+            stat.S_ISREG,
+        )
+        connection_file_immutable = path_check(
+            connection_path,
+            0,
+            cam_gid,
+            0o640,
+            stat.S_ISREG,
+        )
+        policy_file_immutable = path_check(
+            paths.policy_path,
+            0,
+            cam_gid,
+            0o640,
+            stat.S_ISREG,
+        )
+        if policy_file_immutable:
+            try:
+                load_access_config(paths.policy_path)
+            except Exception:
+                policy_file_immutable = False
+
+        checks: dict[str, bool] = {
+            "runtime_root_owned": runtime_root_owned,
+            "launcher_root_owned": path_check(
+                paths.launcher_path,
+                0,
+                root_gid,
+                0o755,
+                stat.S_ISREG,
+            ),
+            "admin_command_root_owned": path_check(
+                admin_command,
+                0,
+                root_gid,
+                0o755,
+                stat.S_ISREG,
+            ),
+            "config_parent_immutable": path_check(
+                paths.policy_path.parent,
+                0,
+                cam_gid,
+                0o750,
+                stat.S_ISDIR,
+            ),
+            "config_immutable": (
+                config_file_immutable and connection_file_immutable
+            ),
+            "policy_immutable": policy_file_immutable,
+            "authorized_keys_immutable": (
+                cam_home_immutable
+                and ssh_parent_immutable
+                and path_check(
+                    paths.authorized_keys_path,
+                    0,
+                    cam_gid,
+                    0o640,
+                    stat.S_ISREG,
+                )
+            ),
+            "runtime_state_writable": False,
+            "cam_password_locked": False,
+            "cam_not_admin": False,
+            "sshd_effective_config": False,
+            "instance_principal_init": False,
+        }
+
+        if account is not None:
+            state_metadata_ok = path_check(
+                state_dir,
+                cam_uid,
+                cam_gid,
+                0o700,
+                stat.S_ISDIR,
+            )
+            try:
+                can_write_state = inspector.write_probe(
+                    state_dir,
+                    cam_uid,
+                    cam_gid,
+                )
+            except Exception:
+                can_write_state = False
+            checks["runtime_state_writable"] = (
+                cam_home_immutable and state_metadata_ok and can_write_state
+            )
+
+            try:
+                password = inspector.run(["/usr/bin/passwd", "-S", "cam"])
+                fields = password.stdout.split()
+                checks["cam_password_locked"] = (
+                    password.returncode == 0
+                    and len(fields) >= 2
+                    and fields[1].upper().startswith("L")
+                )
+            except Exception:
+                pass
+
+            admin_groups = {"root", "wheel", "sudo", "admin", "adm"}
+            checks["cam_not_admin"] = (
+                account.uid != 0
+                and admin_groups.isdisjoint(
+                    {group.lower() for group in account.groups}
+                )
+            )
+
+        host = self.connection.get("host")
+        if isinstance(host, str) and host:
+            try:
+                sshd = inspector.run(
+                    [
+                        "/usr/sbin/sshd",
+                        "-T",
+                        "-C",
+                        f"user=cam,host={host},addr=127.0.0.1",
+                    ]
+                )
+                checks["sshd_effective_config"] = (
+                    sshd.returncode == 0
+                    and self._valid_effective_sshd_config(sshd.stdout)
+                )
+            except Exception:
+                pass
+
+        instance_code = (
+            "from oci_logan_mcp.client import OCILogAnalyticsClient; "
+            "from oci_logan_mcp.config import load_config; "
+            "settings=load_config(); "
+            "assert settings.oci.auth_type == 'instance_principal'; "
+            "OCILogAnalyticsClient(settings)"
+        )
+        try:
+            instance = inspector.run(
+                [str(paths.runtime_python), "-I", "-c", instance_code],
+                env={
+                    "HOME": str(cam_home),
+                    "USER": "cam",
+                    "LOGNAME": "cam",
+                    "LANG": "C.UTF-8",
+                    "PATH": f"{runtime_root}/venv/bin:/usr/bin:/bin",
+                    "OCI_LA_MCP_CONFIG": str(config_path),
+                },
+            )
+            checks["instance_principal_init"] = instance.returncode == 0
+        except Exception:
+            pass
+
+        return {
+            "status": "SUCCESS" if all(checks.values()) else "FAILED",
+            "checks": checks,
+        }
+
+    @staticmethod
+    def _valid_effective_sshd_config(output: str) -> bool:
+        values: dict[str, str] = {}
+        accepted_environment: list[str] = []
+        for line in output.splitlines():
+            parts = line.strip().split(None, 1)
+            if len(parts) != 2:
+                continue
+            key, value = parts[0].lower(), parts[1].strip()
+            values[key] = value.lower()
+            if key == "acceptenv":
+                accepted_environment.extend(value.split())
+
+        required = {
+            "authenticationmethods": "publickey",
+            "passwordauthentication": "no",
+            "kbdinteractiveauthentication": "no",
+            "permituserenvironment": "no",
+            "permituserrc": "no",
+            "allowagentforwarding": "no",
+            "allowtcpforwarding": "no",
+            "gatewayports": "no",
+            "x11forwarding": "no",
+            "permittunnel": "no",
+            "permittty": "no",
+        }
+        if any(values.get(key) != value for key, value in required.items()):
+            return False
+        dangerous = re.compile(r"^(PYTHON|LD_|PATH$|OCI_|LOGAN_)", re.IGNORECASE)
+        return not any(dangerous.match(name) for name in accepted_environment)
+
 
 async def _resolve_live_entities(config: AccessControlConfig) -> list[str]:
     from .client import OCILogAnalyticsClient
@@ -476,6 +823,14 @@ def build_default_service() -> CamAdminService:
         or not isinstance(connection["host_public_key"], str)
     ):
         raise CamAdminError("connection.json contains invalid values")
+    host_key_parts = connection["host_public_key"].split()
+    host_key_candidate = connection["host_public_key"]
+    if len(host_key_parts) == 2:
+        host_key_candidate += " host-key"
+    try:
+        parse_ed25519_public_key(host_key_candidate)
+    except AdminRequestError as exc:
+        raise CamAdminError("connection.json host public key is invalid") from exc
 
     try:
         cam_uid = pwd.getpwnam("cam").pw_uid

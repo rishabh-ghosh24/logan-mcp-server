@@ -1,14 +1,21 @@
 import base64
 import json
 import os
+import stat
 import struct
+import subprocess
 from io import StringIO
 from pathlib import Path
 
 import pytest
 import yaml
 
-from oci_logan_mcp.cam_admin import CamAdminError, CamAdminService, main
+from oci_logan_mcp.cam_admin import (
+    CamAdminError,
+    CamAdminService,
+    SystemAccount,
+    main,
+)
 from oci_logan_mcp.cam_admin_store import (
     CamAdminPaths,
     CamStateStore,
@@ -619,3 +626,178 @@ def test_cli_emits_failed_operation_json_and_nonzero_exit():
     assert code == 1
     assert json.loads(stdout.getvalue())["access_revoked"] is True
     assert stderr.getvalue() == ""
+
+
+class FakeSystemInspector:
+    def __init__(
+        self,
+        stats,
+        sshd_output=None,
+        instance_returncode=0,
+        tree_secure=True,
+    ):
+        self.stats = stats
+        self.sshd_output = sshd_output or (
+            "authenticationmethods publickey\n"
+            "passwordauthentication no\n"
+            "kbdinteractiveauthentication no\n"
+            "permituserenvironment no\n"
+            "permituserrc no\n"
+            "allowagentforwarding no\n"
+            "allowtcpforwarding no\n"
+            "gatewayports no\n"
+            "x11forwarding no\n"
+            "permittunnel no\n"
+            "permittty no\n"
+            "acceptenv LANG LC_*\n"
+        )
+        self.instance_returncode = instance_returncode
+        self.tree_secure_result = tree_secure
+        self.commands = []
+
+    def stat(self, path):
+        return self.stats[Path(path)]
+
+    def lookup_user(self, name):
+        assert name == "cam"
+        return SystemAccount(uid=2001, gid=2001, groups=("cam",))
+
+    def run(self, argv, env=None):
+        self.commands.append((tuple(argv), env))
+        if "-T" in argv:
+            return subprocess.CompletedProcess(argv, 0, self.sshd_output, "")
+        if tuple(argv[:2]) == ("/usr/bin/passwd", "-S"):
+            return subprocess.CompletedProcess(argv, 0, "cam LK 2026-01-01 0 99999 7 -1\n", "")
+        return subprocess.CompletedProcess(
+            argv,
+            self.instance_returncode,
+            "",
+            "instance principal failed" if self.instance_returncode else "",
+        )
+
+    def write_probe(self, path, uid, gid):
+        return Path(path) in self.stats and uid == 2001 and gid == 2001
+
+    def tree_secure(self, path, uid):
+        return self.tree_secure_result and Path(path) in self.stats and uid == 0
+
+
+def _fake_stat(uid, gid, mode):
+    return type(
+        "FakeStat",
+        (),
+        {"st_uid": uid, "st_gid": gid, "st_mode": mode},
+    )()
+
+
+def _bootstrap_service(tmp_path, **inspector_kwargs):
+    service, paths = _service(tmp_path)
+    runtime_root = paths.runtime_python.parents[2]
+    admin_command = runtime_root / "bin" / "cam-admin"
+    config_path = paths.policy_path.parent / "config.yaml"
+    connection_path = paths.policy_path.parent / "connection.json"
+    cam_home = paths.authorized_keys_path.parent.parent
+    ssh_dir = paths.authorized_keys_path.parent
+    state_dir = paths.authorized_keys_path.parent.parent / ".oci-logan-mcp"
+    stats = {
+        runtime_root: _fake_stat(0, 0, stat.S_IFDIR | 0o755),
+        paths.launcher_path: _fake_stat(0, 0, stat.S_IFREG | 0o755),
+        admin_command: _fake_stat(0, 0, stat.S_IFREG | 0o755),
+        paths.policy_path.parent: _fake_stat(0, 2001, stat.S_IFDIR | 0o750),
+        config_path: _fake_stat(0, 2001, stat.S_IFREG | 0o640),
+        connection_path: _fake_stat(0, 2001, stat.S_IFREG | 0o640),
+        paths.policy_path: _fake_stat(0, 2001, stat.S_IFREG | 0o640),
+        cam_home: _fake_stat(0, 2001, stat.S_IFDIR | 0o750),
+        ssh_dir: _fake_stat(0, 2001, stat.S_IFDIR | 0o750),
+        paths.authorized_keys_path: _fake_stat(
+            0,
+            2001,
+            stat.S_IFREG | 0o640,
+        ),
+        state_dir: _fake_stat(2001, 2001, stat.S_IFDIR | 0o700),
+    }
+    inspector = FakeSystemInspector(stats, **inspector_kwargs)
+    service.system_inspector = inspector
+    return service, inspector
+
+
+def test_bootstrap_check_verifies_full_linux_security_boundary(tmp_path):
+    service, inspector = _bootstrap_service(tmp_path)
+
+    response = service.bootstrap_check()
+
+    assert response == {
+        "status": "SUCCESS",
+        "checks": {
+            "runtime_root_owned": True,
+            "launcher_root_owned": True,
+            "admin_command_root_owned": True,
+            "config_parent_immutable": True,
+            "config_immutable": True,
+            "policy_immutable": True,
+            "authorized_keys_immutable": True,
+            "runtime_state_writable": True,
+            "cam_password_locked": True,
+            "cam_not_admin": True,
+            "sshd_effective_config": True,
+            "instance_principal_init": True,
+        },
+    }
+    sshd_call = next(command for command, _ in inspector.commands if "-T" in command)
+    assert "user=cam,host=130.162.53.112,addr=127.0.0.1" in sshd_call
+
+
+def test_bootstrap_check_rejects_dangerous_accepted_environment(tmp_path):
+    output = (
+        "authenticationmethods publickey\n"
+        "passwordauthentication no\n"
+        "kbdinteractiveauthentication no\n"
+        "permituserenvironment no\n"
+        "permituserrc no\n"
+        "allowagentforwarding no\n"
+        "allowtcpforwarding no\n"
+        "gatewayports no\n"
+        "x11forwarding no\n"
+        "permittunnel no\n"
+        "permittty no\n"
+        "acceptenv LANG PYTHONPATH\n"
+    )
+    service, _ = _bootstrap_service(tmp_path, sshd_output=output)
+
+    response = service.bootstrap_check()
+
+    assert response["status"] == "FAILED"
+    assert response["checks"]["sshd_effective_config"] is False
+
+
+def test_bootstrap_check_reports_instance_principal_failure(tmp_path):
+    service, _ = _bootstrap_service(tmp_path, instance_returncode=1)
+
+    response = service.bootstrap_check()
+
+    assert response["status"] == "FAILED"
+    assert response["checks"]["instance_principal_init"] is False
+
+
+def test_bootstrap_check_rejects_writable_runtime_descendant(tmp_path):
+    service, _ = _bootstrap_service(tmp_path, tree_secure=False)
+
+    response = service.bootstrap_check()
+
+    assert response["status"] == "FAILED"
+    assert response["checks"]["runtime_root_owned"] is False
+
+
+def test_bootstrap_check_requires_root_control_of_authorized_keys_parents(tmp_path):
+    service, inspector = _bootstrap_service(tmp_path)
+    ssh_dir = service.store.paths.authorized_keys_path.parent
+    inspector.stats[ssh_dir] = _fake_stat(
+        2001,
+        2001,
+        stat.S_IFDIR | 0o700,
+    )
+
+    response = service.bootstrap_check()
+
+    assert response["status"] == "FAILED"
+    assert response["checks"]["authorized_keys_immutable"] is False
