@@ -7,6 +7,7 @@ from oci_logan_mcp.access_control import (
     AccessControlConfig,
     AccessConfigError,
     load_access_config,
+    validate_cam_id,
 )
 
 
@@ -71,6 +72,69 @@ def test_missing_required_field_raises(tmp_path):
     """)  # no compartment_id
     with pytest.raises(AccessConfigError):
         load_access_config(path)
+
+
+@pytest.mark.parametrize(
+    "cam_id",
+    ["cam_alice", "firstname.lastname", "john.smith2", "mary-jane.watson", "alice"],
+)
+def test_validate_cam_id_accepts_supported_ids(cam_id):
+    assert validate_cam_id(cam_id) == cam_id
+
+
+@pytest.mark.parametrize(
+    "cam_id",
+    [
+        "",
+        ".alice",
+        "alice.",
+        "alice..smith",
+        "Alice",
+        "alice smith",
+        "a/../../root",
+        "a" * 65,
+    ],
+)
+def test_validate_cam_id_rejects_unsafe_ids(cam_id):
+    with pytest.raises(AccessConfigError):
+        validate_cam_id(cam_id)
+
+
+@pytest.mark.parametrize(
+    "customers",
+    [223, "223", ["223"], [True], [1.5], [0], [-1], {"223": True}],
+)
+def test_load_access_config_rejects_coerced_customer_shapes(tmp_path, customers):
+    import yaml
+
+    path = tmp_path / "access_control.yaml"
+    path.write_text(
+        yaml.safe_dump(
+            {
+                "compartment_id": "c",
+                "namespace": "ns",
+                "cams": {"cam_alice": {"customers": customers}},
+            }
+        ),
+        encoding="utf-8",
+    )
+
+    with pytest.raises(AccessConfigError, match="list of positive integers"):
+        load_access_config(path)
+
+
+def test_load_access_config_keeps_empty_list_for_runtime_fail_closed_check(tmp_path):
+    path = _write(
+        tmp_path,
+        """
+        compartment_id: c
+        namespace: ns
+        cams:
+          cam_empty: { customers: [] }
+        """,
+    )
+
+    assert load_access_config(path).cams["cam_empty"].customers == ()
 
 
 from oci_logan_mcp.access_control import entity_matches, resolve_entities

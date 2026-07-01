@@ -6,15 +6,43 @@ Inert unless an AccessProfile is built (i.e. unless --enforce-access is set).
 """
 from __future__ import annotations
 
+import re
 from dataclasses import dataclass, field
 from pathlib import Path
-from typing import Dict, Optional, Tuple
+from typing import Dict, FrozenSet, Iterable, List, Optional, Tuple
 
 import yaml
 
 
 class AccessConfigError(Exception):
     """Raised when access_control.yaml is missing or invalid (fail-closed)."""
+
+
+CAM_ID_RE = re.compile(r"^[a-z][a-z0-9]*(?:[._-][a-z0-9]+)*$")
+MAX_CAM_ID_LENGTH = 64
+
+
+def validate_cam_id(cam_id: object) -> str:
+    """Return a canonical CAM id or raise on an unsafe identity."""
+    if not isinstance(cam_id, str):
+        raise AccessConfigError("CAM id must be a string")
+    if len(cam_id) > MAX_CAM_ID_LENGTH or CAM_ID_RE.fullmatch(cam_id) is None:
+        raise AccessConfigError(
+            "CAM id must be 1-64 lowercase ASCII characters using letters, "
+            "digits, '.', '_' or '-' without leading, trailing, or repeated separators"
+        )
+    return cam_id
+
+
+def validate_customer_numbers(value: object, field_path: str) -> Tuple[int, ...]:
+    """Accept only an exact YAML list of positive integers."""
+    if not isinstance(value, list) or any(
+        type(number) is not int or number <= 0 for number in value
+    ):
+        raise AccessConfigError(
+            f"access_control.yaml field '{field_path}' must be a list of positive integers"
+        )
+    return tuple(value)
 
 
 @dataclass(frozen=True)
@@ -54,14 +82,16 @@ def load_access_config(path: Path) -> AccessControlConfig:
     )
 
     cams: Dict[str, CamEntry] = {}
-    for cam_id, entry in _mapping(raw.get("cams", {}), "cams").items():
-        entry = _mapping(entry if entry is not None else {}, f"cams.{cam_id}")
-        try:
-            customers = tuple(int(n) for n in (entry.get("customers") or []))
-        except (TypeError, ValueError) as exc:
-            raise AccessConfigError(
-                f"access_control.yaml field 'cams.{cam_id}.customers' must be a list of integers"
-            ) from exc
+    for raw_cam_id, raw_entry in _mapping(raw.get("cams", {}), "cams").items():
+        cam_id = validate_cam_id(raw_cam_id)
+        entry = _mapping(
+            raw_entry if raw_entry is not None else {},
+            f"cams.{cam_id}",
+        )
+        customers = validate_customer_numbers(
+            entry.get("customers", []),
+            f"cams.{cam_id}.customers",
+        )
         allow_delivery = _bool_field(
             entry,
             "allow_delivery",
@@ -97,9 +127,6 @@ def _bool_field(mapping: dict, key: str, default: bool, field_path: str) -> bool
     return value
 
 
-from typing import FrozenSet, Iterable
-
-
 def entity_matches(entity_name: str, number: int) -> bool:
     """True iff entity_name is `<number>` or starts with `<number>_`.
 
@@ -116,9 +143,6 @@ def resolve_entities(numbers: Iterable[int], all_entity_names: Iterable[str]) ->
     return frozenset(
         name for name in all_entity_names if any(entity_matches(name, n) for n in nums)
     )
-
-
-from typing import List
 
 
 @dataclass(frozen=True)
@@ -165,9 +189,6 @@ def build_profile(
         namespace=config.namespace,
         allow_delivery=entry.allow_delivery,
     )
-
-
-import re
 
 
 class QueryNotAllowed(Exception):
