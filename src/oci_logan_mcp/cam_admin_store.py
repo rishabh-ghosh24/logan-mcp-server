@@ -22,7 +22,9 @@ from typing import Any, Iterator, Mapping, Sequence, Tuple
 import yaml
 
 from .access_control import (
+    AccessControlConfig,
     AccessConfigError,
+    load_access_config,
     validate_cam_id,
     validate_customer_numbers,
 )
@@ -448,3 +450,28 @@ def managed_key_records(
         for record in authorized_key_records(lines)
         if record.managed_cam_id is not None
     )
+
+
+def validate_policy_document(
+    store: CamStateStore,
+    policy: dict[str, Any],
+) -> AccessControlConfig:
+    """Validate a candidate with the runtime policy parser before replacing it."""
+    candidate: Path | None = None
+    try:
+        with tempfile.NamedTemporaryFile(
+            mode="w",
+            encoding="utf-8",
+            dir=store.paths.policy_path.parent,
+            prefix=".access-control-validate-",
+            suffix=".yaml",
+            delete=False,
+        ) as handle:
+            candidate = Path(handle.name)
+            yaml.safe_dump(policy, handle, sort_keys=False)
+            handle.flush()
+            os.fsync(handle.fileno())
+        return load_access_config(candidate)
+    finally:
+        if candidate is not None:
+            candidate.unlink(missing_ok=True)
