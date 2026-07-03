@@ -123,6 +123,11 @@ is loaded on the next launch.
 Manual Codex App setup is still possible for non-Windows users or advanced
 troubleshooting.
 
+For root-controlled, per-CAM Codex App access with dedicated keys, customer
+scoping, secure handoff, and revocation, use the
+[CAM Layer 1 administrator guide](docs/cam-layer1-admin-guide.md). This workflow
+is separate from the general-purpose `opc` setup below.
+
 In the Codex app, go to **MCP settings -> Connect to a custom MCP** and fill in:
 
 | Field | Value |

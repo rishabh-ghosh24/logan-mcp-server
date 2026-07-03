@@ -34,6 +34,9 @@ Describe 'New-CamProvisionRequest' {
 
     It 'rejects invalid CAM ids, customers, and non-boolean delivery values' {
         { New-CamProvisionRequest -CamId '../alice' -Customers @(223) -AllowDelivery $false -PublicKey 'ssh-ed25519 AAAA x' } | Should -Throw
+        { New-CamProvisionRequest -CamId 'cam;id' -Customers @(223) -AllowDelivery $false -PublicKey 'ssh-ed25519 AAAA x' } | Should -Throw
+        { New-CamProvisionRequest -CamId 'cam$(id)' -Customers @(223) -AllowDelivery $false -PublicKey 'ssh-ed25519 AAAA x' } | Should -Throw
+        { Assert-DeprovisionCamId 'cam|id' } | Should -Throw
         { New-CamProvisionRequest -CamId 'cam_alice' -Customers @(0) -AllowDelivery $false -PublicKey 'ssh-ed25519 AAAA x' } | Should -Throw
         { New-CamProvisionRequest -CamId 'cam_alice' -Customers @('223') -AllowDelivery $false -PublicKey 'ssh-ed25519 AAAA x' } | Should -Throw
         { New-CamProvisionRequest -CamId 'cam_alice' -Customers @(223) -AllowDelivery 'false' -PublicKey 'ssh-ed25519 AAAA x' } | Should -Throw

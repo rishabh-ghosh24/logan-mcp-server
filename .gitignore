@@ -48,3 +48,11 @@ logs/
 
 # Local Logan MCP installer key
 windows-setup/logan.key
+
+# Generated CAM provisioning artifacts (bearer credentials)
+cam-setup/output/
+logan-cam-*/
+logan-cam-*.zip
+logan-cam-*.key
+*.cam-provision.log
+*.cam-deprovision.log

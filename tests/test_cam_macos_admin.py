@@ -321,6 +321,9 @@ def test_provision_sends_exact_request_and_publishes_flat_cross_platform_bundle(
 @pytest.mark.parametrize(
     ("args", "env_update", "precreate"),
     (
+        (("--cam", "cam;id"), {}, None),
+        (("--cam", "cam$(id)"), {}, None),
+        (("--cam", "cam`id`"), {}, None),
         (("--customers", "223,0"), {}, None),
         (("--allow-delivery", "yes"), {}, None),
         ((), {"FAKE_SSH_G_FAIL": "1"}, None),
