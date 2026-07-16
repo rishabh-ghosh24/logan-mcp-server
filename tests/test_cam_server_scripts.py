@@ -207,6 +207,12 @@ def test_fake_root_bootstrap_is_idempotent_and_preserves_keys_and_state(tmp_path
         + "\n"
     )
     authorized_keys.write_text(managed_key, encoding="utf-8")
+    policy = root_prefix / "etc" / "logan-mcp" / "access_control.yaml"
+    policy.write_text(
+        "compartment_id: c\nnamespace: ns\ncams:\n"
+        "  cam_alice: { customers: [223], allow_delivery: false }\n",
+        encoding="utf-8",
+    )
     learned = state / "users" / "cam_alice" / "learned_queries.yaml"
     learned.write_text("queries:\n  - retained: true\n", encoding="utf-8")
     audit.write_text('{"retained":true}\n', encoding="utf-8")
@@ -215,6 +221,9 @@ def test_fake_root_bootstrap_is_idempotent_and_preserves_keys_and_state(tmp_path
     assert second.returncode == 0, second.stderr
 
     assert authorized_keys.read_text(encoding="utf-8") == managed_key
+    assert policy.read_text(encoding="utf-8").endswith(
+        "cam_alice: { customers: [223], allow_delivery: false }\n"
+    )
     assert learned.read_text(encoding="utf-8") == "queries:\n  - retained: true\n"
     assert (state / "users" / "cam_alice" / "preferences.yaml").is_file()
     assert (state / "reports" / "retained.txt").is_file()
@@ -258,6 +267,23 @@ def test_fake_root_bootstrap_restores_main_sshd_config_on_validation_failure(tmp
 
     assert failed.returncode != 0
     assert sshd_config.read_text(encoding="utf-8") == before
+    assert not (root_prefix / "etc" / "ssh" / "sshd_config.d" / "90-logan-cam.conf").exists()
+    assert not systemctl_log.exists()
+
+
+def test_fake_root_bootstrap_rejects_predefined_initial_cam_policy(tmp_path):
+    root_prefix, command, env, _, systemctl_log = _bootstrap_fixture(tmp_path)
+    policy = Path(command[command.index("--policy-source") + 1])
+    policy.write_text(
+        "compartment_id: c\nnamespace: ns\ncams:\n"
+        "  cam_alice: { customers: [223] }\n",
+        encoding="utf-8",
+    )
+
+    result = subprocess.run(command, env=env, capture_output=True, text=True)
+
+    assert result.returncode != 0
+    assert "must not define CAMs" in result.stderr
     assert not (root_prefix / "etc" / "ssh" / "sshd_config.d" / "90-logan-cam.conf").exists()
     assert not systemctl_log.exists()
 

@@ -123,6 +123,8 @@ command -v systemctl >/dev/null 2>&1 || usage
 for controlled_path in \
     "$OPT_DIR" \
     "$ETC_DIR" \
+    "$ETC_DIR/config.yaml" \
+    "$ETC_DIR/access_control.yaml" \
     "$CAM_HOME" \
     "$STATE_DIR" \
     "$SSH_DIR" \
@@ -197,6 +199,19 @@ if [ -d "$STATE_DIR" ]; then
     /usr/bin/tar -C "$STATE_DIR" -cf "$BACKUP_DIR/state.tar" .
 fi
 
+INITIAL_CONFIG=0
+VALIDATION_CONFIG="$ETC_DIR/config.yaml"
+if [ ! -f "$VALIDATION_CONFIG" ]; then
+    INITIAL_CONFIG=1
+    VALIDATION_CONFIG="$CONFIG_SOURCE"
+fi
+INITIAL_POLICY=0
+VALIDATION_POLICY="$ETC_DIR/access_control.yaml"
+if [ ! -f "$VALIDATION_POLICY" ]; then
+    INITIAL_POLICY=1
+    VALIDATION_POLICY="$POLICY_SOURCE"
+fi
+
 if [ "$TEST_MODE" != "1" ]; then
     if ! getent group cam >/dev/null 2>&1; then
         groupadd --system cam
@@ -232,18 +247,25 @@ from oci_logan_mcp.config import _parse_config
 
 config_path = pathlib.Path(sys.argv[1])
 policy_path = pathlib.Path(sys.argv[2])
+initial_policy = sys.argv[3] == "1"
 raw_config = yaml.safe_load(config_path.read_text(encoding="utf-8")) or {}
 if not isinstance(raw_config, dict):
     raise SystemExit("config.yaml must contain a mapping")
 settings = _parse_config(raw_config)
 if settings.oci.auth_type != "instance_principal":
     raise SystemExit("config.yaml must use instance_principal authentication")
-load_access_config(policy_path)
+policy = load_access_config(policy_path)
+if initial_policy and policy.cams:
+    raise SystemExit(
+        "initial access_control.yaml must not define CAMs; use cam-admin provision"
+    )
 PY
 if [ "$TEST_MODE" = "1" ]; then
-    PYTHONPATH="$REPO/src" "$PYTHON" "$SOURCE_VALIDATOR" "$CONFIG_SOURCE" "$POLICY_SOURCE"
+    PYTHONPATH="$REPO/src" "$PYTHON" "$SOURCE_VALIDATOR" \
+        "$VALIDATION_CONFIG" "$VALIDATION_POLICY" "$INITIAL_POLICY"
 else
-    "$OPT_DIR/venv/bin/python" -I "$SOURCE_VALIDATOR" "$CONFIG_SOURCE" "$POLICY_SOURCE"
+    "$OPT_DIR/venv/bin/python" -I "$SOURCE_VALIDATOR" \
+        "$VALIDATION_CONFIG" "$VALIDATION_POLICY" "$INITIAL_POLICY"
 fi
 /bin/rm -f "$SOURCE_VALIDATOR"
 
@@ -265,8 +287,12 @@ if [ "$TEST_MODE" != "1" ]; then
         /bin/chmod 0640 "$AUTHORIZED_KEYS"
     fi
 fi
-/usr/bin/install -m 0640 "$CONFIG_SOURCE" "$ETC_DIR/config.yaml"
-/usr/bin/install -m 0640 "$POLICY_SOURCE" "$ETC_DIR/access_control.yaml"
+if [ "$INITIAL_CONFIG" -eq 1 ]; then
+    /usr/bin/install -m 0640 "$CONFIG_SOURCE" "$ETC_DIR/config.yaml"
+fi
+if [ "$INITIAL_POLICY" -eq 1 ]; then
+    /usr/bin/install -m 0640 "$POLICY_SOURCE" "$ETC_DIR/access_control.yaml"
+fi
 
 MIGRATION_MARKER="$STATE_DIR/.legacy-state-migrated"
 if [ -d "$STATE_SOURCE" ] && [ ! -e "$MIGRATION_MARKER" ]; then
