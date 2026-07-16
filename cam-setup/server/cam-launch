@@ -17,6 +17,7 @@ exec /usr/bin/env -i \
     USER=cam \
     LOGNAME=cam \
     LANG=C.UTF-8 \
+    MPLCONFIGDIR=/home/cam/.oci-logan-mcp/matplotlib \
     PATH=/opt/logan-mcp/venv/bin:/usr/bin:/bin \
     LOGAN_USER=$CAM_ID \
     OCI_LA_MCP_CONFIG=/etc/logan-mcp/config.yaml \
