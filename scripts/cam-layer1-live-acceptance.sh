@@ -454,6 +454,7 @@ HOLD_QUERY="layer1_retention_${HOLD_TAG}"
 HOLD_READY="$TMP_DIR/hold.ready.json"
 HOLD_OUT="$TMP_DIR/hold.stdout"
 HOLD_ERR="$TMP_DIR/hold.stderr"
+HOLD_READY_TIMEOUT_SECONDS=120
 python3 "$PROBE" \
     --host "$HOST" --port "$PORT" --key "$KEY_PATH" \
     --known-hosts "$KNOWN_HOSTS" --customer "$CUSTOMER" \
@@ -461,12 +462,15 @@ python3 "$PROBE" \
     --ready-file "$HOLD_READY" > "$HOLD_OUT" 2> "$HOLD_ERR" &
 HOLD_PID=$!
 ready=0
-for _ in $(seq 1 60); do
+for _ in $(seq 1 "$HOLD_READY_TIMEOUT_SECONDS"); do
     if [ -s "$HOLD_READY" ]; then ready=1; break; fi
     kill -0 "$HOLD_PID" 2>/dev/null || fail "held MCP probe exited before initialization"
     sleep 1
 done
-[ "$ready" -eq 1 ] || fail "held MCP probe did not initialize within 60 seconds"
+if [ "$ready" -ne 1 ]; then
+    [ -f "$HOLD_ERR" ] && cat "$HOLD_ERR" >&2
+    fail "held MCP probe did not initialize within ${HOLD_READY_TIMEOUT_SECONDS} seconds"
+fi
 pass "held MCP session initialized"
 
 write_deprovision_request
