@@ -450,7 +450,7 @@ ENV_PROBE_OUT="$TMP_DIR/environment-injection.json"
 python3 "$PROBE" \
     --host "$HOST" --port "$PORT" --key "$KEY_PATH" \
     --known-hosts "$KNOWN_HOSTS" --customer "$CUSTOMER" \
-    --retention-tag "$ENV_TAG" --attempt-env-injection > "$ENV_PROBE_OUT"
+    --retention-tag "$ENV_TAG" --skip-retention --attempt-env-injection > "$ENV_PROBE_OUT"
 [ "$(json_field "$ENV_PROBE_OUT" status)" = "PASS" ] || \
     fail "environment-injection changed the effective CAM scope"
 pass "environment-injection"

@@ -95,6 +95,7 @@ def test_bootstrap_installs_defense_in_depth_sshd_settings():
         encoding="utf-8"
     )
     assert "capture_cam_runtime_processes" in harness_text
+    assert "--skip-retention --attempt-env-injection" in harness_text
     assert 'PATH="/usr/sbin:/usr/bin:/sbin:/bin"' in text
     assert '/bin/chmod -R a+rX,go-w "$OPT_DIR"' in text
 
