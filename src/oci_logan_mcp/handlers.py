@@ -29,6 +29,7 @@ from .notification_service import NotificationService
 from .confirmation import ConfirmationManager
 from .secret_store import SecretStore
 from .audit import AuditLogger
+from .access_control import EntityAccessDenied
 from .read_only_guard import MUTATING_TOOLS, ReadOnlyError, raise_if_read_only
 from .diff_tool import DiffTool
 from .pivot_tool import PivotTool
@@ -486,6 +487,30 @@ class MCPHandlers:
                 result_summary=self._summarize_tool_result(result, elapsed_ms),
             )
             return result
+        except EntityAccessDenied as e:
+            elapsed_ms = int((time.perf_counter() - start) * 1000)
+            self._write_audit_event(
+                user=user_id,
+                tool=name,
+                args=arguments,
+                outcome="access_denied",
+                trace_id=trace_id,
+                audit_ref=audit_ref,
+                audit_strictness=audit_strictness,
+                result_summary={
+                    "success": False,
+                    "execution_ms": elapsed_ms,
+                    "error_type": type(e).__name__,
+                },
+                error=str(e),
+                blocked=True,
+                block_reason="entity_access_control",
+            )
+            return self._json_response({
+                "status": "access_denied",
+                "error_code": "ENTITY_ACCESS_DENIED",
+                "error": str(e),
+            })
         except Exception as e:
             logger.exception(f"Error in tool {name}")
             elapsed_ms = int((time.perf_counter() - start) * 1000)

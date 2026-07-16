@@ -15,6 +15,15 @@ The CAM user does not edit SSH arguments, CAM identity, customer scope, or a
 remote command. They only extract their recipient-specific bundle, double-click
 the installer for their operating system, and restart Codex once.
 
+## CAM query feedback
+
+Every CAM query is still scoped to the customer's allocated entities. When a
+CAM explicitly asks for an entity outside that allocation, Logan returns an
+`ENTITY_ACCESS_DENIED` response instead of an ambiguous zero-log result. The
+response tells the CAM to use `list_entities` for their permitted entities or
+to contact an administrator for additional access. A zero-log result therefore
+means the scoped query ran and found no matching data.
+
 ## Preconditions
 
 Before changing the server:

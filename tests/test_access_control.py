@@ -6,6 +6,7 @@ import pytest
 from oci_logan_mcp.access_control import (
     AccessControlConfig,
     AccessConfigError,
+    EntityAccessDenied,
     load_access_config,
     validate_cam_id,
 )
@@ -318,11 +319,25 @@ def test_scope_query_wraps_non_star_head():
     assert " and ('Log Source' = 'X') | stats count" in out
 
 
-def test_scope_query_widen_attempt_becomes_empty_intersection():
-    out = scope_query("Entity = '999_other' | stats count", ENTS, "Entity")
-    # the user predicate is ANDed under the allowed-set predicate
+@pytest.mark.parametrize("query", [
+    "Entity = '999_other' | stats count",
+    "'Entity' = \"999_other\" | stats count",
+    "Entity in ('223_d360_silicone', '999_other') | stats count",
+])
+def test_scope_query_explicitly_denies_unallocated_entity(query):
+    with pytest.raises(EntityAccessDenied, match="do not have access"):
+        scope_query(query, ENTS, "Entity")
+
+
+def test_scope_query_allows_explicitly_allocated_entity():
+    out = scope_query("Entity = '223_d360_silicone' | stats count", ENTS, "Entity")
     assert out.startswith("'Entity' in (")
-    assert "and (Entity = '999_other')" in out
+    assert "and (Entity = '223_d360_silicone')" in out
+
+
+def test_scope_query_does_not_treat_negated_entity_predicate_as_a_request():
+    out = scope_query("not Entity = '999_other' | stats count", ENTS, "Entity")
+    assert "and (not Entity = '999_other')" in out
 
 
 def test_scope_query_rejects_unsafe_via_validate():

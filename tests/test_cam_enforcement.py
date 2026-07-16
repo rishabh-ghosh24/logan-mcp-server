@@ -2,7 +2,11 @@
 import textwrap
 import pytest
 
-from oci_logan_mcp.access_control import AccessConfigError, load_access_config
+from oci_logan_mcp.access_control import (
+    AccessConfigError,
+    EntityAccessDenied,
+    load_access_config,
+)
 
 
 def _access_config_file(tmp_path, *, body=None):
@@ -209,6 +213,30 @@ async def test_client_query_scopes_and_pins_scope(monkeypatch):
 
 
 @pytest.mark.asyncio
+async def test_client_query_denies_explicit_unallocated_entity_before_execution(monkeypatch):
+    from oci_logan_mcp.client import OCILogAnalyticsClient
+
+    client = OCILogAnalyticsClient.__new__(OCILogAnalyticsClient)
+    client.settings = SimpleNamespace(query=SimpleNamespace(max_results=100))
+    client._compartment_id = "default_compartment"
+    client._namespace = "ns"
+    client.access_profile = _profile()
+    client.access_audit_logger = None
+    execute = AsyncMock()
+    monkeypatch.setattr(client, "_execute_single_query", execute)
+
+    with pytest.raises(EntityAccessDenied, match="contact your administrator"):
+        await OCILogAnalyticsClient.query(
+            client,
+            query_string="Entity = '999_other' | stats count",
+            time_start="2026-06-01T00:00:00+00:00",
+            time_end="2026-06-01T01:00:00+00:00",
+        )
+
+    execute.assert_not_awaited()
+
+
+@pytest.mark.asyncio
 async def test_notification_topic_listing_does_not_walk_compartments_for_cam(monkeypatch):
     from oci_logan_mcp.client import OCILogAnalyticsClient
 
@@ -298,6 +326,28 @@ async def test_handle_tool_call_blocks_disallowed_cam_tool():
     payload = json.loads(result[0]["text"])
     assert payload["status"] == "access_denied"
     h._investigate_incident.assert_not_awaited()
+
+
+@pytest.mark.asyncio
+async def test_handle_tool_call_explains_explicit_entity_access_denial():
+    from oci_logan_mcp.access_control import EntityAccessDenied
+    from oci_logan_mcp.handlers import MCPHandlers
+
+    h = _handler_with_profile()
+    h._run_query = AsyncMock(side_effect=EntityAccessDenied(
+        "You do not have access to data for '999_other'. You can access data only "
+        "for your assigned customer entities. Use list_entities to see your "
+        "permitted entities, or contact your administrator if you need access."
+    ))
+
+    result = await MCPHandlers.handle_tool_call(
+        h, "run_query", {"query": "Entity = '999_other' | stats count"}
+    )
+
+    payload = json.loads(result[0]["text"])
+    assert payload["status"] == "access_denied"
+    assert payload["error_code"] == "ENTITY_ACCESS_DENIED"
+    assert "contact your administrator" in payload["error"]
 
 
 @pytest.mark.asyncio

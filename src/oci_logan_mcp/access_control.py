@@ -212,6 +212,10 @@ class QueryNotAllowed(Exception):
     """Raised when a CAM query cannot be safely scoped (fail-closed)."""
 
 
+class EntityAccessDenied(QueryNotAllowed):
+    """Raised when a CAM explicitly requests an entity outside their allocation."""
+
+
 # Exact allowlist of pipeline commands that operate only on the already-scoped
 # record set (no sub-query, no source/time/entity re-selector). See spec 6.5.
 CAM_QUERY_COMMANDS: FrozenSet[str] = frozenset({
@@ -322,6 +326,50 @@ def _quote_value(value: str) -> str:
     return f"'{value}'"
 
 
+def _explicit_entity_values(query: str, entity_field: str) -> FrozenSet[str]:
+    """Return quoted entity values explicitly selected in the query head.
+
+    CAM query validation has already established that the head is a simple
+    predicate expression.  We intentionally inspect only equality and ``in``
+    filters on the configured entity field: those are unambiguous requests for
+    a particular customer's data.  Other predicates remain safely intersected
+    with the CAM's allocated entity set by :func:`scope_query`.
+    """
+    head = _split_top_level_pipes(query)[0]
+    escaped_field = re.escape(entity_field)
+    field = rf"(?:'{escaped_field}'|\"{escaped_field}\"|{escaped_field})"
+    boundary_before = r"(?<![A-Za-z0-9_.])"
+    boundary_after = r"(?![A-Za-z0-9_.])"
+    values = set()
+
+    def is_negated(match_start: int) -> bool:
+        preceding = head[:match_start].rstrip().lower()
+        return preceding.endswith("not") or preceding.endswith("not (")
+
+    equality = re.compile(
+        rf"{boundary_before}{field}{boundary_after}\s*=\s*(['\"])([^'\"]*)\1",
+        re.IGNORECASE,
+    )
+    values.update(
+        match.group(2) for match in equality.finditer(head)
+        if not is_negated(match.start())
+    )
+
+    in_list = re.compile(
+        rf"{boundary_before}{field}{boundary_after}\s+in\s+\(([^)]*)\)",
+        re.IGNORECASE,
+    )
+    for match in in_list.finditer(head):
+        if is_negated(match.start()):
+            continue
+        values.update(
+            quoted_value
+            for _, quoted_value in re.findall(r"(['\"])([^'\"]*)\1", match.group(1))
+        )
+
+    return frozenset(values)
+
+
 def scope_query(query: str, entity_names: FrozenSet[str], entity_field: str) -> str:
     """Validate then rewrite a query so it is constrained to entity_names.
 
@@ -335,6 +383,15 @@ def scope_query(query: str, entity_names: FrozenSet[str], entity_field: str) -> 
     except AccessConfigError as exc:
         raise QueryNotAllowed(str(exc)) from exc
     validate_cam_query(query)
+    requested_entities = _explicit_entity_values(query, entity_field)
+    denied_entities = sorted(requested_entities - entity_names)
+    if denied_entities:
+        requested = ", ".join(repr(entity) for entity in denied_entities)
+        raise EntityAccessDenied(
+            f"You do not have access to data for {requested}. You can access data only "
+            "for your assigned customer entities. Use list_entities to see your "
+            "permitted entities, or contact your administrator if you need access."
+        )
     values = ", ".join(_quote_value(e) for e in sorted(entity_names))
     predicate = f"'{entity_field}' in ({values})"
 
