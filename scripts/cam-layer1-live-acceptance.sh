@@ -240,6 +240,63 @@ run_refusal_attack() {
     pass "$label"
 }
 
+run_local_forwarding_denial() {
+    port=$1
+    stdout_path="$TMP_DIR/local-forwarding.stdout"
+    stderr_path="$TMP_DIR/local-forwarding.stderr"
+    if ! python3 - "$port" "$stdout_path" "$stderr_path" \
+        ssh "${SSH_OPTIONS[@]}" -o ExitOnForwardFailure=yes -N \
+        -L "127.0.0.1:${port}:127.0.0.1:22" "$CAM_DEST" <<'PY'
+import pathlib
+import socket
+import subprocess
+import sys
+import time
+
+port = int(sys.argv[1])
+stdout_path = pathlib.Path(sys.argv[2])
+stderr_path = pathlib.Path(sys.argv[3])
+command = sys.argv[4:]
+process = subprocess.Popen(command, stdout=subprocess.PIPE, stderr=subprocess.PIPE)
+result = ""
+try:
+    deadline = time.monotonic() + 8
+    while time.monotonic() < deadline:
+        if process.poll() is not None:
+            result = "forwarding process exited before opening a listener"
+            break
+        try:
+            with socket.create_connection(("127.0.0.1", port), timeout=0.5) as client:
+                client.settimeout(3)
+                response = client.recv(64)
+            if response.startswith(b"SSH-"):
+                raise SystemExit("local forwarding reached the remote SSH service")
+            result = "forwarding channel was denied"
+            break
+        except (ConnectionRefusedError, TimeoutError, socket.timeout):
+            time.sleep(0.1)
+    else:
+        raise SystemExit("local forwarding listener did not become testable")
+finally:
+    if process.poll() is None:
+        process.terminate()
+    try:
+        stdout, stderr = process.communicate(timeout=5)
+    except subprocess.TimeoutExpired:
+        process.kill()
+        stdout, stderr = process.communicate()
+    stdout_path.write_bytes(stdout)
+    stderr_path.write_bytes(stderr)
+
+if not result:
+    raise SystemExit("local forwarding result was not determined")
+PY
+    then
+        fail "local-forwarding reached the remote SSH service"
+    fi
+    pass "local-forwarding channel denial"
+}
+
 # 1. Bootstrap boundary.
 BOOTSTRAP_RESPONSE="$TMP_DIR/bootstrap.response.json"
 if ! ssh "${ADMIN_SSH_OPTIONS[@]}" 'sudo /opt/logan-mcp/bin/cam-admin bootstrap-check --json' > "$BOOTSTRAP_RESPONSE"; then
@@ -374,9 +431,7 @@ pass "environment-injection"
 run_no_marker_attack pty-refusal \
     ssh "${SSH_OPTIONS[@]}" -tt "$CAM_DEST" "$REMOTE_MARKER_COMMAND"
 LOCAL_FORWARD_PORT=$(python3 -c 'import socket; s=socket.socket(); s.bind(("127.0.0.1",0)); print(s.getsockname()[1]); s.close()')
-run_refusal_attack local-forwarding true \
-    ssh "${SSH_OPTIONS[@]}" -o ExitOnForwardFailure=yes -N \
-    -L "127.0.0.1:${LOCAL_FORWARD_PORT}:127.0.0.1:22" "$CAM_DEST"
+run_local_forwarding_denial "$LOCAL_FORWARD_PORT"
 run_no_marker_attack agent-forwarding \
     ssh "${SSH_OPTIONS[@]}" -A "$CAM_DEST" "$REMOTE_MARKER_COMMAND"
 run_no_marker_attack x11-forwarding \

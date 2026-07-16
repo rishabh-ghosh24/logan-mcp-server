@@ -75,6 +75,11 @@ def test_bootstrap_installs_defense_in_depth_sshd_settings():
     assert "Include /etc/ssh/sshd_config.d/*.conf" in text
     assert "PermitUserEnvironment is global-only" in text
     assert 'CONFIG_NORMALIZER_PYTHON="$OPT_DIR/venv/bin/python"' in text
+    assert "run_local_forwarding_denial" in (
+        (ROOT / "scripts" / "cam-layer1-live-acceptance.sh").read_text(
+            encoding="utf-8"
+        )
+    )
     assert 'PATH="/usr/sbin:/usr/bin:/sbin:/bin"' in text
     assert '/bin/chmod -R a+rX,go-w "$OPT_DIR"' in text
 
