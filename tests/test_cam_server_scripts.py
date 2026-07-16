@@ -33,6 +33,7 @@ def test_forced_launcher_has_only_fixed_security_environment():
     assert "OCI_LA_MCP_CONFIG=/etc/logan-mcp/config.yaml" in text
     assert "OCI_LOGAN_MCP_ACCESS_CONFIG=/etc/logan-mcp/access_control.yaml" in text
     assert "LOGAN_USER=$CAM_ID" in text
+    assert "MPLCONFIGDIR=/home/cam/.oci-logan-mcp/matplotlib" in text
     assert "--enforce-access --user" in text
     assert "/opt/logan-mcp/venv/bin/python -I -m oci_logan_mcp" in text
     assert "SSH_ORIGINAL_COMMAND" not in text
@@ -80,7 +81,7 @@ def test_bootstrap_installs_defense_in_depth_sshd_settings():
             encoding="utf-8"
         )
     )
-    assert "HOLD_READY_TIMEOUT_SECONDS=120" in (
+    assert "HOLD_READY_TIMEOUT_SECONDS=240" in (
         (ROOT / "scripts" / "cam-layer1-live-acceptance.sh").read_text(
             encoding="utf-8"
         )

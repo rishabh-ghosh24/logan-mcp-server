@@ -453,7 +453,10 @@ HOLD_TAG="${CAM_ID}_hold"
 HOLD_READY="$TMP_DIR/hold.ready.json"
 HOLD_OUT="$TMP_DIR/hold.stdout"
 HOLD_ERR="$TMP_DIR/hold.stderr"
-HOLD_READY_TIMEOUT_SECONDS=120
+# OCI entity resolution is part of the enforced startup path and can be slow
+# under control-plane throttling. This is an acceptance timeout only; it does
+# not relax the session revocation assertion once the server is initialized.
+HOLD_READY_TIMEOUT_SECONDS=240
 python3 "$PROBE" \
     --host "$HOST" --port "$PORT" --key "$KEY_PATH" \
     --known-hosts "$KNOWN_HOSTS" --customer "$CUSTOMER" \
