@@ -71,6 +71,7 @@ def test_bootstrap_installs_defense_in_depth_sshd_settings():
         assert setting in text
     assert "sshd -t" in text
     assert "systemctl reload sshd" in text
+    assert "Include /etc/ssh/sshd_config.d/*.conf" in text
     assert 'PATH="/usr/sbin:/usr/bin:/sbin:/bin"' in text
     assert '/bin/chmod -R a+rX,go-w "$OPT_DIR"' in text
 
@@ -111,6 +112,10 @@ def _bootstrap_fixture(tmp_path):
     host_key = root_prefix / "etc" / "ssh" / "ssh_host_ed25519_key.pub"
     host_key.parent.mkdir(parents=True)
     host_key.write_text(_public_key() + "\n", encoding="utf-8")
+    (root_prefix / "etc" / "ssh" / "sshd_config").write_text(
+        "X11Forwarding yes\nMatch User legacy\n    PermitTTY no\n",
+        encoding="utf-8",
+    )
 
     config = tmp_path / "config.yaml"
     policy = tmp_path / "access_control.yaml"
@@ -222,6 +227,39 @@ def test_fake_root_bootstrap_is_idempotent_and_preserves_keys_and_state(tmp_path
         "reload sshd",
         "reload sshd",
     ]
+
+
+def test_fake_root_bootstrap_includes_dropin_before_existing_match(tmp_path):
+    root_prefix, command, env, _, _ = _bootstrap_fixture(tmp_path)
+
+    result = subprocess.run(command, env=env, capture_output=True, text=True)
+
+    assert result.returncode == 0, result.stderr
+    sshd_config = (root_prefix / "etc" / "ssh" / "sshd_config").read_text(
+        encoding="utf-8"
+    )
+    assert sshd_config.count("Include /etc/ssh/sshd_config.d/*.conf") == 1
+    assert sshd_config.index("Include /etc/ssh/sshd_config.d/*.conf") < sshd_config.index(
+        "Match User legacy"
+    )
+
+
+def test_fake_root_bootstrap_restores_main_sshd_config_on_validation_failure(tmp_path):
+    root_prefix, command, env, _, systemctl_log = _bootstrap_fixture(tmp_path)
+    sshd_config = root_prefix / "etc" / "ssh" / "sshd_config"
+    before = sshd_config.read_text(encoding="utf-8")
+
+    failed = subprocess.run(
+        command,
+        env={**env, "FAKE_SSHD_FAIL": "1"},
+        capture_output=True,
+        text=True,
+    )
+
+    assert failed.returncode != 0
+    assert sshd_config.read_text(encoding="utf-8") == before
+    assert not (root_prefix / "etc" / "ssh" / "sshd_config.d" / "90-logan-cam.conf").exists()
+    assert not systemctl_log.exists()
 
 
 def test_fake_root_sshd_validation_failure_restores_dropin_without_reload(tmp_path):

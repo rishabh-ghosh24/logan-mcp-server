@@ -101,6 +101,7 @@ ETC_DIR="${ROOT_PREFIX}/etc/logan-mcp"
 CAM_HOME="${ROOT_PREFIX}/home/cam"
 STATE_DIR="${ROOT_PREFIX}/home/cam/.oci-logan-mcp"
 SSH_DIR="${ROOT_PREFIX}/home/cam/.ssh"
+SSHD_CONFIG="${ROOT_PREFIX}/etc/ssh/sshd_config"
 SSHD_DROPIN="${ROOT_PREFIX}/etc/ssh/sshd_config.d/90-logan-cam.conf"
 BACKUP_ROOT="${ROOT_PREFIX}/var/lib/logan-cam-admin/backups"
 AUDIT_PATH="${ROOT_PREFIX}/var/log/logan-cam-admin.jsonl"
@@ -114,6 +115,7 @@ AUTHORIZED_KEYS="${SSH_DIR}/authorized_keys"
 [ -f "$CONFIG_SOURCE" ] || usage
 [ -f "$POLICY_SOURCE" ] || usage
 [ -f "$HOST_KEY_PATH" ] || usage
+[ -f "$SSHD_CONFIG" ] || usage
 command -v "$PYTHON" >/dev/null 2>&1 || usage
 command -v sshd >/dev/null 2>&1 || usage
 command -v systemctl >/dev/null 2>&1 || usage
@@ -124,6 +126,7 @@ for controlled_path in \
     "$CAM_HOME" \
     "$STATE_DIR" \
     "$SSH_DIR" \
+    "$SSHD_CONFIG" \
     "$AUTHORIZED_KEYS" \
     "$SSHD_DROPIN" \
     "$BACKUP_ROOT" \
@@ -188,6 +191,7 @@ backup_file() {
 backup_file "$ETC_DIR/config.yaml" config.yaml
 backup_file "$ETC_DIR/access_control.yaml" access_control.yaml
 backup_file "$AUTHORIZED_KEYS" authorized_keys
+backup_file "$SSHD_CONFIG" sshd_config
 backup_file "$SSHD_DROPIN" 90-logan-cam.conf
 if [ -d "$STATE_DIR" ]; then
     /usr/bin/tar -C "$STATE_DIR" -cf "$BACKUP_DIR/state.tar" .
@@ -319,6 +323,28 @@ fi
 
 SSHD_DIR=$(/usr/bin/dirname "$SSHD_DROPIN")
 /usr/bin/install -d -m 0755 "$SSHD_DIR"
+SSHD_CONFIG_CHANGED=0
+if ! /usr/bin/grep -Eq \
+    '^[[:space:]]*Include[[:space:]]+/etc/ssh/sshd_config\.d/\*\.conf([[:space:]]|$)' \
+    "$SSHD_CONFIG"; then
+    SSHD_CONFIG_CANDIDATE="${SSHD_CONFIG}.logan-cam.$$"
+    /usr/bin/awk '
+        BEGIN { inserted = 0 }
+        tolower($1) == "match" && !inserted {
+            print "Include /etc/ssh/sshd_config.d/*.conf"
+            inserted = 1
+        }
+        { print }
+        END {
+            if (!inserted) {
+                print "Include /etc/ssh/sshd_config.d/*.conf"
+            }
+        }
+    ' "$SSHD_CONFIG" > "$SSHD_CONFIG_CANDIDATE"
+    /bin/chmod 0600 "$SSHD_CONFIG_CANDIDATE"
+    /bin/mv -f "$SSHD_CONFIG_CANDIDATE" "$SSHD_CONFIG"
+    SSHD_CONFIG_CHANGED=1
+fi
 SSHD_CANDIDATE="$SSHD_DIR/.90-logan-cam.conf.$$"
 cat > "$SSHD_CANDIDATE" <<'EOF'
 Match User cam
@@ -346,6 +372,9 @@ restore_dropin() {
         /usr/bin/install -m 0644 "$BACKUP_DIR/90-logan-cam.conf" "$SSHD_DROPIN"
     else
         /bin/rm -f "$SSHD_DROPIN"
+    fi
+    if [ "$SSHD_CONFIG_CHANGED" -eq 1 ]; then
+        /bin/cp -p "$BACKUP_DIR/sshd_config" "$SSHD_CONFIG"
     fi
 }
 
