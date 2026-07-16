@@ -59,7 +59,6 @@ def test_bootstrap_installs_defense_in_depth_sshd_settings():
         "AuthenticationMethods publickey",
         "PasswordAuthentication no",
         "KbdInteractiveAuthentication no",
-        "PermitUserEnvironment no",
         "PermitUserRC no",
         "AllowAgentForwarding no",
         "AllowTcpForwarding no",
@@ -72,6 +71,7 @@ def test_bootstrap_installs_defense_in_depth_sshd_settings():
     assert "sshd -t" in text
     assert "systemctl reload sshd" in text
     assert "Include /etc/ssh/sshd_config.d/*.conf" in text
+    assert "PermitUserEnvironment is global-only" in text
     assert 'PATH="/usr/sbin:/usr/bin:/sbin:/bin"' in text
     assert '/bin/chmod -R a+rX,go-w "$OPT_DIR"' in text
 

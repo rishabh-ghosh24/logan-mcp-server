@@ -351,7 +351,8 @@ Match User cam
     AuthenticationMethods publickey
     PasswordAuthentication no
     KbdInteractiveAuthentication no
-    PermitUserEnvironment no
+    # PermitUserEnvironment is global-only on OpenSSH; bootstrap-check requires
+    # the effective global setting to be no before this boundary can activate.
     PermitUserRC no
     AllowAgentForwarding no
     AllowTcpForwarding no
