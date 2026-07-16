@@ -6,6 +6,7 @@ import struct
 import subprocess
 from io import StringIO
 from pathlib import Path
+from types import SimpleNamespace
 
 import pytest
 import yaml
@@ -106,6 +107,46 @@ def _service(tmp_path, entity_names=("223_customer", "66_customer")):
         ),
         paths,
     )
+
+
+@pytest.mark.asyncio
+async def test_resolve_live_entities_uses_explicit_installed_config(monkeypatch, tmp_path):
+    import oci_logan_mcp.client as client_mod
+    import oci_logan_mcp.config as config_mod
+    from oci_logan_mcp.access_control import AccessControlConfig
+    from oci_logan_mcp.cam_admin import _resolve_live_entities
+
+    config_path = tmp_path / "config.yaml"
+    settings = SimpleNamespace(
+        log_analytics=SimpleNamespace(namespace="", default_compartment_id="")
+    )
+    captured = {}
+
+    def fake_load_config(path):
+        captured["config_path"] = path
+        return settings
+
+    class FakeClient:
+        def __init__(self, received_settings):
+            assert received_settings is settings
+            self.namespace = ""
+            self.compartment_id = ""
+
+        async def list_entities(self):
+            return [{"name": "176_customer"}, {"ignored": True}]
+
+    monkeypatch.setattr(config_mod, "load_config", fake_load_config)
+    monkeypatch.setattr(client_mod, "OCILogAnalyticsClient", FakeClient)
+
+    entities = await _resolve_live_entities(
+        AccessControlConfig("", "compartment", "namespace", "Entity", False, {}),
+        config_path,
+    )
+
+    assert captured["config_path"] == config_path
+    assert settings.log_analytics.namespace == "namespace"
+    assert settings.log_analytics.default_compartment_id == "compartment"
+    assert entities == ["176_customer"]
 
 
 def _provision_request(cam_id="cam_alice", customers=(223, 66), fill=b"k"):

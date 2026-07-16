@@ -740,11 +740,13 @@ class CamAdminService:
         return not any(dangerous.match(name) for name in accepted_environment)
 
 
-async def _resolve_live_entities(config: AccessControlConfig) -> list[str]:
+async def _resolve_live_entities(
+    config: AccessControlConfig, config_path: Path | None = None
+) -> list[str]:
     from .client import OCILogAnalyticsClient
     from .config import load_config
 
-    settings = load_config()
+    settings = load_config(config_path)
     settings.log_analytics.namespace = config.namespace
     settings.log_analytics.default_compartment_id = config.compartment_id
     client = OCILogAnalyticsClient(settings)
@@ -804,9 +806,15 @@ def build_default_service() -> CamAdminService:
         cam_uid=cam_uid,
         runtime_python=paths.runtime_python,
     )
+
+    async def resolve_live_entities(config: AccessControlConfig) -> list[str]:
+        return await _resolve_live_entities(
+            config, paths.policy_path.parent / "config.yaml"
+        )
+
     return CamAdminService(
         store=CamStateStore(paths),
-        entity_resolver=_resolve_live_entities,
+        entity_resolver=resolve_live_entities,
         connection=connection,
         actor_provider=_admin_actor,
         process_terminator=terminator,
