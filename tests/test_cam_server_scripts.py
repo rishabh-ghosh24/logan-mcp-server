@@ -85,6 +85,11 @@ def test_bootstrap_installs_defense_in_depth_sshd_settings():
             encoding="utf-8"
         )
     )
+    assert "--skip-retention --hold-seconds 120" in (
+        (ROOT / "scripts" / "cam-layer1-live-acceptance.sh").read_text(
+            encoding="utf-8"
+        )
+    )
     assert 'PATH="/usr/sbin:/usr/bin:/sbin:/bin"' in text
     assert '/bin/chmod -R a+rX,go-w "$OPT_DIR"' in text
 

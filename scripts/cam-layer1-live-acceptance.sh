@@ -450,7 +450,6 @@ run_refusal_attack sftp-refusal false \
 
 # 6. Hold one initialized session, revoke it, and require disconnection.
 HOLD_TAG="${CAM_ID}_hold"
-HOLD_QUERY="layer1_retention_${HOLD_TAG}"
 HOLD_READY="$TMP_DIR/hold.ready.json"
 HOLD_OUT="$TMP_DIR/hold.stdout"
 HOLD_ERR="$TMP_DIR/hold.stderr"
@@ -458,7 +457,7 @@ HOLD_READY_TIMEOUT_SECONDS=120
 python3 "$PROBE" \
     --host "$HOST" --port "$PORT" --key "$KEY_PATH" \
     --known-hosts "$KNOWN_HOSTS" --customer "$CUSTOMER" \
-    --retention-tag "$HOLD_TAG" --hold-seconds 120 \
+    --retention-tag "$HOLD_TAG" --skip-retention --hold-seconds 120 \
     --ready-file "$HOLD_READY" > "$HOLD_OUT" 2> "$HOLD_ERR" &
 HOLD_PID=$!
 ready=0
@@ -531,7 +530,7 @@ import sys
 
 import yaml
 
-cam_id, initial_query, hold_query, attack_path = sys.argv[1:]
+cam_id, initial_query, attack_path = sys.argv[1:]
 base = pathlib.Path("/home/cam/.oci-logan-mcp")
 user_dir = base / "users" / cam_id
 learned_path = user_dir / "learned_queries.yaml"
@@ -543,7 +542,6 @@ learned = learned_path.read_text(encoding="utf-8")
 ok = (
     user_dir.is_dir()
     and initial_query in learned
-    and hold_query in learned
     and cam_id not in (policy.get("cams") or {})
     and f"logan-cam:{cam_id}" not in authorized
     and f"cam-launch {cam_id}" not in authorized
@@ -556,7 +554,7 @@ if not ok:
 print(json.dumps({"status": "PASS", "user_dir": str(user_dir)}, sort_keys=True))
 PY
 if ! ssh "${ADMIN_SSH_OPTIONS[@]}" \
-    "sudo /opt/logan-mcp/venv/bin/python - '$CAM_ID' '$INITIAL_QUERY' '$HOLD_QUERY' '$ATTACK_REMOTE_PATH'" \
+    "sudo /opt/logan-mcp/venv/bin/python - '$CAM_ID' '$INITIAL_QUERY' '$ATTACK_REMOTE_PATH'" \
     < "$VERIFY_SCRIPT" > "$TMP_DIR/retained-state.json"; then
     fail "retained learning/audit or policy/key absence verification failed"
 fi

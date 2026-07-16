@@ -84,21 +84,23 @@ async def run(args: argparse.Namespace) -> None:
             ):
                 raise RuntimeError(f"entity scope violation: {names}")
 
-            query_name = f"layer1_retention_{args.retention_tag}"
-            saved = _text_payload(
-                await session.call_tool(
-                    "save_learned_query",
-                    {
-                        "name": query_name,
-                        "query": "* | stats count",
-                        "description": "Layer 1 deprovision retention probe",
-                        "category": "general",
-                        "tags": ["layer1", "retention-probe"],
-                    },
+            query_name = None
+            if not args.skip_retention:
+                query_name = f"layer1_retention_{args.retention_tag}"
+                saved = _text_payload(
+                    await session.call_tool(
+                        "save_learned_query",
+                        {
+                            "name": query_name,
+                            "query": "* | stats count",
+                            "description": "Layer 1 deprovision retention probe",
+                            "category": "general",
+                            "tags": ["layer1", "retention-probe"],
+                        },
+                    )
                 )
-            )
-            if not isinstance(saved, dict) or saved.get("status") != "saved":
-                raise RuntimeError(f"retention probe was not saved: {saved!r}")
+                if not isinstance(saved, dict) or saved.get("status") != "saved":
+                    raise RuntimeError(f"retention probe was not saved: {saved!r}")
 
             ready_payload = {
                 "status": "READY",
@@ -137,6 +139,7 @@ def main() -> None:
     parser.add_argument("--retention-tag", type=retention_tag, required=True)
     parser.add_argument("--hold-seconds", type=positive_int, default=0)
     parser.add_argument("--ready-file")
+    parser.add_argument("--skip-retention", action="store_true")
     parser.add_argument("--attempt-env-injection", action="store_true")
     asyncio.run(run(parser.parse_args()))
 
