@@ -287,9 +287,45 @@ if [ "$TEST_MODE" != "1" ]; then
         /bin/chmod 0640 "$AUTHORIZED_KEYS"
     fi
 fi
+
+CONFIG_CANDIDATE="$ETC_DIR/.config.yaml.$$"
+CONFIG_CHANGED=$("$PYTHON" - "$VALIDATION_CONFIG" "$CONFIG_CANDIDATE" "$STATE_DIR" <<'PY'
+import pathlib
+import sys
+
+import yaml
+
+source, candidate, state_dir = map(pathlib.Path, sys.argv[1:])
+raw = yaml.safe_load(source.read_text(encoding="utf-8")) or {}
+if not isinstance(raw, dict):
+    raise SystemExit("config.yaml must contain a mapping")
+
+desired_paths = (
+    (raw.get("logging"), "log_path", state_dir / "logs"),
+    (raw.get("report_delivery"), "artifact_dir", state_dir / "reports"),
+)
+changed = False
+for section, key, desired in desired_paths:
+    if isinstance(section, dict) and section.get(key) != str(desired):
+        section[key] = str(desired)
+        changed = True
+if raw.get("transcript_dir") != str(state_dir / "transcripts") and "transcript_dir" in raw:
+    raw["transcript_dir"] = str(state_dir / "transcripts")
+    changed = True
+
+if changed:
+    candidate.write_text(yaml.safe_dump(raw, sort_keys=False), encoding="utf-8")
+print("true" if changed else "false")
+PY
+)
 if [ "$INITIAL_CONFIG" -eq 1 ]; then
-    /usr/bin/install -m 0640 "$CONFIG_SOURCE" "$ETC_DIR/config.yaml"
+    /usr/bin/install -m 0640 "$VALIDATION_CONFIG" "$ETC_DIR/config.yaml"
 fi
+if [ "$CONFIG_CHANGED" = "true" ]; then
+    /bin/chmod 0640 "$CONFIG_CANDIDATE"
+    /bin/mv -f "$CONFIG_CANDIDATE" "$ETC_DIR/config.yaml"
+fi
+/bin/rm -f "$CONFIG_CANDIDATE"
 if [ "$INITIAL_POLICY" -eq 1 ]; then
     /usr/bin/install -m 0640 "$POLICY_SOURCE" "$ETC_DIR/access_control.yaml"
 fi

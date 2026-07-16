@@ -6,6 +6,8 @@ import subprocess
 import sys
 from pathlib import Path
 
+import yaml
+
 ROOT = Path(__file__).resolve().parents[1]
 LAUNCHER = ROOT / "cam-setup" / "server" / "cam-launch"
 ADMIN = ROOT / "cam-setup" / "server" / "cam-admin"
@@ -120,7 +122,10 @@ def _bootstrap_fixture(tmp_path):
     config = tmp_path / "config.yaml"
     policy = tmp_path / "access_control.yaml"
     config.write_text(
-        "oci:\n  auth_type: instance_principal\n",
+        "oci:\n  auth_type: instance_principal\n"
+        "logging:\n  log_path: /home/opc/.oci-logan-mcp/logs\n"
+        "report_delivery:\n  artifact_dir: /home/opc/.oci-logan-mcp/reports\n"
+        "transcript_dir: /home/opc/.oci-logan-mcp/transcripts\n",
         encoding="utf-8",
     )
     policy.write_text(
@@ -227,6 +232,14 @@ def test_fake_root_bootstrap_is_idempotent_and_preserves_keys_and_state(tmp_path
     assert learned.read_text(encoding="utf-8") == "queries:\n  - retained: true\n"
     assert (state / "users" / "cam_alice" / "preferences.yaml").is_file()
     assert (state / "reports" / "retained.txt").is_file()
+    config = yaml.safe_load(
+        (root_prefix / "etc" / "logan-mcp" / "config.yaml").read_text(
+            encoding="utf-8"
+        )
+    )
+    assert config["logging"]["log_path"] == str(state / "logs")
+    assert config["report_delivery"]["artifact_dir"] == str(state / "reports")
+    assert config["transcript_dir"] == str(state / "transcripts")
     assert audit.read_text(encoding="utf-8") == '{"retained":true}\n'
     assert not (state / "config.yaml").exists()
     assert not (state / "access_control.yaml").exists()
