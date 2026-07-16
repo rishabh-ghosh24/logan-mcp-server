@@ -98,6 +98,32 @@ else:
 PY
 }
 
+capture_cam_runtime_processes() {
+    output_path=$1
+    ssh "${ADMIN_SSH_OPTIONS[@]}" \
+        "sudo /opt/logan-mcp/venv/bin/python - '$CAM_ID'" > "$output_path" <<'PY'
+import json
+import pwd
+import sys
+from pathlib import Path
+
+from oci_logan_mcp.cam_processes import ProcInspector, ProcessTerminator
+
+cam_id = sys.argv[1]
+terminator = ProcessTerminator(
+    inspector=ProcInspector(),
+    cam_uid=pwd.getpwnam("cam").pw_uid,
+    runtime_python=Path("/opt/logan-mcp/venv/bin/python"),
+)
+matches = [
+    process.pid
+    for process in terminator.inspector.iter_processes()
+    if terminator._is_cam(process, cam_id)
+]
+print(json.dumps({"count": len(matches), "pids": matches}, sort_keys=True))
+PY
+}
+
 write_deprovision_request() {
     python3 - "$CAM_ID" "$LOCAL_FINGERPRINT" "$DEPROVISION_REQUEST" <<'PY'
 import json
@@ -475,6 +501,11 @@ if [ "$ready" -ne 1 ]; then
 fi
 pass "held MCP session initialized"
 
+HELD_RUNTIME_PROCESSES="$TMP_DIR/held-runtime-processes.json"
+capture_cam_runtime_processes "$HELD_RUNTIME_PROCESSES"
+[ "$(json_field "$HELD_RUNTIME_PROCESSES" count)" -ge 1 ] || \
+    fail "held CAM session did not create an exact runtime process"
+
 write_deprovision_request
 deprovision_rc=0
 ssh "${ADMIN_SSH_OPTIONS[@]}" 'sudo /opt/logan-mcp/bin/cam-admin deprovision --json' \
@@ -498,19 +529,16 @@ DEPROVISIONED=1
 PROVISION_MAY_HAVE_COMMITTED=0
 pass "deprovision"
 
-disconnected=0
-for _ in $(seq 1 30); do
-    if ! kill -0 "$HOLD_PID" 2>/dev/null; then disconnected=1; break; fi
-    sleep 1
-done
-if [ "$disconnected" -ne 1 ]; then
+TERMINATED_RUNTIME_PROCESSES="$TMP_DIR/terminated-runtime-processes.json"
+capture_cam_runtime_processes "$TERMINATED_RUNTIME_PROCESSES"
+[ "$(json_field "$TERMINATED_RUNTIME_PROCESSES" count)" -eq 0 ] || \
+    fail "CAM runtime process remained after deprovision"
+
+if kill -0 "$HOLD_PID" 2>/dev/null; then
     kill "$HOLD_PID" 2>/dev/null || true
-    fail "held CAM session remained alive after deprovision"
 fi
-hold_rc=0
-wait "$HOLD_PID" || hold_rc=$?
+wait "$HOLD_PID" 2>/dev/null || true
 HOLD_PID=""
-[ "$hold_rc" -ne 0 ] || fail "held MCP probe completed normally after deprovision"
 pass "active CAM session termination"
 
 # 7. The revoked key must fail public-key authentication, not merely MCP startup.
