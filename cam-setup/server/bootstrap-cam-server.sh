@@ -112,6 +112,7 @@ AUTHORIZED_KEYS="${SSH_DIR}/authorized_keys"
 [ -f "$REPO/pyproject.toml" ] || usage
 [ -f "$REPO/cam-setup/server/cam-launch" ] || usage
 [ -f "$REPO/cam-setup/server/cam-admin" ] || usage
+[ -f "$REPO/cam-setup/server/admin-launch" ] || usage
 [ -f "$CONFIG_SOURCE" ] || usage
 [ -f "$POLICY_SOURCE" ] || usage
 [ -f "$HOST_KEY_PATH" ] || usage
@@ -271,6 +272,7 @@ fi
 
 /usr/bin/install -m 0755 "$REPO/cam-setup/server/cam-launch" "$OPT_DIR/bin/cam-launch"
 /usr/bin/install -m 0755 "$REPO/cam-setup/server/cam-admin" "$OPT_DIR/bin/cam-admin"
+/usr/bin/install -m 0755 "$REPO/cam-setup/server/admin-launch" "$OPT_DIR/bin/admin-launch"
 /bin/chmod -R a+rX,go-w "$OPT_DIR"
 
 /usr/bin/install -d -m 0750 "$ETC_DIR" "$CAM_HOME" "$SSH_DIR"
@@ -369,7 +371,7 @@ PY
 /bin/mv -f "$CONNECTION_TMP" "$ETC_DIR/connection.json"
 
 /bin/chmod 0755 "$OPT_DIR" "$OPT_DIR/bin"
-/bin/chmod 0755 "$OPT_DIR/bin/cam-launch" "$OPT_DIR/bin/cam-admin"
+/bin/chmod 0755 "$OPT_DIR/bin/cam-launch" "$OPT_DIR/bin/cam-admin" "$OPT_DIR/bin/admin-launch"
 /bin/chmod 0750 "$ETC_DIR" "$CAM_HOME" "$SSH_DIR"
 /bin/chmod 0640 "$ETC_DIR/config.yaml" "$ETC_DIR/access_control.yaml" "$ETC_DIR/connection.json" "$AUTHORIZED_KEYS"
 /bin/chmod 0700 "$STATE_DIR" "$BACKUP_ROOT" "$BACKUP_DIR"

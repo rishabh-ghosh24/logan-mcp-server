@@ -11,6 +11,7 @@ import yaml
 ROOT = Path(__file__).resolve().parents[1]
 LAUNCHER = ROOT / "cam-setup" / "server" / "cam-launch"
 ADMIN = ROOT / "cam-setup" / "server" / "cam-admin"
+ADMIN_LAUNCHER = ROOT / "cam-setup" / "server" / "admin-launch"
 BOOTSTRAP = ROOT / "cam-setup" / "server" / "bootstrap-cam-server.sh"
 CONTRACT_MANIFEST = (
     ROOT / "tests" / "fixtures" / "cam_admin_contract_v1" / "manifest.json"
@@ -18,7 +19,7 @@ CONTRACT_MANIFEST = (
 
 
 def test_server_shell_scripts_parse():
-    for script in (LAUNCHER, ADMIN, BOOTSTRAP):
+    for script in (LAUNCHER, ADMIN, ADMIN_LAUNCHER, BOOTSTRAP):
         result = subprocess.run(
             ["bash", "-n", str(script)],
             capture_output=True,
@@ -50,6 +51,37 @@ def test_forced_launcher_rejects_invalid_ids_before_exec():
     for value in ("Alice", "alice..smith", "alice;id", "../root", ""):
         result = subprocess.run(
             [str(LAUNCHER), value],
+            capture_output=True,
+            text=True,
+        )
+        assert result.returncode == 64
+
+
+def test_admin_launcher_uses_protected_runtime_without_cam_enforcement():
+    text = ADMIN_LAUNCHER.read_text(encoding="utf-8")
+    assert "/usr/sbin/runuser -u cam -- /usr/bin/env -i" in text
+    assert "OCI_LA_MCP_CONFIG=/etc/logan-mcp/config.yaml" in text
+    assert "LOGAN_USER=\"$ADMIN_ID\"" in text
+    assert "MPLCONFIGDIR=/home/cam/.oci-logan-mcp/matplotlib" in text
+    assert "/opt/logan-mcp/venv/bin/python -I -m oci_logan_mcp" in text
+    assert '--user "$ADMIN_ID"' in text
+    assert "--enforce-access" not in text
+    assert "OCI_LOGAN_MCP_ACCESS_CONFIG" not in text
+    assert "OCI_LOGAN_MCP_ENFORCE_ACCESS" not in text
+    assert "SSH_ORIGINAL_COMMAND" not in text
+    for dangerous in (
+        "PYTHONPATH",
+        "PYTHONHOME",
+        "LD_PRELOAD",
+        "LD_LIBRARY_PATH",
+    ):
+        assert dangerous not in text
+
+
+def test_admin_launcher_rejects_invalid_ids_before_privilege_check():
+    for value in ("Alice", "alice..smith", "alice;id", "../root", ""):
+        result = subprocess.run(
+            [str(ADMIN_LAUNCHER), value],
             capture_output=True,
             text=True,
         )
@@ -98,6 +130,7 @@ def test_bootstrap_installs_defense_in_depth_sshd_settings():
     assert "--skip-retention --attempt-env-injection" in harness_text
     assert 'PATH="/usr/sbin:/usr/bin:/sbin:/bin"' in text
     assert '/bin/chmod -R a+rX,go-w "$OPT_DIR"' in text
+    assert '"$REPO/cam-setup/server/admin-launch" "$OPT_DIR/bin/admin-launch"' in text
 
 
 def test_bootstrap_never_copies_policy_into_mutable_state_tree():
@@ -267,6 +300,9 @@ def test_fake_root_bootstrap_is_idempotent_and_preserves_keys_and_state(tmp_path
     assert not (state / "access_control.yaml").exists()
     assert stat.S_IMODE(state.stat().st_mode) == 0o700
     assert stat.S_IMODE(authorized_keys.stat().st_mode) == 0o640
+    admin_launcher = root_prefix / "opt" / "logan-mcp" / "bin" / "admin-launch"
+    assert admin_launcher.is_file()
+    assert stat.S_IMODE(admin_launcher.stat().st_mode) == 0o755
     assert systemctl_log.read_text(encoding="utf-8").splitlines() == [
         "reload sshd",
         "reload sshd",

@@ -1,0 +1,29 @@
+#!/bin/sh
+set -eu
+
+if [ "$#" -ne 1 ]; then
+    exit 64
+fi
+
+ADMIN_ID=$1
+if [ "${#ADMIN_ID}" -gt 64 ] || ! /usr/bin/printf '%s\n' "$ADMIN_ID" \
+    | /usr/bin/grep -Eq '^[a-z][a-z0-9]*([._-][a-z0-9]+)*$'; then
+    exit 64
+fi
+
+if [ "$(/usr/bin/id -u)" -ne 0 ]; then
+    exit 77
+fi
+
+cd /opt/logan-mcp
+exec /usr/sbin/runuser -u cam -- /usr/bin/env -i \
+    HOME=/home/cam \
+    USER=cam \
+    LOGNAME=cam \
+    LANG=C.UTF-8 \
+    MPLCONFIGDIR=/home/cam/.oci-logan-mcp/matplotlib \
+    PATH=/opt/logan-mcp/venv/bin:/usr/bin:/bin \
+    LOGAN_USER="$ADMIN_ID" \
+    OCI_LA_MCP_CONFIG=/etc/logan-mcp/config.yaml \
+    /opt/logan-mcp/venv/bin/python -I -m oci_logan_mcp \
+    --user "$ADMIN_ID"
