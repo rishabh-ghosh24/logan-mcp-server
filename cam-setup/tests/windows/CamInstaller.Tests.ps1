@@ -18,12 +18,12 @@ Describe 'Logan TOML table safety' {
     It 'accepts supported fixture <Name>' -ForEach @(
         @{ Name = 'empty'; Content = '' }
         @{ Name = 'unrelated'; Content = "[mcp_servers.other]`ncommand = `"other`"`n" }
-        @{ Name = 'bare Logan'; Content = "[mcp_servers.logan-mcp]`ncommand = `"old`"`n" }
-        @{ Name = 'quoted Logan'; Content = "[mcp_servers.`"logan-mcp`"]`ncommand = `"old`"`n" }
-        @{ Name = 'nested Logan'; Content = "[mcp_servers.`"logan-mcp`".env]`nSAFE = `"yes`"`n" }
+        @{ Name = 'bare Logan'; Content = "[mcp_servers.assurance-logan]`ncommand = `"old`"`n" }
+        @{ Name = 'quoted Logan'; Content = "[mcp_servers.`"assurance-logan`"]`ncommand = `"old`"`n" }
+        @{ Name = 'nested Logan'; Content = "[mcp_servers.`"assurance-logan`".env]`nSAFE = `"yes`"`n" }
         @{ Name = 'quoted project path'; Content = "[projects.`"C:\\Work Folder`"] # retained`ntrust_level = `"trusted`"`n" }
         @{ Name = 'unrelated array table'; Content = "[[agents]]`nname = `"keep`"`n" }
-        @{ Name = 'fully quoted Logan'; Content = "[`"mcp_servers`".`"logan-mcp`"]`ncommand = `"old`"`n" }
+        @{ Name = 'fully quoted Logan'; Content = "[`"mcp_servers`".`"assurance-logan`"]`ncommand = `"old`"`n" }
     ) {
         Test-SafeTomlStructure $Content | Should -BeTrue
     }
@@ -32,14 +32,14 @@ Describe 'Logan TOML table safety' {
         @{ Name = 'incomplete'; Content = "[mcp_servers.other`ncommand = `"other`"`n" }
         @{ Name = 'mismatched array table'; Content = "[[mcp_servers.other]`ncommand = `"other`"`n" }
         @{ Name = 'trailing text'; Content = "[mcp_servers.other] garbage`n" }
-        @{ Name = 'duplicate aliases'; Content = "[mcp_servers.logan-mcp]`na = 1`n[mcp_servers.`"logan-mcp`"]`nb = 2`n" }
-        @{ Name = 'duplicate quoted roots'; Content = "[mcp_servers.`"logan-mcp`"]`na = 1`n[mcp_servers.`"logan-mcp`"]`nb = 2`n" }
-        @{ Name = 'top-level dotted alias'; Content = "mcp_servers.logan-mcp = { command = `"bad`" }`n" }
-        @{ Name = 'top-level quoted alias'; Content = "`"mcp_servers`".`"logan-mcp`" = { command = `"bad`" }`n" }
-        @{ Name = 'parent table alias'; Content = "[mcp_servers]`n`"logan-mcp`" = { command = `"bad`" }`n" }
-        @{ Name = 'inline parent alias'; Content = "mcp_servers = { logan-mcp = { command = `"bad`" } }`n" }
-        @{ Name = 'multiline basic string'; Content = "note = `"`"`"[mcp_servers.logan-mcp]`nnot a table`"`"`"`n" }
-        @{ Name = 'escaped quoted alias'; Content = "`"mcp\u005fservers`".`"logan-mcp`" = { command = `"bad`" }`n" }
+        @{ Name = 'duplicate aliases'; Content = "[mcp_servers.assurance-logan]`na = 1`n[mcp_servers.`"assurance-logan`"]`nb = 2`n" }
+        @{ Name = 'duplicate quoted roots'; Content = "[mcp_servers.`"assurance-logan`"]`na = 1`n[mcp_servers.`"assurance-logan`"]`nb = 2`n" }
+        @{ Name = 'top-level dotted alias'; Content = "mcp_servers.assurance-logan = { command = `"bad`" }`n" }
+        @{ Name = 'top-level quoted alias'; Content = "`"mcp_servers`".`"assurance-logan`" = { command = `"bad`" }`n" }
+        @{ Name = 'parent table alias'; Content = "[mcp_servers]`n`"assurance-logan`" = { command = `"bad`" }`n" }
+        @{ Name = 'inline parent alias'; Content = "mcp_servers = { assurance-logan = { command = `"bad`" } }`n" }
+        @{ Name = 'multiline basic string'; Content = "note = `"`"`"[mcp_servers.assurance-logan]`nnot a table`"`"`"`n" }
+        @{ Name = 'escaped quoted alias'; Content = "`"mcp\u005fservers`".`"assurance-logan`" = { command = `"bad`" }`n" }
     ) {
         Test-SafeTomlStructure $Content | Should -BeFalse
     }
@@ -49,9 +49,9 @@ Describe 'Logan TOML table safety' {
 title = "keep"
 [mcp_servers.other]
 command = "other"
-[mcp_servers."logan-mcp"]
+[mcp_servers."assurance-logan"]
 command = "old"
-[mcp_servers."logan-mcp".env]
+[mcp_servers."assurance-logan".env]
 SECRET = "remove"
 [projects."C:\Work Folder"]
 trust_level = "trusted"
@@ -62,19 +62,19 @@ trust_level = "trusted"
         $result | Should -Match 'title = "keep"'
         $result | Should -Match '\[mcp_servers\.other\]'
         $result | Should -Match '\[projects\."C:\\Work Folder"\]'
-        $result | Should -Not -Match 'logan-mcp'
+        $result | Should -Not -Match 'assurance-logan'
         $result | Should -Not -Match 'SECRET'
     }
 
     It 'removes semantic quoted and array Logan tables while preserving unrelated arrays' {
-        $input = "[[agents]]`nname = `"keep`"`n[`"mcp_servers`".`"logan-mcp`"]`ncommand = `"old`"`n[[`"mcp_servers`".`"logan-mcp`".env]]`nSECRET = `"remove`"`n"
+        $input = "[[agents]]`nname = `"keep`"`n[`"mcp_servers`".`"assurance-logan`"]`ncommand = `"old`"`n[[`"mcp_servers`".`"assurance-logan`".env]]`nSECRET = `"remove`"`n"
         $result = Remove-LoganTables $input
         $result | Should -Match '\[\[agents\]\]'
-        $result | Should -Not -Match 'logan-mcp|SECRET'
+        $result | Should -Not -Match 'assurance-logan|SECRET'
     }
 
     It 'counts semantically equivalent quoted roots as duplicates' {
-        $content = "[mcp_servers.logan-mcp]`na=1`n[`"mcp_servers`".`"logan-mcp`"]`nb=2`n"
+        $content = "[mcp_servers.assurance-logan]`na=1`n[`"mcp_servers`".`"assurance-logan`"]`nb=2`n"
         Test-SafeTomlStructure $content | Should -BeFalse
     }
 }
@@ -92,12 +92,12 @@ Describe 'Set-LoganCodexConfig' {
     }
 
     It 'writes fixed pinned ssh.exe arguments and preserves unrelated tables' {
-        Set-Content -LiteralPath $ConfigPath -Value "[mcp_servers.other]`ncommand = `"other`"`n" -NoNewline
+        Set-Content -LiteralPath $ConfigPath -Value "[mcp_servers.other]`ncommand = `"other`"`n[mcp_servers.logan-mcp]`ncommand = `"regular`"`n" -NoNewline
 
         Set-LoganCodexConfig -ConfigPath $ConfigPath -KeyPath $KeyPath -KnownHostsPath $KnownHostsPath
         $content = [IO.File]::ReadAllText($ConfigPath)
 
-        $content | Should -Match '\[mcp_servers\."logan-mcp"\]'
+        $content | Should -Match '\[mcp_servers\."assurance-logan"\]'
         $content | Should -Match 'command = "ssh\.exe"'
         $content | Should -Match [regex]::Escape((ConvertTo-TomlString $KeyPath))
         $content | Should -Match 'BatchMode=yes'
@@ -108,6 +108,8 @@ Describe 'Set-LoganCodexConfig' {
         $content | Should -Match 'ServerAliveCountMax=3'
         $content | Should -Match '"-p", "2222", "cam@cam\.example\.test"'
         $content | Should -Match '\[mcp_servers\.other\]'
+        $content | Should -Match '\[mcp_servers\.logan-mcp\]'
+        $content | Should -Match 'command = "regular"'
     }
 
     It 'is byte-idempotent and creates a backup of the previous valid config' {
@@ -133,13 +135,13 @@ Describe 'Set-LoganCodexConfig' {
 
     It 'leaves malformed or duplicate originals byte-identical' -ForEach @(
         @{ Content = "[broken`nvalue = 1`n" }
-        @{ Content = "[mcp_servers.logan-mcp]`na = 1`n[mcp_servers.`"logan-mcp`"]`nb = 2`n" }
-        @{ Content = "mcp_servers.logan-mcp = { command = `"bad`" }`n" }
-        @{ Content = "`"mcp_servers`".`"logan-mcp`" = { command = `"bad`" }`n" }
-        @{ Content = "[mcp_servers]`nlogan-mcp = { command = `"bad`" }`n" }
-        @{ Content = "mcp_servers = { logan-mcp = { command = `"bad`" } }`n" }
-        @{ Content = "note = `"`"`"[mcp_servers.logan-mcp]`nnot a table`"`"`"`n" }
-        @{ Content = "`"mcp\u005fservers`".`"logan-mcp`" = { command = `"bad`" }`n" }
+        @{ Content = "[mcp_servers.assurance-logan]`na = 1`n[mcp_servers.`"assurance-logan`"]`nb = 2`n" }
+        @{ Content = "mcp_servers.assurance-logan = { command = `"bad`" }`n" }
+        @{ Content = "`"mcp_servers`".`"assurance-logan`" = { command = `"bad`" }`n" }
+        @{ Content = "[mcp_servers]`nassurance-logan = { command = `"bad`" }`n" }
+        @{ Content = "mcp_servers = { assurance-logan = { command = `"bad`" } }`n" }
+        @{ Content = "note = `"`"`"[mcp_servers.assurance-logan]`nnot a table`"`"`"`n" }
+        @{ Content = "`"mcp\u005fservers`".`"assurance-logan`" = { command = `"bad`" }`n" }
     ) {
         [IO.File]::WriteAllBytes($ConfigPath, [Text.Encoding]::UTF8.GetBytes($Content))
         $before = [Convert]::ToBase64String([IO.File]::ReadAllBytes($ConfigPath))

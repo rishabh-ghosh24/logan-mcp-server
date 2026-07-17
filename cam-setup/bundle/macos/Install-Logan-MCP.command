@@ -195,17 +195,17 @@ validate_and_filter() {
                 }
                 root = (parsed_count == 2 &&
                         parsed_first == "mcp_servers" &&
-                        parsed_second == "logan-mcp")
+                        parsed_second == "assurance-logan")
                 nested = (parsed_count > 2 &&
                           parsed_first == "mcp_servers" &&
-                          parsed_second == "logan-mcp")
+                          parsed_second == "assurance-logan")
                 current_top_level = 0
                 inside_mcp_servers = (parsed_count == 1 &&
                                       parsed_first == "mcp_servers")
                 if (root) {
                     roots++
                     if (roots > 1) {
-                        print "Duplicate Logan MCP root table" > "/dev/stderr"
+                        print "Duplicate Assurance Logan MCP root table" > "/dev/stderr"
                         exit 41
                     }
                     if (pending_count > 0) {
@@ -227,15 +227,15 @@ validate_and_filter() {
                 } else if (index(compact, "\047mcp_servers\047.") == 1) {
                     dotted_remainder = substr(compact, length("\047mcp_servers\047.") + 1)
                 }
-                dotted_target = (dotted_remainder ~ /^("logan-mcp"|logan-mcp)=/ ||
-                                 index(dotted_remainder, "\047logan-mcp\047=") == 1)
+                dotted_target = (dotted_remainder ~ /^("assurance-logan"|assurance-logan)=/ ||
+                                 index(dotted_remainder, "\047assurance-logan\047=") == 1)
                 inline_mcp_servers = (compact ~ /^("mcp_servers"|mcp_servers)=/ ||
                                       index(compact, "\047mcp_servers\047=") == 1)
-                nested_target_key = (compact ~ /^("logan-mcp"|logan-mcp)=/ ||
-                                     index(compact, "\047logan-mcp\047=") == 1)
+                nested_target_key = (compact ~ /^("assurance-logan"|assurance-logan)=/ ||
+                                     index(compact, "\047assurance-logan\047=") == 1)
                 if ((current_top_level && (dotted_target || inline_mcp_servers)) ||
                     (inside_mcp_servers && nested_target_key)) {
-                    print "Unsupported TOML declaration may alias Logan MCP" > "/dev/stderr"
+                    print "Unsupported TOML declaration may alias Assurance Logan MCP" > "/dev/stderr"
                     exit 43
                 }
             }
@@ -349,7 +349,7 @@ if [ -s "$CANDIDATE" ]; then
     printf '\n' >> "$CANDIDATE"
 fi
 {
-    printf '[mcp_servers.logan-mcp]\n'
+    printf '[mcp_servers.assurance-logan]\n'
     printf 'command = "ssh"\n'
     printf 'args = ['
     separator=''
@@ -379,7 +379,7 @@ validate_and_filter "$CANDIDATE" "$VALIDATED" || {
 }
 require_candidate "$CANDIDATE"
 require_candidate "$VALIDATED"
-if [ "$(grep -c '^\[mcp_servers\.logan-mcp\]$' "$CANDIDATE")" -ne 1 ]; then
+if [ "$(grep -c '^\[mcp_servers\.assurance-logan\]$' "$CANDIDATE")" -ne 1 ]; then
     printf 'Generated Codex config failed validation; original was not changed.\n' >&2
     exit 70
 fi

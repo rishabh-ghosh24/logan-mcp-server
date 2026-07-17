@@ -191,8 +191,12 @@ On macOS, extract the bundle and double-click
 `Double-Click-to-Install.cmd`.
 
 The installer copies the key to the user's private Logan directory, pins the
-server host key, and replaces only the `logan-mcp` Codex TOML table while
+server host key, and replaces only the `assurance-logan` Codex TOML table while
 preserving unrelated configuration. Restart Codex once after installation.
+
+The restricted connection name is deliberately distinct from unrestricted or
+development Logan MCP servers. CAM users should refer to `assurance-logan`
+explicitly in prompts and must not rename it to a generic `logan-mcp` alias.
 
 The CAM must not edit the generated files to select another identity, customer,
 policy, or command. Contact the administrator if installation reports an

@@ -73,7 +73,7 @@ function ConvertFrom-TomlTableHeader {
 function Test-IsLoganTableHeader {
     param($Header, [switch]$RootOnly)
     if (-not $Header -or $Header.Segments.Count -lt 2) { return $false }
-    if ($Header.Segments[0] -cne 'mcp_servers' -or $Header.Segments[1] -cne 'logan-mcp') { return $false }
+    if ($Header.Segments[0] -cne 'mcp_servers' -or $Header.Segments[1] -cne 'assurance-logan') { return $false }
     return (-not $RootOnly) -or $Header.Segments.Count -eq 2
 }
 
@@ -89,7 +89,7 @@ function Test-SafeTomlStructure {
         }
     }
     $mcpKey = '(?:mcp_servers|"mcp_servers"|''mcp_servers'')'
-    $loganKey = '(?:logan-mcp|"logan-mcp"|''logan-mcp'')'
+    $loganKey = '(?:assurance-logan|"assurance-logan"|''assurance-logan'')'
     if ($Content -match "(?m)^\s*$mcpKey\s*\.\s*$loganKey\s*=" -or
         $Content -match "(?m)^\s*$mcpKey\s*=\s*\{[^\r\n]*$loganKey\s*=") { return $false }
     $rootLoganTables = 0
@@ -177,7 +177,7 @@ function New-LoganCodexTable {
     )
     $tomlArguments = ($arguments | ForEach-Object { ConvertTo-TomlString ([string]$_) }) -join ', '
     return @"
-[mcp_servers."logan-mcp"]
+[mcp_servers."assurance-logan"]
 command = "ssh.exe"
 args = [$tomlArguments]
 "@

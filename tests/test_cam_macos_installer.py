@@ -55,7 +55,7 @@ def _config(home):
 
 def _logan_table(config_text):
     parsed = tomllib.loads(config_text)
-    return parsed["mcp_servers"]["logan-mcp"]
+    return parsed["mcp_servers"]["assurance-logan"]
 
 
 def test_installer_is_posix_shell_with_fixed_tokens_and_security_options():
@@ -99,29 +99,30 @@ def test_installer_is_posix_shell_with_fixed_tokens_and_security_options():
     (
         "",
         'model = "gpt-test"\n[projects."/tmp/work"]\ntrust_level = "trusted"\n',
-        '[mcp_servers.logan-mcp]\ncommand = "old"\nargs = ["bad"]\n',
+        '[mcp_servers.logan-mcp]\ncommand = "regular"\n',
+        '[mcp_servers.assurance-logan]\ncommand = "old"\nargs = ["bad"]\n',
         (
             "before = 1\n"
-            '[mcp_servers.logan-mcp]\ncommand = "old"\n'
-            '[mcp_servers.logan-mcp.env]\nSECRET = "remove"\n'
+            '[mcp_servers.assurance-logan]\ncommand = "old"\n'
+            '[mcp_servers.assurance-logan.env]\nSECRET = "remove"\n'
             '[unrelated]\nkeep = "yes"\n'
         ),
         (
             "before = 1\n"
-            '[mcp_servers."logan-mcp"]\ncommand = "old"\n'
-            '[mcp_servers."logan-mcp".env]\nSECRET = "remove"\n'
+            '[mcp_servers."assurance-logan"]\ncommand = "old"\n'
+            '[mcp_servers."assurance-logan".env]\nSECRET = "remove"\n'
             "[other]\nkeep = true\n"
         ),
         (
             "before = 1\n"
-            '["mcp_servers"."logan-mcp"]\ncommand = "old"\n'
-            '["mcp_servers"."logan-mcp"."env"]\nSECRET = "remove"\n'
+            '["mcp_servers"."assurance-logan"]\ncommand = "old"\n'
+            '["mcp_servers"."assurance-logan"."env"]\nSECRET = "remove"\n'
             "[[unrelated.items]]\nkeep = true\n"
         ),
         (
             "before = 1\n"
-            '[["mcp_servers"."logan-mcp"]]\ncommand = "old"\n'
-            '[[mcp_servers.logan-mcp.env]]\nSECRET = "remove"\n'
+            '[["mcp_servers"."assurance-logan"]]\ncommand = "old"\n'
+            '[[mcp_servers.assurance-logan.env]]\nSECRET = "remove"\n'
             '[[products]]\nname = "preserved"\n'
         ),
     ),
@@ -139,7 +140,7 @@ def test_installer_replaces_only_logan_tables_and_is_idempotent(tmp_path, origin
     table = _logan_table(installed)
     assert table["command"] == "ssh"
     assert table["args"][-1] == "cam@logan.example"
-    assert installed.count("[mcp_servers.logan-mcp]") == 1
+    assert installed.count("[mcp_servers.assurance-logan]") == 1
     assert 'command = "old"' not in installed
     assert 'SECRET = "remove"' not in installed
     if "[unrelated]" in original:
@@ -150,6 +151,8 @@ def test_installer_replaces_only_logan_tables_and_is_idempotent(tmp_path, origin
         assert "[[unrelated.items]]\nkeep = true\n" in installed
     if "[[products]]" in original:
         assert '[[products]]\nname = "preserved"\n' in installed
+    if "[mcp_servers.logan-mcp]" in original:
+        assert '[mcp_servers.logan-mcp]\ncommand = "regular"\n' in installed
 
     second = _run_installer(script, home, "--non-interactive")
     assert second.returncode == 0, second.stderr
@@ -160,23 +163,23 @@ def test_installer_replaces_only_logan_tables_and_is_idempotent(tmp_path, origin
     "bad_config",
     (
         "[broken\nvalue = 1\n",
-        '[mcp_servers.logan-mcp]\ncommand = "a"\n'
-        '[mcp_servers."logan-mcp"]\ncommand = "b"\n',
-        '[mcp_servers.logan-mcp]\ncommand = "a"\n'
-        '[mcp_servers.logan-mcp]\ncommand = "b"\n',
-        '[mcp_servers.logan-mcp]\ncommand = "a"\n'
-        '[["mcp_servers"."logan-mcp"]]\ncommand = "b"\n',
+        '[mcp_servers.assurance-logan]\ncommand = "a"\n'
+        '[mcp_servers."assurance-logan"]\ncommand = "b"\n',
+        '[mcp_servers.assurance-logan]\ncommand = "a"\n'
+        '[mcp_servers.assurance-logan]\ncommand = "b"\n',
+        '[mcp_servers.assurance-logan]\ncommand = "a"\n'
+        '[["mcp_servers"."assurance-logan"]]\ncommand = "b"\n',
         "[[broken]\nvalue = 1\n",
         '[mcp_servers."logan\\u002dmcp"]\ncommand = "must-stay"\n',
-        'mcp_servers.logan-mcp = { command = "must-stay" }\n',
-        '"mcp_servers"."logan-mcp" = { command = "must-stay" }\n',
-        "'mcp_servers'.'logan-mcp' = { command = 'must-stay' }\n",
-        'mcp_servers = { logan-mcp = { command = "must-stay" } }\n',
-        '[mcp_servers]\nlogan-mcp = { command = "must-stay" }\n',
-        '[mcp_servers]\n"logan-mcp" = { command = "must-stay" }\n',
-        "[mcp_servers]\n'logan-mcp' = { command = 'must-stay' }\n",
-        'message = """\n[mcp_servers.logan-mcp]\ncommand = "text"\n"""\n',
-        "message = '''\n[mcp_servers.logan-mcp]\ncommand = 'text'\n'''\n",
+        'mcp_servers.assurance-logan = { command = "must-stay" }\n',
+        '"mcp_servers"."assurance-logan" = { command = "must-stay" }\n',
+        "'mcp_servers'.'assurance-logan' = { command = 'must-stay' }\n",
+        'mcp_servers = { assurance-logan = { command = "must-stay" } }\n',
+        '[mcp_servers]\nassurance-logan = { command = "must-stay" }\n',
+        '[mcp_servers]\n"assurance-logan" = { command = "must-stay" }\n',
+        "[mcp_servers]\n'assurance-logan' = { command = 'must-stay' }\n",
+        'message = """\n[mcp_servers.assurance-logan]\ncommand = "text"\n"""\n',
+        "message = '''\n[mcp_servers.assurance-logan]\ncommand = 'text'\n'''\n",
     ),
 )
 def test_installer_rejects_malformed_or_duplicate_target_tables_unchanged(
