@@ -1,0 +1,890 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <meta name="color-scheme" content="light">
+  <title>Assurance Logan CAM access — administrator and handover guide</title>
+  <style>
+    :root {
+      --ink: #172033;
+      --muted: #5d687c;
+      --line: #dce2eb;
+      --paper: #ffffff;
+      --wash: #f4f7fb;
+      --brand: #2456a6;
+      --brand-dark: #183d79;
+      --brand-soft: #eaf1fc;
+      --good: #18794e;
+      --good-soft: #e9f7f0;
+      --warn: #9a6700;
+      --warn-soft: #fff5d6;
+      --danger: #b42318;
+      --danger-soft: #fff0ee;
+      --code: #111827;
+      --shadow: 0 12px 34px rgba(23, 32, 51, 0.09);
+    }
+
+    * { box-sizing: border-box; }
+
+    html { scroll-behavior: smooth; }
+
+    body {
+      margin: 0;
+      color: var(--ink);
+      background: var(--wash);
+      font: 16px/1.62 -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, Helvetica, Arial, sans-serif;
+    }
+
+    a { color: var(--brand); }
+    a:hover { color: var(--brand-dark); }
+
+    .hero {
+      color: #fff;
+      background: linear-gradient(120deg, #132d58 0%, #2456a6 62%, #3478c8 100%);
+      padding: 52px 24px 62px;
+    }
+
+    .hero-inner,
+    .layout {
+      width: min(1180px, 100%);
+      margin: 0 auto;
+    }
+
+    .eyebrow {
+      margin: 0 0 8px;
+      font-size: 0.78rem;
+      font-weight: 750;
+      letter-spacing: 0.12em;
+      text-transform: uppercase;
+      opacity: 0.82;
+    }
+
+    h1 {
+      max-width: 900px;
+      margin: 0;
+      font-size: clamp(2rem, 5vw, 3.55rem);
+      line-height: 1.07;
+      letter-spacing: -0.035em;
+    }
+
+    .hero p {
+      max-width: 780px;
+      margin: 20px 0 0;
+      color: #e5efff;
+      font-size: 1.08rem;
+    }
+
+    .hero-meta {
+      display: flex;
+      flex-wrap: wrap;
+      gap: 10px;
+      margin-top: 24px;
+    }
+
+    .badge {
+      display: inline-flex;
+      align-items: center;
+      gap: 7px;
+      border: 1px solid rgba(255,255,255,0.28);
+      border-radius: 999px;
+      padding: 6px 11px;
+      background: rgba(255,255,255,0.1);
+      color: #fff;
+      font-size: 0.84rem;
+      font-weight: 650;
+    }
+
+    .layout {
+      display: grid;
+      grid-template-columns: 260px minmax(0, 1fr);
+      gap: 28px;
+      align-items: start;
+      padding: 32px 24px 64px;
+    }
+
+    nav {
+      position: sticky;
+      top: 18px;
+      border: 1px solid var(--line);
+      border-radius: 14px;
+      padding: 16px;
+      background: var(--paper);
+      box-shadow: var(--shadow);
+    }
+
+    nav strong {
+      display: block;
+      margin: 0 0 8px;
+      font-size: 0.85rem;
+      letter-spacing: 0.04em;
+      text-transform: uppercase;
+    }
+
+    nav a {
+      display: block;
+      border-radius: 7px;
+      padding: 6px 8px;
+      color: #43506a;
+      font-size: 0.9rem;
+      text-decoration: none;
+    }
+
+    nav a:hover { background: var(--brand-soft); }
+
+    main { min-width: 0; }
+
+    section {
+      margin: 0 0 24px;
+      border: 1px solid var(--line);
+      border-radius: 16px;
+      padding: clamp(22px, 4vw, 36px);
+      background: var(--paper);
+      box-shadow: 0 8px 24px rgba(23, 32, 51, 0.05);
+      scroll-margin-top: 20px;
+    }
+
+    h2, h3 { line-height: 1.25; letter-spacing: -0.018em; }
+    h2 { margin: 0 0 18px; font-size: 1.65rem; }
+    h3 { margin: 28px 0 10px; font-size: 1.12rem; }
+    p { margin: 10px 0; }
+    ul, ol { padding-left: 1.35rem; }
+    li + li { margin-top: 7px; }
+
+    .lede { color: var(--muted); font-size: 1.05rem; }
+
+    .callout {
+      margin: 18px 0;
+      border-left: 5px solid var(--brand);
+      border-radius: 8px;
+      padding: 13px 16px;
+      background: var(--brand-soft);
+    }
+
+    .callout.good { border-color: var(--good); background: var(--good-soft); }
+    .callout.warn { border-color: var(--warn); background: var(--warn-soft); }
+    .callout.danger { border-color: var(--danger); background: var(--danger-soft); }
+    .callout strong { display: block; margin-bottom: 3px; }
+
+    .status-grid,
+    .card-grid {
+      display: grid;
+      grid-template-columns: repeat(2, minmax(0, 1fr));
+      gap: 14px;
+      margin: 18px 0;
+    }
+
+    .status,
+    .card {
+      border: 1px solid var(--line);
+      border-radius: 12px;
+      padding: 15px;
+      background: #fbfcfe;
+    }
+
+    .status small,
+    .card small {
+      display: block;
+      margin-bottom: 3px;
+      color: var(--muted);
+      font-weight: 700;
+      letter-spacing: 0.04em;
+      text-transform: uppercase;
+    }
+
+    .status strong { font-size: 1rem; }
+    .good-text { color: var(--good); }
+    .warn-text { color: var(--warn); }
+
+    .table-wrap { overflow-x: auto; }
+
+    table {
+      width: 100%;
+      margin: 16px 0;
+      border-collapse: collapse;
+      font-size: 0.93rem;
+    }
+
+    th, td {
+      border-bottom: 1px solid var(--line);
+      padding: 10px 11px;
+      text-align: left;
+      vertical-align: top;
+    }
+
+    th { background: #f6f8fb; color: #3f4b60; }
+
+    code {
+      border-radius: 5px;
+      padding: 0.12em 0.34em;
+      background: #edf1f6;
+      color: #253249;
+      font: 0.92em/1.4 ui-monospace, SFMono-Regular, Menlo, Consolas, monospace;
+      overflow-wrap: anywhere;
+    }
+
+    .code-block { position: relative; margin: 13px 0 19px; }
+
+    pre {
+      overflow-x: auto;
+      margin: 0;
+      border-radius: 11px;
+      padding: 17px 18px;
+      background: var(--code);
+      color: #e8eef8;
+      font: 0.86rem/1.55 ui-monospace, SFMono-Regular, Menlo, Consolas, monospace;
+      white-space: pre;
+    }
+
+    pre code { padding: 0; background: transparent; color: inherit; overflow-wrap: normal; }
+
+    .copy {
+      position: absolute;
+      top: 8px;
+      right: 8px;
+      border: 1px solid #556176;
+      border-radius: 7px;
+      padding: 5px 8px;
+      background: #253047;
+      color: #fff;
+      cursor: pointer;
+      font: inherit;
+      font-size: 0.75rem;
+    }
+
+    .copy:hover { background: #35425c; }
+
+    .steps {
+      counter-reset: step;
+      list-style: none;
+      padding: 0;
+    }
+
+    .steps > li {
+      position: relative;
+      min-height: 38px;
+      margin: 14px 0;
+      padding-left: 47px;
+    }
+
+    .steps > li::before {
+      counter-increment: step;
+      content: counter(step);
+      position: absolute;
+      left: 0;
+      top: -2px;
+      width: 31px;
+      height: 31px;
+      border-radius: 50%;
+      display: grid;
+      place-items: center;
+      background: var(--brand);
+      color: #fff;
+      font-weight: 750;
+    }
+
+    .checklist { list-style: none; padding: 0; }
+    .checklist li { position: relative; padding-left: 28px; }
+    .checklist li::before { content: "□"; position: absolute; left: 2px; color: var(--brand); font-size: 1.15rem; }
+
+    .footer {
+      color: var(--muted);
+      text-align: center;
+      font-size: 0.85rem;
+    }
+
+    @media (max-width: 900px) {
+      .layout { grid-template-columns: 1fr; }
+      nav { position: static; }
+      nav .links { columns: 2; }
+    }
+
+    @media (max-width: 640px) {
+      .hero { padding: 38px 18px 46px; }
+      .layout { padding: 20px 12px 48px; }
+      .status-grid, .card-grid { grid-template-columns: 1fr; }
+      nav .links { columns: 1; }
+      section { border-radius: 12px; padding: 21px 17px; }
+    }
+
+    @media print {
+      body { background: #fff; font-size: 10.5pt; }
+      .hero { padding: 22px 0; background: #fff; color: #000; }
+      .hero p { color: #333; }
+      .badge { border-color: #777; color: #000; }
+      .layout { display: block; width: 100%; padding: 0; }
+      nav, .copy { display: none; }
+      section { break-inside: avoid; border: 0; box-shadow: none; padding: 18px 0; }
+      pre { white-space: pre-wrap; color: #111; background: #f2f2f2; }
+      a { color: #000; text-decoration: none; }
+    }
+  </style>
+</head>
+<body>
+  <header class="hero">
+    <div class="hero-inner">
+      <p class="eyebrow">Production handover • CAM Layer 1</p>
+      <h1>Assurance Logan CAM access</h1>
+      <p>A practical administrator and recipient guide for customer-scoped Logan MCP access through Codex on macOS and Windows.</p>
+      <div class="hero-meta">
+        <span class="badge">Updated 17 July 2026</span>
+        <span class="badge">Restricted server: assurance-logan</span>
+        <span class="badge">Administrator runtime baseline: a7b2450</span>
+      </div>
+    </div>
+  </header>
+
+  <div class="layout">
+    <nav aria-label="Guide contents">
+      <strong>Contents</strong>
+      <div class="links">
+        <a href="#summary">Release summary</a>
+        <a href="#security">Security boundary</a>
+        <a href="#os-runbooks">OS-grouped runbooks</a>
+        <a href="#roles">Roles and Iustin</a>
+        <a href="#new-admin">Add an administrator</a>
+        <a href="#server">Server checks</a>
+        <a href="#provision-mac">Provision from Mac</a>
+        <a href="#provision-windows">Provision from Windows</a>
+        <a href="#handoff">Validate and deliver</a>
+        <a href="#install-mac">CAM install on Mac</a>
+        <a href="#install-windows">CAM install on Windows</a>
+        <a href="#acceptance">Acceptance test</a>
+        <a href="#lifecycle">Scope and revocation</a>
+        <a href="#windows-gate">Windows release gate</a>
+        <a href="#records">Records and recovery</a>
+      </div>
+    </nav>
+
+    <main>
+      <section id="summary">
+        <h2>1. Release summary</h2>
+        <p class="lede">The Linux server boundary and macOS CAM workflow are working end to end. Customer data is restricted to the root-controlled entity allow-list, and an explicit out-of-scope request returns an access-denied explanation rather than an ambiguous zero-log result.</p>
+
+        <div class="status-grid">
+          <div class="status"><small>Feature branch</small><strong>feat/cam-layer1-phase1</strong></div>
+          <div class="status"><small>Required runtime baseline</small><strong>a7b2450 or later</strong></div>
+          <div class="status"><small>automation1 deployment</small><strong>Verify with the commands below</strong></div>
+          <div class="status"><small>Full local suite</small><strong class="good-text">1,574 passed</strong></div>
+          <div class="status"><small>Linux + macOS</small><strong class="good-text">Live acceptance passed</strong></div>
+          <div class="status"><small>Native Windows</small><strong class="warn-text">Validation still required</strong></div>
+          <div class="status"><small>Integration state</small><strong>Local-only and unmerged</strong></div>
+          <div class="status"><small>automation1 source layout</small><strong>Latest CAM checkout only; legacy artifacts protected under backup</strong></div>
+        </div>
+
+        <div class="callout good">
+          <strong>Branch boundary</strong>
+          All CAM code, packaging, and documentation remain in the dedicated worktree at <code>/Users/rishabh/github/logan-mcp-server/.worktrees/cam-layer1-phase1</code>. Do not perform CAM release work from <code>main</code>. The unrestricted <code>main</code> option remains separate.
+        </div>
+
+        <div class="callout warn">
+          <strong>Windows wording</strong>
+          Do not describe the Windows client as production-approved until the native Pester suites and manual Windows ACL checks in section 13 pass on a real Windows machine. This does not invalidate the verified Linux server boundary or macOS client workflow.
+        </div>
+      </section>
+
+      <section id="security">
+        <h2>2. What the security boundary enforces</h2>
+        <div class="card-grid">
+          <div class="card"><small>Identity</small>Each CAM receives a unique SSH key and a unique CAM id.</div>
+          <div class="card"><small>Scope</small>The server stores the CAM's approved customer numbers and resolved entity names in a root-owned policy.</div>
+          <div class="card"><small>Connection</small>The key can enter only the forced Logan MCP command as the restricted <code>cam</code> account.</div>
+          <div class="card"><small>Fail closed</small>A missing or invalid entity snapshot denies startup; the CAM runtime never falls back to listing the tenancy.</div>
+        </div>
+
+        <p>The policy lives at <code>/etc/logan-mcp/access_control.yaml</code>. Runtime code, policy, immutable configuration, launcher, and managed <code>authorized_keys</code> are root-owned. Password login, PTY allocation, forwarding, tunnelling, user RC files, arbitrary remote commands, SCP, and SFTP are disabled for the restricted account.</p>
+
+        <p>The CAM sees only their configured <code>resolved_entities</code>. Allowed queries are automatically constrained to those entities. An explicit request for another customer returns <code>ENTITY_ACCESS_DENIED</code> and tells the user to contact an administrator. A genuine zero-log response therefore means the allowed query ran but found no matching data.</p>
+
+        <div class="callout danger">
+          <strong>Never give a CAM regular VM credentials</strong>
+          A regular Linux account with sufficient file or sudo access sits outside this boundary. CAM users must receive only the generated restricted bundle. Administrator SSH credentials and CAM credentials must remain separate.
+        </div>
+      </section>
+
+      <section id="os-runbooks">
+        <h2>3. Operating runbooks grouped by OS</h2>
+        <p class="lede">Use this section for the normal handoff. The Linux VM always runs the root-owned runtime under <code>/opt/logan-mcp</code>. Administrator MCP access is named <code>assurance-logan-admin</code>; restricted CAM access is named <code>assurance-logan</code>. Both use the same latest runtime, but they deliberately use different credentials and launchers.</p>
+
+        <div class="callout danger">
+          <strong>Do not reuse the CAM connection as an administrator connection</strong>
+          <code>assurance-logan-admin</code> uses an individual Linux administrator login plus the protected <code>admin-launch</code> command. <code>assurance-logan</code> uses the recipient's forced-command CAM key. Keeping the names separate prevents an unrestricted administrator credential from being mistaken for a CAM credential.
+        </div>
+
+        <h3>A. Linux server + macOS/Linux administrator workstation</h3>
+
+        <h3>A1. Existing platform administrator: authorize an MCP administrator</h3>
+        <p>Replace <code>iustin</code> with the person's actual Linux login and <code>iustin.dorila</code> with the permanent audited administrator id.</p>
+        <div class="code-block"><button class="copy" type="button">Copy</button><pre><code>sudo visudo -f /etc/sudoers.d/assurance-logan-iustin</code></pre></div>
+        <p>Insert this identity-pinned rule:</p>
+        <div class="code-block"><button class="copy" type="button">Copy</button><pre><code>Cmnd_Alias ASSURANCE_LOGAN_IUSTIN = /opt/logan-mcp/bin/admin-launch iustin.dorila, /opt/logan-mcp/bin/cam-admin *
+iustin ALL=(root) NOPASSWD: ASSURANCE_LOGAN_IUSTIN</code></pre></div>
+        <div class="code-block"><button class="copy" type="button">Copy</button><pre><code>sudo visudo -cf /etc/sudoers.d/assurance-logan-iustin
+sudo /opt/logan-mcp/bin/cam-admin bootstrap-check --json</code></pre></div>
+        <p>Require valid sudoers syntax and <code>SUCCESS</code>. The exact <code>admin-launch iustin.dorila</code> rule prevents the administrator from selecting a different audit identity.</p>
+
+        <h3>A2. Administrator: configure Codex on macOS or Linux</h3>
+        <p>Configure <code>automation1</code> in <code>~/.ssh/config</code> with the administrator's individual SSH key and pinned host verification:</p>
+        <div class="code-block"><button class="copy" type="button">Copy</button><pre><code>Host automation1
+    HostName 130.162.53.112
+    User iustin
+    IdentityFile ~/.ssh/&lt;individual-admin-key&gt;
+    IdentitiesOnly yes
+    BatchMode yes
+    StrictHostKeyChecking yes
+    UserKnownHostsFile ~/.ssh/known_hosts
+    ServerAliveInterval 60
+    ServerAliveCountMax 3</code></pre></div>
+        <p>Add this table to <code>~/.codex/config.toml</code>:</p>
+        <div class="code-block"><button class="copy" type="button">Copy</button><pre><code>[mcp_servers.assurance-logan-admin]
+command = "ssh"
+args = ["-T", "-o", "BatchMode=yes", "automation1", "sudo", "-n", "/opt/logan-mcp/bin/admin-launch", "iustin.dorila"]</code></pre></div>
+        <p>Restart Codex, run <code>codex mcp list</code>, and test with:</p>
+        <div class="code-block"><button class="copy" type="button">Copy</button><pre><code>Use only the assurance-logan-admin MCP server. Test the connection and list the available administrator tools.</code></pre></div>
+
+        <h3>A3. Administrator: add a CAM from macOS</h3>
+        <div class="code-block"><button class="copy" type="button">Copy</button><pre><code>cd /Users/&lt;admin&gt;/github/logan-mcp-server/.worktrees/cam-layer1-phase1
+
+./cam-setup/admin/macos/Provision-Logan-CAM.command \
+  --cam jane.doe \
+  --customers 176,174 \
+  --allow-delivery false \
+  --ssh-target automation1 \
+  --output "$HOME/logan-cam-bundles"</code></pre></div>
+        <p>Type <code>YES</code>, then require successful server-side verification before delivering the ZIP:</p>
+        <div class="code-block"><button class="copy" type="button">Copy</button><pre><code>ssh automation1 \
+  'sudo /opt/logan-mcp/bin/cam-admin verify --cam jane.doe --json'</code></pre></div>
+        <div class="callout warn"><strong>Native Linux desktop packaging</strong>The supported Unix recipient installer is the macOS <code>.command</code> package. Server administration works from Linux through OpenSSH, but a native Linux CAM desktop installer is not included in this release.</div>
+
+        <h3>A4. CAM recipient: install and use on macOS</h3>
+        <ol class="steps">
+          <li>Download the recipient-specific ZIP from the approved secure transfer and extract it.</li>
+          <li>Double-click <code>Install-Logan-MCP.command</code>. Do not edit the key or installer.</li>
+          <li>Restart Codex and confirm <code>assurance-logan</code> appears in <code>codex mcp list</code>.</li>
+          <li>Run the acceptance prompts in section 11. The user must see only their approved entities and an explicit denial for another customer.</li>
+        </ol>
+
+        <h3>B. Windows administrator and CAM workstation</h3>
+
+        <h3>B1. Existing platform administrator: authorize the Windows-based administrator</h3>
+        <p>The Linux VM-side sudoers rule is identical to A1. Windows changes only the local SSH/Codex client commands. The administrator still needs an individual Linux login, individual SSH key, and an identity-pinned <code>admin-launch</code> rule.</p>
+
+        <h3>B2. Administrator: configure Codex on Windows</h3>
+        <p>Add the <code>automation1</code> block from A2 to <code>%USERPROFILE%\.ssh\config</code>, using a Windows key path such as <code>C:/Users/Iustin/.ssh/automation1-admin.key</code>. Then add this to <code>%USERPROFILE%\.codex\config.toml</code>:</p>
+        <div class="code-block"><button class="copy" type="button">Copy</button><pre><code>[mcp_servers.assurance-logan-admin]
+command = "ssh.exe"
+args = ["-T", "-o", "BatchMode=yes", "automation1", "sudo", "-n", "/opt/logan-mcp/bin/admin-launch", "iustin.dorila"]</code></pre></div>
+        <p>Restart Codex, run <code>codex mcp list</code>, and use the same <code>assurance-logan-admin</code> test prompt from A2.</p>
+
+        <h3>B3. Administrator: add a CAM from Windows</h3>
+        <div class="code-block"><button class="copy" type="button">Copy</button><pre><code>.\cam-setup\admin\windows\Provision-Logan-CAM.ps1 `
+  -CamId "jane.doe" `
+  -Customers 176,174 `
+  -AllowDelivery $false `
+  -SshTarget "automation1" `
+  -OutputDir "$HOME\logan-cam-bundles"</code></pre></div>
+        <p>Verify with:</p>
+        <div class="code-block"><button class="copy" type="button">Copy</button><pre><code>ssh.exe automation1 "sudo /opt/logan-mcp/bin/cam-admin verify --cam jane.doe --json"</code></pre></div>
+
+        <h3>B4. CAM recipient: install and use on Windows</h3>
+        <ol class="steps">
+          <li>Download and extract the recipient-specific ZIP.</li>
+          <li>Double-click <code>Double-Click-to-Install.cmd</code>. Stop if key or known-host ACL validation fails.</li>
+          <li>Restart Codex and confirm <code>assurance-logan</code> appears in <code>codex mcp list</code>.</li>
+          <li>Run the section 11 acceptance prompts and confirm exact entity isolation.</li>
+        </ol>
+        <div class="callout warn"><strong>Windows release status</strong>The implementation exists, but the native Pester and manual Windows ACL gate in section 13 must pass before production approval.</div>
+      </section>
+
+      <section id="roles">
+        <h2>3. Roles and Iustin's existing setup</h2>
+        <div class="table-wrap">
+          <table>
+            <thead><tr><th>Role</th><th>Uses</th><th>Must not use</th></tr></thead>
+            <tbody>
+              <tr><td><strong>Platform administrator</strong></td><td>Individual VM login, approved SSH key, and controlled <code>sudo</code> access to <code>cam-admin</code>.</td><td>A recipient CAM private key for administration.</td></tr>
+              <tr><td><strong>CAM user</strong></td><td>Recipient-specific bundle that installs the <code>assurance-logan</code> MCP entry.</td><td>Regular VM access, administrator key, or hand-edited policy.</td></tr>
+            </tbody>
+          </table>
+        </div>
+
+        <h3>Iustin Dorila</h3>
+        <p>Iustin already has a server-side CAM assignment for customers <code>176</code> and <code>174</code>. Do not provision him again merely to adopt the new MCP display name; re-provisioning is a key rotation.</p>
+
+        <ol class="steps">
+          <li>On Iustin's computer, run <code>codex mcp list</code> or inspect <code>~/.codex/config.toml</code>.</li>
+          <li>If his restricted entry connects as <code>cam@…</code> with <code>logan-cam.key</code>, it is the CAM connection. Its name should be <code>assurance-logan</code>.</li>
+          <li>If the same restricted entry is still named <code>logan-mcp</code>, rename only that table header to <code>[mcp_servers.assurance-logan]</code>, preserve its command and arguments, then restart Codex.</li>
+          <li>An administrator entry uses a personal Linux login and the root-owned <code>admin-launch</code> command. Keep it separate and name it <code>assurance-logan-admin</code>.</li>
+        </ol>
+
+        <div class="callout">
+          <strong>Iustin has two deliberately separate roles</strong>
+          His CAM connection remains <code>assurance-logan</code> and stays limited to customers 176/174. If he also needs unrestricted MCP administrator access, configure the separate <code>assurance-logan-admin</code> entry through <code>admin-launch iustin.dorila</code>. Provisioning and revocation continue to use SSH plus <code>cam-admin</code>.
+        </div>
+      </section>
+
+      <section id="new-admin">
+        <h2>4. Add another Assurance Logan administrator</h2>
+        <p>Use an individual Linux account, an individual SSH key, and one permanent audited administrator id. Never share the <code>opc</code> key or place an administrator key in the restricted <code>cam</code> account.</p>
+        <ol class="steps">
+          <li>Create or identify the person's normal Linux login through the organization's VM access process.</li>
+          <li>Choose the audited id, normally <code>firstname.lastname</code>.</li>
+          <li>Create an identity-specific sudoers rule. Do not wildcard <code>admin-launch</code>, because that would allow selection of another audit identity.</li>
+        </ol>
+        <div class="code-block"><button class="copy" type="button">Copy</button><pre><code>sudo visudo -f /etc/sudoers.d/assurance-logan-&lt;linux-login&gt;</code></pre></div>
+        <p>Example for Linux login <code>iustin</code> and audited id <code>iustin.dorila</code>:</p>
+        <div class="code-block"><button class="copy" type="button">Copy</button><pre><code>Cmnd_Alias ASSURANCE_LOGAN_IUSTIN = /opt/logan-mcp/bin/admin-launch iustin.dorila, /opt/logan-mcp/bin/cam-admin *
+iustin ALL=(root) NOPASSWD: ASSURANCE_LOGAN_IUSTIN</code></pre></div>
+        <ol class="steps" start="4" style="counter-reset: step 3">
+          <li>Validate the rule and have the administrator confirm their approved commands.</li>
+        </ol>
+        <div class="code-block"><button class="copy" type="button">Copy</button><pre><code>sudo visudo -cf /etc/sudoers.d/assurance-logan-&lt;linux-login&gt;
+sudo -l
+sudo /opt/logan-mcp/bin/cam-admin bootstrap-check --json</code></pre></div>
+        <p>Require <code>SUCCESS</code>. Configure the local <code>assurance-logan-admin</code> table using section 3. Runtime deployment/bootstrap remains a separate full platform-administrator capability.</p>
+      </section>
+
+      <section id="new-admin-legacy" hidden>
+        <h2>4. Add another CAM administrator</h2>
+        <p>Use an individual Linux account and individual SSH key. Do not share the <code>opc</code> key and do not place an administrator's key in the restricted <code>cam</code> account.</p>
+
+        <ol class="steps">
+          <li>Create or identify the administrator's normal Linux login according to the organization's VM access process.</li>
+          <li>As an existing full administrator, add a dedicated least-privilege group and the administrator to it.</li>
+        </ol>
+
+        <div class="code-block"><button class="copy" type="button">Copy</button><pre><code>ADMIN_USER=&lt;linux-login&gt;
+sudo groupadd --force logan-cam-admins
+sudo usermod -aG logan-cam-admins "$ADMIN_USER"</code></pre></div>
+
+        <p>Create <code>/etc/sudoers.d/logan-cam-admins</code> with <code>visudo</code. The root-owned <code>cam-admin</code> parser is the administrative boundary for these operations.</p>
+
+        <div class="code-block"><button class="copy" type="button">Copy</button><pre><code>sudo visudo -f /etc/sudoers.d/logan-cam-admins</code></pre></div>
+
+        <p>Insert:</p>
+
+        <div class="code-block"><button class="copy" type="button">Copy</button><pre><code>%logan-cam-admins ALL=(root) NOPASSWD: /opt/logan-mcp/bin/cam-admin *</code></pre></div>
+
+        <ol class="steps" start="3" style="counter-reset: step 2">
+          <li>Validate the sudoers file and have the new administrator start a fresh login session so group membership is refreshed.</li>
+        </ol>
+
+        <div class="code-block"><button class="copy" type="button">Copy</button><pre><code>sudo visudo -cf /etc/sudoers.d/logan-cam-admins
+id
+sudo -l
+sudo /opt/logan-mcp/bin/cam-admin bootstrap-check --json</code></pre></div>
+
+        <p>Require <code>SUCCESS</code> from <code>bootstrap-check</code>. If the person also needs to deploy or bootstrap runtime code, approve that as a separate platform-administrator capability; do not broaden this sudo rule casually.</p>
+      </section>
+
+      <section id="server">
+        <h2>5. Server checks before provisioning</h2>
+        <p>Run these from an administrator machine that has the <code>automation1</code> SSH alias and the current feature worktree.</p>
+
+        <div class="code-block"><button class="copy" type="button">Copy</button><pre><code>cd /Users/rishabh/github/logan-mcp-server/.worktrees/cam-layer1-phase1
+git status --short --branch
+git rev-parse --short HEAD
+ssh automation1 'sudo /opt/logan-mcp/bin/cam-admin bootstrap-check --json'</code></pre></div>
+
+        <p>Expect branch <code>feat/cam-layer1-phase1</code>, runtime baseline <code>a7b2450</code> or later, top-level status <code>SUCCESS</code>, and all twelve checks below to be <code>true</code>.</p>
+
+        <div class="table-wrap">
+          <table>
+            <thead><tr><th>Check</th><th>Purpose</th></tr></thead>
+            <tbody>
+              <tr><td><code>admin_command_root_owned</code></td><td>The administrative entrypoint cannot be replaced by the CAM account.</td></tr>
+              <tr><td><code>authorized_keys_immutable</code></td><td>The managed restricted keys cannot be edited by the CAM account.</td></tr>
+              <tr><td><code>cam_not_admin</code></td><td>The restricted account is not an administrator.</td></tr>
+              <tr><td><code>cam_password_locked</code></td><td>Password login is disabled.</td></tr>
+              <tr><td><code>config_immutable</code></td><td>The active Logan config is not CAM-writable.</td></tr>
+              <tr><td><code>config_parent_immutable</code></td><td>The config cannot be replaced through its parent directory.</td></tr>
+              <tr><td><code>instance_principal_init</code></td><td>OCI instance-principal initialization works.</td></tr>
+              <tr><td><code>launcher_root_owned</code></td><td>The forced launcher cannot be replaced.</td></tr>
+              <tr><td><code>policy_immutable</code></td><td>The access policy is root-controlled.</td></tr>
+              <tr><td><code>runtime_root_owned</code></td><td>Runtime, virtual environment, and both CAM/admin launchers are root-owned and not CAM-writable.</td></tr>
+              <tr><td><code>runtime_state_writable</code></td><td>Only intended mutable Logan state is writable.</td></tr>
+              <tr><td><code>sshd_effective_config</code></td><td>Unsafe SSH features are disabled for the restricted account.</td></tr>
+            </tbody>
+          </table>
+        </div>
+
+        <div class="callout danger"><strong>Stop on any failed check</strong>Do not provision or deliver a CAM bundle if a bootstrap check is absent or false.</div>
+      </section>
+
+      <section id="provision-mac">
+        <h2>6. Provision a CAM from macOS</h2>
+        <p>The example below creates a new CAM named <code>jane.doe</code> with access to customers <code>176</code> and <code>174</code>. Replace those values for the approved request.</p>
+
+        <ol class="steps">
+          <li>Open Terminal and enter the dedicated CAM worktree.</li>
+          <li>Run the provisioning wrapper. It generates a new key locally and sends only the public key and policy request to the root-controlled server command.</li>
+        </ol>
+
+        <div class="code-block"><button class="copy" type="button">Copy</button><pre><code>cd /Users/rishabh/github/logan-mcp-server/.worktrees/cam-layer1-phase1
+
+./cam-setup/admin/macos/Provision-Logan-CAM.command \
+  --cam jane.doe \
+  --customers 176,174 \
+  --allow-delivery false \
+  --ssh-target automation1 \
+  --output "$HOME/logan-cam-bundles"</code></pre></div>
+
+        <ol class="steps" start="3" style="counter-reset: step 2">
+          <li>Review the exact CAM id, customer list, delivery setting, and target. Type <code>YES</code>.</li>
+          <li>Record the returned fingerprint and generated bundle paths.</li>
+          <li>Verify the server-side assignment.</li>
+        </ol>
+
+        <div class="code-block"><button class="copy" type="button">Copy</button><pre><code>ssh automation1 \
+  'sudo /opt/logan-mcp/bin/cam-admin verify --cam jane.doe --json'</code></pre></div>
+
+        <p>Require <code>SUCCESS</code>, the requested customer numbers, the expected fingerprint, and only the intended <code>resolved_entities</code>.</p>
+      </section>
+
+      <section id="provision-windows">
+        <h2>7. Provision a CAM from Windows</h2>
+        <p>Use a Windows administrator workstation with OpenSSH Client enabled and an <code>automation1</code> entry in <code>%USERPROFILE%\.ssh\config</code>.</p>
+
+        <ol class="steps">
+          <li>Open PowerShell in the root of the extracted CAM release package.</li>
+          <li>Run the PowerShell wrapper with the approved values.</li>
+        </ol>
+
+        <div class="code-block"><button class="copy" type="button">Copy</button><pre><code>.\cam-setup\admin\windows\Provision-Logan-CAM.ps1 `
+  -CamId "jane.doe" `
+  -Customers 176,174 `
+  -AllowDelivery $false `
+  -SshTarget "automation1" `
+  -OutputDir "$HOME\logan-cam-bundles"</code></pre></div>
+
+        <p>Alternatively, double-click <code>cam-setup\admin\windows\Provision-Logan-CAM.cmd</code> and answer the prompts. Blank target and output values default to <code>automation1</code> and <code>%USERPROFILE%\logan-cam-bundles</code>.</p>
+
+        <ol class="steps" start="3" style="counter-reset: step 2">
+          <li>Confirm the request, record the fingerprint, and verify the live assignment.</li>
+        </ol>
+
+        <div class="code-block"><button class="copy" type="button">Copy</button><pre><code>ssh automation1 "sudo /opt/logan-mcp/bin/cam-admin verify --cam jane.doe --json"</code></pre></div>
+
+        <div class="callout warn"><strong>Release gate applies</strong>The Windows workflow is implemented, but complete section 13 on a native Windows host before production distribution.</div>
+      </section>
+
+      <section id="handoff">
+        <h2>8. Validate and securely deliver the bundle</h2>
+        <p>Provisioning already creates both the directory and ZIP:</p>
+
+        <div class="code-block"><pre><code>logan-cam-jane.doe/
+├── logan-cam.key
+├── Install-Logan-MCP.command
+├── Double-Click-to-Install.cmd
+├── Install-Logan-MCP.ps1
+└── README.html
+
+logan-cam-jane.doe.zip</code></pre></div>
+
+        <h3>macOS validation</h3>
+        <div class="code-block"><button class="copy" type="button">Copy</button><pre><code>ZIP="$HOME/logan-cam-bundles/logan-cam-jane.doe.zip"
+unzip -t "$ZIP"
+
+if unzip -l "$ZIP" | grep -q '__MACOSX/'; then
+  zip -d "$ZIP" '__MACOSX/*'
+fi
+
+shasum -a 256 "$ZIP"</code></pre></div>
+
+        <h3>Windows validation</h3>
+        <div class="code-block"><button class="copy" type="button">Copy</button><pre><code>$Zip = "$HOME\logan-cam-bundles\logan-cam-jane.doe.zip"
+Get-FileHash -Algorithm SHA256 $Zip
+tar -tf $Zip</code></pre></div>
+
+        <ul class="checklist">
+          <li>The archive test succeeds and contains only the five expected files.</li>
+          <li>The recorded SHA-256 belongs to the final ZIP being delivered.</li>
+          <li>The live <code>verify</code> result matches the approved CAM id, customers, fingerprint, and resolved entities.</li>
+          <li>The transfer is authenticated, recipient-specific, access-logged, and expires within seven days.</li>
+          <li>The private bundle is not sent by email, ordinary chat, or a broadly shared folder.</li>
+        </ul>
+
+        <div class="callout">
+          <strong>What the checksum does</strong>
+          SHA-256 does not encrypt the ZIP. It lets the administrator and recipient prove they have the identical archive and detects corruption or replacement. A recipient-specific secured SharePoint transfer is suitable when it follows the organization's approved credential-transfer policy; use Slack only if the organization's security policy explicitly approves it for bearer credentials.
+        </div>
+      </section>
+
+      <section id="install-mac">
+        <h2>9. CAM recipient installation on macOS</h2>
+        <ol class="steps">
+          <li>Download the recipient-specific ZIP from the approved secure transfer.</li>
+          <li>Optionally compare its SHA-256 with the checksum received through the agreed verification channel.</li>
+          <li>Extract the ZIP. Do not edit the key or installer.</li>
+          <li>Double-click <code>Install-Logan-MCP.command</code> and follow the prompt.</li>
+          <li>Restart Codex completely.</li>
+          <li>Confirm that <code>assurance-logan</code> is listed.</li>
+        </ol>
+
+        <div class="code-block"><button class="copy" type="button">Copy</button><pre><code>codex mcp list</code></pre></div>
+
+        <p>The installer stores the key in the user's private Logan directory, pins the server host key, and replaces only the <code>assurance-logan</code> table in <code>~/.codex/config.toml</code>. Other MCP servers are preserved.</p>
+      </section>
+
+      <section id="install-windows">
+        <h2>10. CAM recipient installation on Windows</h2>
+        <ol class="steps">
+          <li>Download the recipient-specific ZIP and compare its SHA-256 if requested.</li>
+          <li>Extract the ZIP to a private local folder.</li>
+          <li>Double-click <code>Double-Click-to-Install.cmd</code>.</li>
+          <li>Allow the installer to apply the private key and known-host ACLs. Stop and contact the administrator if ACL validation fails.</li>
+          <li>Restart Codex completely.</li>
+          <li>Run <code>codex mcp list</code> and confirm <code>assurance-logan</code> appears.</li>
+        </ol>
+
+        <p>The installer replaces only the restricted <code>assurance-logan</code> Codex table and preserves unrelated MCP configuration.</p>
+      </section>
+
+      <section id="acceptance">
+        <h2>11. CAM acceptance test</h2>
+        <p>Run these as separate prompts in a new Codex task. Tell Codex to use only the restricted server so results cannot come from an unrestricted Logan connection.</p>
+
+        <h3>A. Connection</h3>
+        <div class="code-block"><button class="copy" type="button">Copy</button><pre><code>Use only the assurance-logan MCP server. Test the connection.</code></pre></div>
+
+        <h3>B. Allowed entities</h3>
+        <div class="code-block"><button class="copy" type="button">Copy</button><pre><code>Use only the assurance-logan MCP server. List every entity I am allowed to access.</code></pre></div>
+        <p>Expect only the entities approved in the server-side CAM assignment.</p>
+
+        <h3>C. Allowed data</h3>
+        <div class="code-block"><button class="copy" type="button">Copy</button><pre><code>Use only the assurance-logan MCP server. Show all logs from the last 7 days grouped by log source.</code></pre></div>
+        <p>The result is scoped to the allowed entities even if generated prose incorrectly says “entire tenancy.” Judge enforcement by the returned entities and server behavior, not that phrase.</p>
+
+        <h3>D. Denied customer</h3>
+        <div class="code-block"><button class="copy" type="button">Copy</button><pre><code>Use only the assurance-logan MCP server. Show the same 7-day log data for Customer114_Network_Rail_Infrastructure_Limited.</code></pre></div>
+        <p>Expect a clear access-restricted response, the permitted entity names, and advice to contact the Assurance Logan administrator. Do not accept a plain “0 logs” response for an explicitly unauthorized entity.</p>
+
+        <div class="callout good"><strong>Acceptance passes only when all four checks pass</strong>Connection succeeds, the entity list is exact, allowed data is returned within scope, and the unauthorized entity is explicitly denied.</div>
+      </section>
+
+      <section id="lifecycle">
+        <h2>12. Change scope, refresh entities, or revoke access</h2>
+
+        <h3>Show and verify without mutation</h3>
+        <div class="code-block"><button class="copy" type="button">Copy</button><pre><code>ssh automation1 \
+  'sudo /opt/logan-mcp/bin/cam-admin show --cam &lt;cam-id&gt; --json'
+
+ssh automation1 \
+  'sudo /opt/logan-mcp/bin/cam-admin verify --cam &lt;cam-id&gt; --json'</code></pre></div>
+
+        <h3>Refresh an older or intentionally changed entity snapshot</h3>
+        <div class="code-block"><button class="copy" type="button">Copy</button><pre><code>ssh automation1 \
+  'sudo /opt/logan-mcp/bin/cam-admin verify --cam &lt;cam-id&gt; --refresh-policy --json'</code></pre></div>
+        <p>This backup-aware operation updates <code>resolved_entities</code> but does not change the key. Use it for older records missing a snapshot or after an approved customer entity-inventory change.</p>
+
+        <h3>Change customer scope or delivery permission</h3>
+        <p>Do not hand-edit <code>/etc/logan-mcp/access_control.yaml</code> or <code>/home/cam/.ssh/authorized_keys</code>. Record the approval, deprovision the existing CAM, provision the complete new scope with a new key, verify it, and securely deliver the replacement bundle.</p>
+
+        <h3>Deprovision</h3>
+        <p>On macOS:</p>
+        <div class="code-block"><button class="copy" type="button">Copy</button><pre><code>./cam-setup/admin/macos/Deprovision-Logan-CAM.command \
+  --cam &lt;cam-id&gt; \
+  --ssh-target automation1</code></pre></div>
+
+        <p>On Windows, double-click <code>cam-setup\admin\windows\Deprovision-Logan-CAM.cmd</code>, or run:</p>
+        <div class="code-block"><button class="copy" type="button">Copy</button><pre><code>.\cam-setup\admin\windows\Deprovision-Logan-CAM.ps1 `
+  -CamId "&lt;cam-id&gt;" `
+  -SshTarget "automation1"</code></pre></div>
+
+        <p>The wrapper shows the current assignment and requires the exact confirmation <code>REVOKE &lt;cam-id&gt;</code>. Successful revocation removes the policy and key, terminates that CAM's processes, and proves the old key cannot authenticate.</p>
+
+        <div class="table-wrap">
+          <table>
+            <thead><tr><th>Status</th><th>Required action</th></tr></thead>
+            <tbody>
+              <tr><td><code>SUCCESS</code></td><td>Access is verified revoked. Record the result.</td></tr>
+              <tr><td><code>FAILED_ACCESS_REVOKED_CLEANUP_REQUIRED</code></td><td>Access is revoked, but cleanup remains. Use the printed recovery metadata; never restore the old key.</td></tr>
+              <tr><td><code>FAILED_REVOCATION_UNCONFIRMED</code></td><td>Treat the key as active. Run the exact printed manual command immediately and escalate.</td></tr>
+            </tbody>
+          </table>
+        </div>
+
+        <p>Ordinary deprovisioning intentionally retains audit history, saved and learned queries, learning inputs, useful preferences, reports, delivery metadata, and compliance evidence. Archival is a separate future operation.</p>
+      </section>
+
+      <section id="windows-gate">
+        <h2>13. Native Windows release gate</h2>
+        <p>Run this section on a real Windows host before handing the Windows workflow to production CAM users.</p>
+
+        <ol class="steps">
+          <li>Install a current Pester version and run both repository suites.</li>
+        </ol>
+        <div class="code-block"><button class="copy" type="button">Copy</button><pre><code>Invoke-Pester .\cam-setup\tests\windows\CamInstaller.Tests.ps1 -Output Detailed
+Invoke-Pester .\cam-setup\tests\windows\CamAdmin.Tests.ps1 -Output Detailed</code></pre></div>
+
+        <ol class="steps" start="2" style="counter-reset: step 1">
+          <li>Provision a non-production test CAM and install it into a temporary Windows profile.</li>
+          <li>Confirm the private key and known-host files do not inherit broad ACLs and are not writable by other standard users.</li>
+          <li>Confirm unrelated <code>config.toml</code> settings and MCP servers remain unchanged.</li>
+          <li>Run the installer a second time and confirm idempotent behavior.</li>
+          <li>Run the four CAM acceptance prompts in section 11.</li>
+          <li>Extract the Windows-generated ZIP on macOS and confirm <code>Install-Logan-MCP.command</code> is executable and <code>logan-cam.key</code> is mode <code>0600</code>.</li>
+          <li>Deprovision the test CAM and confirm its key no longer connects.</li>
+        </ol>
+
+        <div class="callout warn"><strong>Approval rule</strong>Record native Windows PASS only after both Pester suites and every manual check above pass. Until then, label the Windows package “release candidate.”</div>
+      </section>
+
+      <section id="records">
+        <h2>14. Operational records and recovery</h2>
+        <h3>Record for every authorization change</h3>
+        <ul class="checklist">
+          <li>Request and approving authority</li>
+          <li>CAM id and approved customer numbers</li>
+          <li><code>allow_delivery</code> value</li>
+          <li>Resolved entity names</li>
+          <li>Public key fingerprint — never the private key</li>
+          <li>Release/deployed runtime revision</li>
+          <li>Final ZIP SHA-256 and secure delivery channel</li>
+          <li>Provision, verify, acceptance, scope-change, and deprovision outcomes</li>
+        </ul>
+
+        <h3>Recovery rules</h3>
+        <ul>
+          <li>Treat a lost, copied, or misdelivered bundle as a compromised bearer credential. Deprovision immediately and issue a new key.</li>
+          <li>Use the root-owned backup path printed by <code>cam-admin</code> only for deliberate recovery.</li>
+          <li>Never restore a deprovisioned key or an old <code>authorized_keys</code> file to clear an error.</li>
+          <li>After recovery, rerun <code>bootstrap-check</code>, then <code>show</code> or <code>verify</code>, and record the evidence.</li>
+        </ul>
+
+        <h3>Common problems</h3>
+        <div class="table-wrap">
+          <table>
+            <thead><tr><th>Symptom</th><th>Action</th></tr></thead>
+            <tbody>
+              <tr><td>Codex still shows an old server name</td><td>Confirm the restricted table is <code>assurance-logan</code>, restart Codex, and run <code>codex mcp list</code>.</td></tr>
+              <tr><td>Feature branch cannot be checked out in the main folder</td><td>Expected: it is already attached to the dedicated worktree. Enter that worktree instead.</td></tr>
+              <tr><td>Allowed-entity list stalls</td><td>Run server-side <code>verify</code>. If the record predates entity snapshots, use <code>verify --refresh-policy</code>.</td></tr>
+              <tr><td>Unauthorized entity returns zero logs</td><td>Confirm the request explicitly names the entity and that the deployed runtime contains the access-denied fix. Repeat the strict prompt from section 11.</td></tr>
+              <tr><td>Installer reports TOML ambiguity or ACL failure</td><td>Stop. Preserve the error and contact an administrator; do not edit around the guardrail.</td></tr>
+              <tr><td>Host key changed</td><td>Do not accept it blindly. Verify the VM host key through an independent administrator channel before replacing the pinned value.</td></tr>
+              <tr><td>SSH warns that post-quantum key exchange is not in use</td><td>This is infrastructure cryptography hardening, not a CAM authorization failure. Record it and plan a compatible OpenSSH/server upgrade; do not suppress the warning by weakening host-key checks.</td></tr>
+            </tbody>
+          </table>
+        </div>
+      </section>
+
+      <p class="footer">Assurance Logan CAM Layer 1 • administrator and handover guide • 17 July 2026</p>
+    </main>
+  </div>
+
+  <script>
+    document.querySelectorAll('.copy').forEach(function (button) {
+      button.addEventListener('click', function () {
+        var text = button.parentElement.querySelector('code').innerText;
+        navigator.clipboard.writeText(text).then(function () {
+          var original = button.textContent;
+          button.textContent = 'Copied';
+          window.setTimeout(function () { button.textContent = original; }, 1400);
+        });
+      });
+    });
+  </script>
+</body>
+</html>
