@@ -222,6 +222,23 @@ Require `SUCCESS`, the expected CAM id and fingerprint, the intended customer
 numbers, and only the expected resolved entities. Refresh `show` before
 deprovisioning if the fingerprint has changed.
 
+Provisioning also stores those resolved entity names in the root-controlled
+policy. CAM startup uses that snapshot so an unavailable or slow OCI entity-list
+request cannot block the MCP handshake. There is no runtime fallback that lists
+the tenancy entity catalogue: a missing snapshot fails closed. Older CAM records
+created before this behavior must be migrated once, without changing their keys:
+
+```bash
+ssh automation1 \
+  'sudo /opt/logan-mcp/bin/cam-admin verify --cam <cam-id> --refresh-policy --json'
+```
+
+Require the same successful identity, fingerprint, customer, and resolved-entity
+checks. The operation is backup-aware, atomic, audited, and leaves
+`authorized_keys` unchanged. Run it again after an administrator intentionally
+changes the entity inventory for an assigned customer; ordinary CAM users
+cannot invoke it or alter the snapshot.
+
 ## Change a CAM's customer scope or delivery policy
 
 There is intentionally no direct CAM-policy editor. Administrators must not

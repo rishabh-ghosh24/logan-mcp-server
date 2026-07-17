@@ -66,6 +66,7 @@ def validate_entity_field(value: object) -> str:
 class CamEntry:
     customers: Tuple[int, ...]
     allow_delivery: bool
+    resolved_entities: Tuple[str, ...] = ()
 
 
 @dataclass(frozen=True)
@@ -115,7 +116,16 @@ def load_access_config(path: Path) -> AccessControlConfig:
             default_allow_delivery,
             f"cams.{cam_id}.allow_delivery",
         )
-        cams[cam_id] = CamEntry(customers=customers, allow_delivery=allow_delivery)
+        resolved_entities = _resolved_entities_field(
+            entry.get("resolved_entities"),
+            customers,
+            f"cams.{cam_id}.resolved_entities",
+        )
+        cams[cam_id] = CamEntry(
+            customers=customers,
+            allow_delivery=allow_delivery,
+            resolved_entities=resolved_entities,
+        )
 
     return AccessControlConfig(
         tenancy_id=str(raw.get("tenancy_id", "")),
@@ -142,6 +152,44 @@ def _bool_field(mapping: dict, key: str, default: bool, field_path: str) -> bool
             f"access_control.yaml field '{field_path}' must be a boolean"
         )
     return value
+
+
+def _resolved_entities_field(
+    value: object,
+    customers: Tuple[int, ...],
+    field_path: str,
+) -> Tuple[str, ...]:
+    """Validate an optional root-controlled entity-resolution snapshot."""
+    if value is None:
+        return ()
+    if (
+        not isinstance(value, list)
+        or not value
+        or any(
+            not isinstance(name, str)
+            or not 1 <= len(name) <= 1024
+            or name.strip() != name
+            or not name.isprintable()
+            for name in value
+        )
+        or len(set(value)) != len(value)
+    ):
+        raise AccessConfigError(
+            f"access_control.yaml field '{field_path}' must be a non-empty "
+            "list of unique printable entity names"
+        )
+    if any(
+        not any(
+            name == str(number) or name.startswith(f"{number}_")
+            for number in customers
+        )
+        for name in value
+    ):
+        raise AccessConfigError(
+            f"access_control.yaml field '{field_path}' contains an entity "
+            "outside the CAM customer allocation"
+        )
+    return tuple(value)
 
 
 def entity_matches(entity_name: str, number: int) -> bool:

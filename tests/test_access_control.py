@@ -36,6 +36,50 @@ def test_load_minimal_config(tmp_path):
     assert cfg.cams["cam_alice"].customers == (223, 66)
     assert cfg.cams["cam_alice"].allow_delivery is True   # inherits default
     assert cfg.cams["cam_bob"].allow_delivery is False    # per-cam override
+    assert cfg.cams["cam_alice"].resolved_entities == ()
+
+
+def test_loads_root_controlled_resolved_entities(tmp_path):
+    path = _write(tmp_path, """
+        compartment_id: c
+        namespace: ns
+        cams:
+          cam_alice:
+            customers: [223, 66]
+            resolved_entities: [223_customer, 66_customer]
+    """)
+
+    cfg = load_access_config(path)
+
+    assert cfg.cams["cam_alice"].resolved_entities == (
+        "223_customer",
+        "66_customer",
+    )
+
+
+@pytest.mark.parametrize("resolved", [
+    [],
+    ["999_other"],
+    ["223_customer", "223_customer"],
+    [""],
+])
+def test_rejects_invalid_resolved_entity_snapshots(tmp_path, resolved):
+    import yaml
+
+    path = tmp_path / "access_control.yaml"
+    path.write_text(yaml.safe_dump({
+        "compartment_id": "c",
+        "namespace": "ns",
+        "cams": {
+            "cam_alice": {
+                "customers": [223],
+                "resolved_entities": resolved,
+            }
+        },
+    }), encoding="utf-8")
+
+    with pytest.raises(AccessConfigError, match="resolved_entities"):
+        load_access_config(path)
 
 
 @pytest.mark.parametrize("body", [

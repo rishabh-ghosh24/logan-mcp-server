@@ -15,12 +15,16 @@ def _access_config_file(tmp_path, *, body=None):
         compartment_id: c
         namespace: ns
         cams:
-          cam_alice: { customers: [223] }
+          cam_alice:
+            customers: [223]
+            resolved_entities: [223_x]
     """), encoding="utf-8")
     return p
 
 
 class _FakeClient:
+    list_entities_calls = 0
+
     def __init__(self, settings):
         self.settings = settings
         self.namespace = "old_ns"
@@ -29,6 +33,7 @@ class _FakeClient:
         self.access_audit_logger = None
 
     async def list_entities(self, entity_type=None):
+        _FakeClient.list_entities_calls += 1
         return [{"name": "223_x"}, {"name": "999_other"}]
 
 
@@ -54,6 +59,8 @@ class _FakeHandlers:
 
 def _patch_initialize_core_dependencies(monkeypatch, tmp_path, settings):
     import oci_logan_mcp.server as server_mod
+
+    _FakeClient.list_entities_calls = 0
 
     monkeypatch.setattr(server_mod, "config_exists", lambda: True)
     monkeypatch.setattr(server_mod, "load_config", lambda: settings)
@@ -141,6 +148,34 @@ async def test_initialize_core_builds_profile_from_user_store_identity(monkeypat
 
 
 @pytest.mark.asyncio
+async def test_initialize_core_uses_policy_snapshot_without_oci_entity_lookup(
+    monkeypatch, tmp_path
+):
+    from oci_logan_mcp.config import Settings
+    from oci_logan_mcp.server import OCILogAnalyticsMCPServer
+
+    settings = Settings()
+    settings.enforce_access = True
+    settings.access_control_path = str(_access_config_file(tmp_path, body="""
+        compartment_id: c
+        namespace: ns
+        cams:
+          cam_alice:
+            customers: [223]
+            resolved_entities: [223_x]
+    """))
+    monkeypatch.setenv("LOGAN_USER", "cam_alice")
+    _patch_initialize_core_dependencies(monkeypatch, tmp_path, settings)
+
+    srv = OCILogAnalyticsMCPServer()
+    await srv.initialize_core()
+
+    assert _FakeClient.list_entities_calls == 0
+    assert srv.access_profile.entity_names == frozenset({"223_x"})
+    assert srv.access_entities == [{"name": "223_x"}]
+
+
+@pytest.mark.asyncio
 async def test_initialize_core_enforce_access_zero_resolved_fails(monkeypatch, tmp_path):
     from oci_logan_mcp.config import Settings
     from oci_logan_mcp.server import OCILogAnalyticsMCPServer
@@ -158,6 +193,30 @@ async def test_initialize_core_enforce_access_zero_resolved_fails(monkeypatch, t
 
     with pytest.raises(AccessConfigError):
         await OCILogAnalyticsMCPServer().initialize_core()
+
+
+@pytest.mark.asyncio
+async def test_initialize_core_missing_policy_snapshot_fails_without_oci_lookup(
+    monkeypatch, tmp_path
+):
+    from oci_logan_mcp.config import Settings
+    from oci_logan_mcp.server import OCILogAnalyticsMCPServer
+
+    settings = Settings()
+    settings.enforce_access = True
+    settings.access_control_path = str(_access_config_file(tmp_path, body="""
+        compartment_id: c
+        namespace: ns
+        cams:
+          cam_alice: { customers: [223] }
+    """))
+    monkeypatch.setenv("LOGAN_USER", "cam_alice")
+    _patch_initialize_core_dependencies(monkeypatch, tmp_path, settings)
+
+    with pytest.raises(AccessConfigError, match="--refresh-policy"):
+        await OCILogAnalyticsMCPServer().initialize_core()
+
+    assert _FakeClient.list_entities_calls == 0
 
 
 from types import SimpleNamespace

@@ -235,7 +235,11 @@ class OCILogAnalyticsMCPServer:
         self.access_profile = None
         self.access_entities = None
         if enforce_access:
-            from .access_control import build_profile, load_access_config
+            from .access_control import (
+                AccessConfigError,
+                build_profile,
+                load_access_config,
+            )
             ac_path = self.settings.access_control_path or str(
                 STATE_DIR / "access_control.yaml"
             )
@@ -243,9 +247,26 @@ class OCILogAnalyticsMCPServer:
             # Pin OCI scope to the access-control config
             self.oci_client.namespace = ac_config.namespace
             self.oci_client.compartment_id = ac_config.compartment_id
-            entity_catalog = await self.oci_client.list_entities() or []
-            all_entities = [entity["name"] for entity in entity_catalog]
             user_id = self.user_store.user_id
+            cam_entry = ac_config.cams.get(user_id)
+            if cam_entry is None or not cam_entry.customers:
+                # Reuse build_profile's established fail-closed diagnostics for
+                # an unknown CAM or an empty customer allocation.
+                build_profile(ac_config, user_id, [])
+            if not cam_entry.resolved_entities:
+                raise AccessConfigError(
+                    f"CAM '{user_id}' is missing its root-controlled resolved_entities "
+                    "allow-list; an administrator must run cam-admin verify "
+                    "--refresh-policy"
+                )
+            entity_catalog = [
+                {"name": name} for name in cam_entry.resolved_entities
+            ]
+            logger.info(
+                "Using root-controlled entity snapshot for CAM '%s'",
+                user_id,
+            )
+            all_entities = [entity["name"] for entity in entity_catalog]
             self.access_profile = build_profile(ac_config, user_id, all_entities)
             self.access_entities = [
                 entity

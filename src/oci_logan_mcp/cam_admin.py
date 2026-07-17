@@ -219,6 +219,101 @@ class CamAdminService:
                 "fingerprint": records[0].key.fingerprint,
             }
 
+    async def refresh_entities(self, cam_id: str) -> dict[str, Any]:
+        """Atomically refresh one CAM's root-controlled entity snapshot."""
+        cam_id = self._validate_cam_id(cam_id)
+        operation_id = self._operation_id("refresh-entities", cam_id)
+        with self.store.locked():
+            live = self.store.read_live()
+            config = validate_policy_document(self.store, live.policy)
+            records = [
+                record
+                for record in managed_key_records(live.authorized_key_lines)
+                if record.managed_cam_id == cam_id
+            ]
+            if len(records) != 1:
+                raise CamAdminError(f"CAM '{cam_id}' does not have one forced key")
+
+            entities = await self.entity_resolver(config)
+            profile = self._build_profile(config, cam_id, entities)
+            resolved_entities = sorted(profile.entity_names)
+            candidate = copy.deepcopy(live.policy)
+            candidate["cams"][cam_id]["resolved_entities"] = resolved_entities
+
+            if candidate == live.policy:
+                return {
+                    "status": "SUCCESS",
+                    "cam_id": cam_id,
+                    "customers": list(profile.customer_numbers),
+                    "allow_delivery": profile.allow_delivery,
+                    "resolved_entities": resolved_entities,
+                    "fingerprint": records[0].key.fingerprint,
+                }
+
+            validate_policy_document(self.store, candidate)
+            expected_policy_hash = sha256_bytes(serialize_policy(candidate))
+            backups = self.store.back_up(live, operation_id)
+
+            try:
+                policy_hash = self.store.replace_policy(candidate, live)
+                if policy_hash != expected_policy_hash:
+                    raise CamAdminError("candidate hash mismatch")
+                verified = self.store.read_live()
+                if (
+                    verified.policy_hash != policy_hash
+                    or verified.policy.get("cams", {}).get(cam_id)
+                    != candidate["cams"][cam_id]
+                ):
+                    raise CamAdminError("post-write policy verification failed")
+                policy_metadata = (
+                    verified.policy_stat.st_uid,
+                    verified.policy_stat.st_gid,
+                    stat.S_IMODE(verified.policy_stat.st_mode),
+                )
+                original_metadata = (
+                    live.policy_stat.st_uid,
+                    live.policy_stat.st_gid,
+                    stat.S_IMODE(live.policy_stat.st_mode),
+                )
+                if policy_metadata != original_metadata:
+                    raise CamAdminError(
+                        "post-write policy ownership verification failed"
+                    )
+                self.store.append_audit(
+                    {
+                        "actor": self.actor_provider(),
+                        "operation": "refresh-entities",
+                        "cam_id": cam_id,
+                        "customers": list(profile.customer_numbers),
+                        "resolved_entities": resolved_entities,
+                        "before": {"policy": live.policy_hash},
+                        "after": {"policy": policy_hash},
+                        "backup_dir": str(backups.policy_path.parent),
+                        "outcome": "success",
+                    }
+                )
+            except Exception as exc:
+                current = self.store.read_live()
+                if current.policy_hash == expected_policy_hash:
+                    self.store.restore_policy(
+                        backups,
+                        expected_hash=expected_policy_hash,
+                    )
+                elif current.policy_hash != live.policy_hash:
+                    raise ConcurrentMutationError(
+                        "cannot roll back unexpected access policy content"
+                    ) from exc
+                raise
+
+            return {
+                "status": "SUCCESS",
+                "cam_id": cam_id,
+                "customers": list(profile.customer_numbers),
+                "allow_delivery": profile.allow_delivery,
+                "resolved_entities": resolved_entities,
+                "fingerprint": records[0].key.fingerprint,
+            }
+
     async def provision(self, request: ProvisionRequest) -> dict[str, Any]:
         operation_id = self._operation_id("provision", request.cam_id)
         with self.store.locked():
@@ -243,6 +338,9 @@ class CamAdminService:
             config = validate_policy_document(self.store, candidate)
             entities = await self.entity_resolver(config)
             profile = self._build_profile(config, request.cam_id, entities)
+            candidate["cams"][request.cam_id]["resolved_entities"] = sorted(
+                profile.entity_names
+            )
 
             forced_line = build_forced_key_line(
                 request.cam_id,
@@ -846,6 +944,7 @@ def _build_parser() -> argparse.ArgumentParser:
 
     verify = subparsers.add_parser("verify")
     verify.add_argument("--cam", required=True)
+    verify.add_argument("--refresh-policy", action="store_true")
     verify.add_argument("--json", action="store_true", required=True)
 
     deprovision = subparsers.add_parser("deprovision")
@@ -906,7 +1005,10 @@ def main(
         elif args.operation == "show":
             response = active_service.show(args.cam)
         elif args.operation == "verify":
-            response = asyncio.run(active_service.verify(args.cam))
+            if args.refresh_policy:
+                response = asyncio.run(active_service.refresh_entities(args.cam))
+            else:
+                response = asyncio.run(active_service.verify(args.cam))
         else:
             response = active_service.bootstrap_check()
 

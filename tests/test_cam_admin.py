@@ -176,6 +176,7 @@ async def test_provision_writes_policy_then_exact_forced_key_and_audit(tmp_path)
     assert policy["cams"]["cam_alice"] == {
         "customers": [223, 66],
         "allow_delivery": False,
+        "resolved_entities": ["223_customer", "66_customer"],
     }
     assert "cam-launch cam_alice" in keys
     assert "# keep this line" in keys
@@ -333,6 +334,76 @@ async def test_show_and_verify_return_current_assignment(tmp_path):
     assert shown["fingerprint"] == request.key.fingerprint
     assert verified["resolved_entities"] == ["223_customer"]
     assert verified["allow_delivery"] is False
+
+
+@pytest.mark.asyncio
+async def test_refresh_entities_migrates_existing_policy_without_rotating_key(tmp_path):
+    service, paths = _service(tmp_path)
+    request = _provision_request(customers=(223,))
+    await service.provision(request)
+    policy = yaml.safe_load(paths.policy_path.read_text(encoding="utf-8"))
+    del policy["cams"]["cam_alice"]["resolved_entities"]
+    paths.policy_path.write_text(yaml.safe_dump(policy), encoding="utf-8")
+    before_keys = paths.authorized_keys_path.read_bytes()
+
+    refreshed = await service.refresh_entities("cam_alice")
+
+    migrated = yaml.safe_load(paths.policy_path.read_text(encoding="utf-8"))
+    assert migrated["cams"]["cam_alice"]["resolved_entities"] == ["223_customer"]
+    assert paths.authorized_keys_path.read_bytes() == before_keys
+    assert refreshed["fingerprint"] == request.key.fingerprint
+    audit = [
+        json.loads(line)
+        for line in paths.audit_path.read_text(encoding="utf-8").splitlines()
+    ]
+    assert audit[-1]["operation"] == "refresh-entities"
+
+
+@pytest.mark.asyncio
+async def test_refresh_entities_rolls_policy_back_when_audit_fails(
+    tmp_path, monkeypatch
+):
+    service, paths = _service(tmp_path)
+    await service.provision(_provision_request(customers=(223,)))
+    policy = yaml.safe_load(paths.policy_path.read_text(encoding="utf-8"))
+    del policy["cams"]["cam_alice"]["resolved_entities"]
+    paths.policy_path.write_text(yaml.safe_dump(policy), encoding="utf-8")
+    before_policy = paths.policy_path.read_bytes()
+    before_keys = paths.authorized_keys_path.read_bytes()
+    monkeypatch.setattr(
+        service.store,
+        "append_audit",
+        lambda event: (_ for _ in ()).throw(OSError("injected audit failure")),
+    )
+
+    with pytest.raises(OSError, match="injected audit failure"):
+        await service.refresh_entities("cam_alice")
+
+    assert paths.policy_path.read_bytes() == before_policy
+    assert paths.authorized_keys_path.read_bytes() == before_keys
+
+
+def test_cli_verify_can_refresh_root_controlled_entity_snapshot():
+    class FakeService:
+        async def refresh_entities(self, cam_id):
+            return {"status": "SUCCESS", "cam_id": cam_id}
+
+    stdout = StringIO()
+    stderr = StringIO()
+
+    code = main(
+        ["verify", "--cam", "cam_alice", "--refresh-policy", "--json"],
+        stdout=stdout,
+        stderr=stderr,
+        service=FakeService(),
+        geteuid=lambda: 0,
+    )
+
+    assert code == 0
+    assert json.loads(stdout.getvalue()) == {
+        "status": "SUCCESS",
+        "cam_id": "cam_alice",
+    }
 
 
 class FakeTerminator:
