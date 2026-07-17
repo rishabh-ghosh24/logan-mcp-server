@@ -6,7 +6,7 @@ import logging
 import secrets
 import time
 from datetime import datetime, timezone
-from typing import TYPE_CHECKING, Any, Dict, List, Optional
+from typing import TYPE_CHECKING, Any, Dict, List, Optional, Sequence
 
 from .query_engine import QueryEngine
 from .schema_manager import SchemaManager
@@ -89,6 +89,7 @@ class MCPHandlers:
         secret_store: Optional[SecretStore] = None,
         audit_logger: Optional[AuditLogger] = None,
         access_profile=None,
+        access_entities: Optional[Sequence[Dict[str, Any]]] = None,
     ):
         """Initialize MCP handlers."""
         self.settings = settings
@@ -102,6 +103,14 @@ class MCPHandlers:
         # CAM access profile must be known before any helper service (notably
         # ReportStore) is constructed so CAM mode is established up front.
         self.access_profile = access_profile
+        # The server already fetched the OCI entity catalog to build the CAM
+        # profile. Retain only this CAM's allowed records so list_entities does
+        # not repeat the same slow tenancy-wide request.
+        self.access_entities = (
+            [dict(entity) for entity in access_entities]
+            if access_entities is not None
+            else None
+        )
 
         if secret_store is None:
             from pathlib import Path
@@ -812,9 +821,19 @@ class MCPHandlers:
 
     async def _list_entities(self, args: Dict) -> List[Dict]:
         """List entities."""
-        entities = await self.schema_manager.get_entities(
-            entity_type=args.get("entity_type")
-        )
+        entity_type = args.get("entity_type")
+        access_entities = getattr(self, "access_entities", None)
+        if self.access_profile is not None and access_entities is not None:
+            entities = [dict(entity) for entity in access_entities]
+            if entity_type:
+                entities = [
+                    entity
+                    for entity in entities
+                    if entity.get("entity_type") == entity_type
+                ]
+        else:
+            entities = await self.schema_manager.get_entities(entity_type=entity_type)
+
         if self.access_profile is not None:
             allowed = self.access_profile.entity_names
             entities = [e for e in entities if e.get("name") in allowed]

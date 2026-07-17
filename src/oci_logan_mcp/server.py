@@ -233,6 +233,7 @@ class OCILogAnalyticsMCPServer:
         # identity comes from the same UserStore that drives learned queries,
         # preferences, secrets, reports, and audit user ids.
         self.access_profile = None
+        self.access_entities = None
         if enforce_access:
             from .access_control import build_profile, load_access_config
             ac_path = self.settings.access_control_path or str(
@@ -242,11 +243,15 @@ class OCILogAnalyticsMCPServer:
             # Pin OCI scope to the access-control config
             self.oci_client.namespace = ac_config.namespace
             self.oci_client.compartment_id = ac_config.compartment_id
-            all_entities = [
-                e["name"] for e in (await self.oci_client.list_entities() or [])
-            ]
+            entity_catalog = await self.oci_client.list_entities() or []
+            all_entities = [entity["name"] for entity in entity_catalog]
             user_id = self.user_store.user_id
             self.access_profile = build_profile(ac_config, user_id, all_entities)
+            self.access_entities = [
+                entity
+                for entity in entity_catalog
+                if entity.get("name") in self.access_profile.entity_names
+            ]
             self.oci_client.access_profile = self.access_profile   # client enforcement (Task 8)
             logger.info(
                 f"CAM access control active for '{user_id}': "
@@ -328,6 +333,7 @@ class OCILogAnalyticsMCPServer:
                 secret_store=self.secret_store,
                 audit_logger=self.audit_logger,
                 access_profile=self.access_profile,
+                access_entities=self.access_entities,
             )
 
         logger.info("OCI Log Analytics MCP Server initialized")

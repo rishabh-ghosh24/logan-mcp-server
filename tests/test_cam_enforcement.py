@@ -45,9 +45,11 @@ class _FakeSecretStore:
 
 class _FakeHandlers:
     captured_profile = None
+    captured_access_entities = None
 
     def __init__(self, **kwargs):
         _FakeHandlers.captured_profile = kwargs.get("access_profile")
+        _FakeHandlers.captured_access_entities = kwargs.get("access_entities")
 
 
 def _patch_initialize_core_dependencies(monkeypatch, tmp_path, settings):
@@ -135,6 +137,7 @@ async def test_initialize_core_builds_profile_from_user_store_identity(monkeypat
     assert srv.oci_client.compartment_id == "c"
     assert srv.oci_client.access_profile is srv.access_profile
     assert _FakeHandlers.captured_profile is srv.access_profile
+    assert _FakeHandlers.captured_access_entities == [{"name": "223_x"}]
 
 
 @pytest.mark.asyncio
@@ -391,6 +394,24 @@ async def test_list_entities_filters_via_handler():
     payload = json.loads(result[0]["text"])
 
     assert [e["name"] for e in payload] == ["223_x"]
+
+
+@pytest.mark.asyncio
+async def test_list_entities_reuses_resolved_cam_catalog_without_oci_lookup():
+    from oci_logan_mcp.handlers import MCPHandlers
+
+    h = MCPHandlers.__new__(MCPHandlers)
+    h.access_profile = _profile()
+    h.access_entities = [
+        {"name": "223_x", "entity_type": "Host (Linux)"},
+    ]
+    h.schema_manager = SimpleNamespace(get_entities=AsyncMock())
+
+    result = await MCPHandlers._list_entities(h, {})
+    payload = json.loads(result[0]["text"])
+
+    assert payload == [{"name": "223_x", "entity_type": "Host (Linux)"}]
+    h.schema_manager.get_entities.assert_not_awaited()
 
 
 @pytest.mark.asyncio
