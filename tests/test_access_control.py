@@ -323,6 +323,8 @@ def test_scope_query_wraps_non_star_head():
     "Entity = '999_other' | stats count",
     "'Entity' = \"999_other\" | stats count",
     "Entity in ('223_d360_silicone', '999_other') | stats count",
+    "* | where entityname = '999_other' | stats count",
+    "* | where entityname in ('223_d360_silicone', '999_other') | stats count",
 ])
 def test_scope_query_explicitly_denies_unallocated_entity(query):
     with pytest.raises(EntityAccessDenied, match="do not have access"):
@@ -333,6 +335,15 @@ def test_scope_query_allows_explicitly_allocated_entity():
     out = scope_query("Entity = '223_d360_silicone' | stats count", ENTS, "Entity")
     assert out.startswith("'Entity' in (")
     assert "and (Entity = '223_d360_silicone')" in out
+
+
+def test_scope_query_allows_allocated_entityname_where_filter():
+    out = scope_query(
+        "* | where entityname = '223_d360_silicone' | stats count",
+        ENTS,
+        "Entity",
+    )
+    assert "where entityname = '223_d360_silicone'" in out
 
 
 def test_scope_query_does_not_treat_negated_entity_predicate_as_a_request():

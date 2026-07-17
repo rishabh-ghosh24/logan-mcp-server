@@ -237,6 +237,30 @@ async def test_client_query_denies_explicit_unallocated_entity_before_execution(
 
 
 @pytest.mark.asyncio
+async def test_client_query_denies_unallocated_entityname_where_filter(monkeypatch):
+    from oci_logan_mcp.client import OCILogAnalyticsClient
+
+    client = OCILogAnalyticsClient.__new__(OCILogAnalyticsClient)
+    client.settings = SimpleNamespace(query=SimpleNamespace(max_results=100))
+    client._compartment_id = "default_compartment"
+    client._namespace = "ns"
+    client.access_profile = _profile()
+    client.access_audit_logger = None
+    execute = AsyncMock()
+    monkeypatch.setattr(client, "_execute_single_query", execute)
+
+    with pytest.raises(EntityAccessDenied, match="contact your administrator"):
+        await OCILogAnalyticsClient.query(
+            client,
+            query_string="* | where entityname = '999_other' | stats count",
+            time_start="2026-06-01T00:00:00+00:00",
+            time_end="2026-06-01T01:00:00+00:00",
+        )
+
+    execute.assert_not_awaited()
+
+
+@pytest.mark.asyncio
 async def test_notification_topic_listing_does_not_walk_compartments_for_cam(monkeypatch):
     from oci_logan_mcp.client import OCILogAnalyticsClient
 
