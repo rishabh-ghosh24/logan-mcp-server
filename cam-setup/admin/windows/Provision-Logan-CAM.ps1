@@ -3,7 +3,8 @@ param(
     [object[]]$Customers,
     [object]$AllowDelivery = $false,
     [string]$SshTarget,
-    [string]$OutputDir
+    [string]$OutputDir,
+    [string]$SshConfigFile
 )
 
 $ErrorActionPreference = 'Stop'
@@ -12,6 +13,14 @@ $script:AllowDeliveryWasSpecified = $PSBoundParameters.ContainsKey('AllowDeliver
 $script:SshTargetWasSpecified = $PSBoundParameters.ContainsKey('SshTarget')
 $script:OutputDirWasSpecified = $PSBoundParameters.ContainsKey('OutputDir')
 $script:CamSetupRoot = (Resolve-Path (Join-Path $PSScriptRoot '../..')).Path
+$SshConfigArguments = @()
+if ($SshConfigFile) {
+    if (-not (Test-Path -LiteralPath $SshConfigFile -PathType Leaf)) {
+        throw "SSH config file does not exist: $SshConfigFile"
+    }
+    $SshConfigFile = (Resolve-Path -LiteralPath $SshConfigFile).Path
+    $SshConfigArguments = @('-F', $SshConfigFile)
+}
 
 function ConvertTo-CamBoolean {
     param([Parameter(Mandatory = $true)][object]$Value)
@@ -82,7 +91,7 @@ function Resolve-CamSshTarget {
     param([Parameter(Mandatory = $true)][string]$Target)
 
     Assert-SafeSshTarget $Target
-    $lines = @(& ssh.exe -G $Target)
+    $lines = @(& ssh.exe @SshConfigArguments -G $Target)
     $exitCode = $LASTEXITCODE
     if ($exitCode -ne 0) {
         throw "ssh.exe could not resolve '$Target' (exit $exitCode)."
@@ -231,7 +240,7 @@ function Invoke-ProvisionSshJson {
         [Parameter(Mandatory = $true)][string]$Json
     )
 
-    $output = @($Json | & ssh.exe @SshArguments)
+    $output = @($Json | & ssh.exe @SshConfigArguments @SshArguments)
     return [pscustomobject]@{ StdOut = ($output -join [Environment]::NewLine); ExitCode = $LASTEXITCODE }
 }
 
@@ -464,7 +473,8 @@ function ConvertTo-SanitizedRecoveryText {
 function Get-CamManualDeprovisionCommand {
     param([string]$SshTarget, [string]$CamId, [string]$Fingerprint)
     $json = New-CamDeprovisionJson -CamId $CamId -Fingerprint $Fingerprint
-    return "'$json' | ssh.exe $SshTarget `"sudo /opt/logan-mcp/bin/cam-admin deprovision --json`""
+    $configText = if ($SshConfigFile) { " -F `"$SshConfigFile`"" } else { '' }
+    return "'$json' | ssh.exe$configText $SshTarget `"sudo /opt/logan-mcp/bin/cam-admin deprovision --json`""
 }
 
 function Write-CamRecoveryMetadata {

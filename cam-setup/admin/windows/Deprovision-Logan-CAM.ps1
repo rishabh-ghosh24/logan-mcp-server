@@ -1,12 +1,21 @@
 param(
     [string]$CamId,
     [string]$SshTarget,
+    [string]$SshConfigFile,
     [switch]$ConfirmRevocation
 )
 
 $ErrorActionPreference = 'Stop'
 Set-StrictMode -Version 2.0
 $script:DeprovisionSshTargetWasSpecified = $PSBoundParameters.ContainsKey('SshTarget')
+$SshConfigArguments = @()
+if ($SshConfigFile) {
+    if (-not (Test-Path -LiteralPath $SshConfigFile -PathType Leaf)) {
+        throw "SSH config file does not exist: $SshConfigFile"
+    }
+    $SshConfigFile = (Resolve-Path -LiteralPath $SshConfigFile).Path
+    $SshConfigArguments = @('-F', $SshConfigFile)
+}
 
 function Assert-DeprovisionCamId {
     param([string]$Value)
@@ -41,7 +50,7 @@ function Assert-DeprovisionSshTarget {
 function Resolve-DeprovisionSshTarget {
     param([string]$Target)
     Assert-DeprovisionSshTarget $Target
-    $lines = @(& ssh.exe -G $Target)
+    $lines = @(& ssh.exe @SshConfigArguments -G $Target)
     if ($LASTEXITCODE -ne 0) { throw "ssh.exe could not resolve '$Target'." }
     $required = @('hostname ', 'user ', 'port ')
     foreach ($prefix in $required) {
@@ -54,7 +63,7 @@ function Resolve-DeprovisionSshTarget {
 function Invoke-DeprovisionSshJson {
     param([string[]]$SshArguments, [AllowEmptyString()][string]$Json = '')
 
-    $output = if ($Json.Length -gt 0) { @($Json | & ssh.exe @SshArguments) } else { @(& ssh.exe @SshArguments) }
+    $output = if ($Json.Length -gt 0) { @($Json | & ssh.exe @SshConfigArguments @SshArguments) } else { @(& ssh.exe @SshConfigArguments @SshArguments) }
     return [pscustomobject]@{ StdOut = ($output -join [Environment]::NewLine); ExitCode = $LASTEXITCODE }
 }
 

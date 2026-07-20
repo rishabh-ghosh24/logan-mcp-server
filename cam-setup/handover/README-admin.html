@@ -1,0 +1,10 @@
+<!doctype html>
+<html lang="en"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1">
+<title>Assurance Logan - Administrator Toolkit</title>
+<style>body{font:17px/1.55 system-ui,sans-serif;max-width:820px;margin:40px auto;padding:0 22px;color:#172033}h1,h2{line-height:1.15}code{background:#eef2f7;padding:.15em .35em;border-radius:5px}.box{background:#f2f7ff;border-left:5px solid #2463b4;padding:16px 20px;border-radius:8px}li{margin:.7em 0}</style></head>
+<body><h1>Assurance Logan administrator toolkit</h1>
+<div class="box">Extract the complete ZIP first. Each numbered file is a self-contained action; no Git checkout or SSH alias is required.</div>
+<h2>1. Install your own unrestricted profile</h2><p>Run the file beginning <code>1-Install</code>, enter <code>firstname.lastname</code>, then restart Codex.</p>
+<h2>2. Add a CAM</h2><p>Run <code>2-Provision-CAM</code>. Enter the CAM ID, customer numbers, and <code>false</code> for delivery. Confirm with <code>YES</code>. Send the generated <code>logan-cam-&lt;id&gt;.zip</code> only to that CAM through an approved secure channel.</p>
+<h2>3. Revoke a CAM</h2><p>Run <code>3-Revoke-CAM</code>, enter the CAM ID, inspect the assignment shown, and type the exact requested revocation confirmation.</p>
+<p>The generated CAM ZIP already contains both macOS and Windows one-click installers. Keep this administrator ZIP restricted: it contains the shared VM private key.</p></body></html>

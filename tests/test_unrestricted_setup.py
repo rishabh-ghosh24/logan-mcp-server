@@ -7,6 +7,7 @@ import shutil
 import stat
 import subprocess
 import tomllib
+import zipfile
 from pathlib import Path
 
 import pytest
@@ -157,3 +158,82 @@ def test_shared_private_key_package_paths_are_gitignored():
             cwd=ROOT,
         )
         assert result.returncode == 0, f"shared key path is not ignored: {relative}"
+
+
+def test_handover_builder_creates_four_self_contained_role_packages(tmp_path):
+    key = tmp_path / "approved-shared.key"
+    key.write_text("TEST PRIVATE KEY\n", encoding="utf-8")
+    output = tmp_path / "handover packages"
+    result = subprocess.run(
+        [
+            str(ROOT / "scripts" / "build-handover-packages.sh"),
+            "--key",
+            str(key),
+            "--output",
+            str(output),
+        ],
+        capture_output=True,
+        text=True,
+    )
+    assert result.returncode == 0, result.stderr
+
+    expected = {
+        "assurance-logan-user-macos": {
+            "Install-Logan-MCP.command",
+            "README.html",
+            "logan.key",
+        },
+        "assurance-logan-user-windows": {
+            "Double-Click-to-Install.cmd",
+            "logan-mcp.ps1",
+            "README.html",
+            "logan.key",
+        },
+        "assurance-logan-admin-macos": {
+            "1-Install-My-Assurance-Profile.command",
+            "2-Provision-CAM.command",
+            "3-Revoke-CAM.command",
+            "README.html",
+            "logan.key",
+            "internal/bin/ssh",
+            "internal/known_hosts",
+            "internal/cam-setup/admin/macos/Provision-Logan-CAM.command",
+            "internal/cam-setup/admin/macos/Deprovision-Logan-CAM.command",
+            "internal/cam-setup/bundle/windows/Install-Logan-MCP.ps1",
+        },
+        "assurance-logan-admin-windows": {
+            "1-Install-My-Assurance-Profile.cmd",
+            "2-Provision-CAM.cmd",
+            "2-Provision-CAM.ps1",
+            "3-Revoke-CAM.cmd",
+            "3-Revoke-CAM.ps1",
+            "README.html",
+            "logan-mcp.ps1",
+            "logan.key",
+            "internal/known_hosts",
+            "internal/cam-setup/admin/windows/Provision-Logan-CAM.ps1",
+            "internal/cam-setup/admin/windows/Deprovision-Logan-CAM.ps1",
+            "internal/cam-setup/bundle/macos/Install-Logan-MCP.command",
+        },
+    }
+    for package, required in expected.items():
+        archive = output / f"{package}.zip"
+        assert archive.is_file()
+        with zipfile.ZipFile(archive) as zipped:
+            names = set(zipped.namelist())
+            assert not any("__MACOSX" in name for name in names)
+            assert {f"{package}/{name}" for name in required} <= names
+            assert zipped.read(f"{package}/logan.key") == b"TEST PRIVATE KEY\n"
+
+    checksums = (output / "SHA256SUMS.txt").read_text(encoding="utf-8")
+    assert checksums.count(".zip") == 4
+
+
+def test_windows_cam_admin_scripts_accept_a_package_supplied_ssh_config():
+    for name in ("Provision-Logan-CAM.ps1", "Deprovision-Logan-CAM.ps1"):
+        source = (ROOT / "cam-setup" / "admin" / "windows" / name).read_text(
+            encoding="utf-8"
+        )
+        assert "[string]$SshConfigFile" in source
+        assert "@SshConfigArguments" in source
+        assert "ssh.exe -G $Target" not in source

@@ -1,0 +1,9 @@
+#!/bin/sh
+set -eu
+
+if [ -z "${LOGAN_ADMIN_SSH_CONFIG:-}" ] || [ ! -f "$LOGAN_ADMIN_SSH_CONFIG" ]; then
+    printf 'Administrator SSH configuration is unavailable. Reopen the toolkit action.\n' >&2
+    exit 69
+fi
+
+exec /usr/bin/ssh -F "$LOGAN_ADMIN_SSH_CONFIG" "$@"
