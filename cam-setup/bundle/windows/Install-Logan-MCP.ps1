@@ -214,9 +214,10 @@ function Set-LoganCodexConfig {
     if (-not (Test-Path -LiteralPath $configDirectory -PathType Container)) {
         New-Item -ItemType Directory -Force -Path $configDirectory | Out-Null
     }
+    $backupPath = $null
     if ($configExists) {
         $backupTimestamp = [DateTime]::UtcNow.ToString('yyyyMMddTHHmmssfffffffZ')
-        Copy-Item -LiteralPath $ConfigPath -Destination ("$ConfigPath.bak.$backupTimestamp")
+        $backupPath = "$ConfigPath.bak.$backupTimestamp"
     }
 
     $candidatePath = Join-Path $configDirectory ('.{0}.{1}.tmp' -f ([IO.Path]::GetFileName($ConfigPath)), [guid]::NewGuid().ToString('N'))
@@ -229,7 +230,7 @@ function Set-LoganCodexConfig {
             throw 'Candidate config.toml failed structural validation after writing.'
         }
         if ($configExists) {
-            [IO.File]::Replace($candidatePath, $ConfigPath, [string]$null)
+            [IO.File]::Replace($candidatePath, $ConfigPath, $backupPath)
         }
         else {
             Move-Item -LiteralPath $candidatePath -Destination $ConfigPath

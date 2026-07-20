@@ -35,6 +35,18 @@ def test_windows_installer_uses_stable_production_launcher_and_name():
     assert source.rindex("Test-LoganSshConnection -KeyPath") < source.rindex(
         "Remove-OldInstalledKeys -InstallDir"
     )
+    assert "[IO.File]::Replace($candidatePath, $ConfigPath, $backupPath)" in source
+    assert "[IO.File]::Replace($candidatePath, $ConfigPath, [string]$null)" not in source
+
+
+def test_windows_cam_installer_uses_a_real_atomic_backup_path():
+    source = (
+        ROOT / "cam-setup" / "bundle" / "windows" / "Install-Logan-MCP.ps1"
+    ).read_text(encoding="utf-8")
+
+    assert '$backupPath = "$ConfigPath.bak.$backupTimestamp"' in source
+    assert "[IO.File]::Replace($candidatePath, $ConfigPath, $backupPath)" in source
+    assert "[IO.File]::Replace($candidatePath, $ConfigPath, [string]$null)" not in source
 
 
 def test_macos_installer_is_executable_posix_shell_with_pinned_host():

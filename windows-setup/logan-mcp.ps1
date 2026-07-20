@@ -182,8 +182,8 @@ args = [$argsText]
         Write-Utf8NoBom -Path $candidatePath -Value $updated
         if (Test-Path -LiteralPath $ConfigPath) {
             $timestamp = [DateTime]::UtcNow.ToString('yyyyMMddTHHmmssfffffffZ')
-            Copy-Item -LiteralPath $ConfigPath -Destination "$ConfigPath.backup-$timestamp"
-            [IO.File]::Replace($candidatePath, $ConfigPath, [string]$null)
+            $backupPath = "$ConfigPath.backup-$timestamp"
+            [IO.File]::Replace($candidatePath, $ConfigPath, $backupPath)
         }
         else {
             Move-Item -LiteralPath $candidatePath -Destination $ConfigPath
