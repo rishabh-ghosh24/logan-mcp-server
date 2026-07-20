@@ -404,11 +404,11 @@
 
       <section id="os-runbooks">
         <h2>3. Operating runbooks grouped by OS</h2>
-        <p class="lede">Use this section for the normal handoff. The Linux VM always runs the root-owned runtime under <code>/opt/logan-mcp</code>. Administrator MCP access is named <code>assurance-logan-admin</code>; restricted CAM access is named <code>assurance-logan</code>. Both use the same latest runtime, but they deliberately use different credentials and launchers.</p>
+        <p class="lede">Use this section for the normal handoff. The Linux VM always runs the root-owned runtime under <code>/opt/logan-mcp</code>. Both administrators and CAM users see the MCP server as <code>assurance-logan</code>. Their role-specific SSH credential and remote launcher—not the local display name—determine their access.</p>
 
         <div class="callout danger">
-          <strong>Do not reuse the CAM connection as an administrator connection</strong>
-          <code>assurance-logan-admin</code> uses an individual Linux administrator login plus the protected <code>admin-launch</code> command. <code>assurance-logan</code> uses the recipient's forced-command CAM key. Keeping the names separate prevents an unrestricted administrator credential from being mistaken for a CAM credential.
+          <strong>Same name, different security path</strong>
+          Give each person exactly one role-specific <code>assurance-logan</code> configuration. An administrator configuration uses an individual Linux login plus the protected <code>admin-launch</code> command. A CAM configuration uses only the recipient's forced-command key. Never combine or exchange the two configurations.
         </div>
 
         <h3>A. Linux server + macOS/Linux administrator workstation</h3>
@@ -436,11 +436,11 @@ sudo /opt/logan-mcp/bin/cam-admin bootstrap-check --json</code></pre></div>
     ServerAliveInterval 60
     ServerAliveCountMax 3</code></pre></div>
         <p>Add this table to <code>~/.codex/config.toml</code>:</p>
-        <div class="code-block"><button class="copy" type="button">Copy</button><pre><code>[mcp_servers.assurance-logan-admin]
+        <div class="code-block"><button class="copy" type="button">Copy</button><pre><code>[mcp_servers.assurance-logan]
 command = "ssh"
 args = ["-T", "-o", "BatchMode=yes", "automation1", "sudo", "-n", "/opt/logan-mcp/bin/admin-launch", "iustin.dorila"]</code></pre></div>
         <p>Restart Codex, run <code>codex mcp list</code>, and test with:</p>
-        <div class="code-block"><button class="copy" type="button">Copy</button><pre><code>Use only the assurance-logan-admin MCP server. Test the connection and list the available administrator tools.</code></pre></div>
+        <div class="code-block"><button class="copy" type="button">Copy</button><pre><code>Use only the assurance-logan MCP server. Test the connection and list the available administrator tools.</code></pre></div>
 
         <h3>A3. Administrator: add a CAM from macOS</h3>
         <div class="code-block"><button class="copy" type="button">Copy</button><pre><code>cd /Users/&lt;admin&gt;/github/logan-mcp-server/.worktrees/cam-layer1-phase1
@@ -471,10 +471,10 @@ args = ["-T", "-o", "BatchMode=yes", "automation1", "sudo", "-n", "/opt/logan-mc
 
         <h3>B2. Administrator: configure Codex on Windows</h3>
         <p>Add the <code>automation1</code> block from A2 to <code>%USERPROFILE%\.ssh\config</code>, using a Windows key path such as <code>C:/Users/Iustin/.ssh/automation1-admin.key</code>. Then add this to <code>%USERPROFILE%\.codex\config.toml</code>:</p>
-        <div class="code-block"><button class="copy" type="button">Copy</button><pre><code>[mcp_servers.assurance-logan-admin]
+        <div class="code-block"><button class="copy" type="button">Copy</button><pre><code>[mcp_servers.assurance-logan]
 command = "ssh.exe"
 args = ["-T", "-o", "BatchMode=yes", "automation1", "sudo", "-n", "/opt/logan-mcp/bin/admin-launch", "iustin.dorila"]</code></pre></div>
-        <p>Restart Codex, run <code>codex mcp list</code>, and use the same <code>assurance-logan-admin</code> test prompt from A2.</p>
+        <p>Restart Codex, run <code>codex mcp list</code>, and use the same <code>assurance-logan</code> test prompt from A2.</p>
 
         <h3>B3. Administrator: add a CAM from Windows</h3>
         <div class="code-block"><button class="copy" type="button">Copy</button><pre><code>.\cam-setup\admin\windows\Provision-Logan-CAM.ps1 `
@@ -498,6 +498,7 @@ args = ["-T", "-o", "BatchMode=yes", "automation1", "sudo", "-n", "/opt/logan-mc
 
       <section id="roles">
         <h2>3. Roles and Iustin's existing setup</h2>
+        <p>Assign each person exactly one role. Both roles use the local MCP name <code>assurance-logan</code>, but their credentials and remote launch paths remain strictly separate.</p>
         <div class="table-wrap">
           <table>
             <thead><tr><th>Role</th><th>Uses</th><th>Must not use</th></tr></thead>
@@ -515,12 +516,12 @@ args = ["-T", "-o", "BatchMode=yes", "automation1", "sudo", "-n", "/opt/logan-mc
           <li>On Iustin's computer, run <code>codex mcp list</code> or inspect <code>~/.codex/config.toml</code>.</li>
           <li>If his restricted entry connects as <code>cam@…</code> with <code>logan-cam.key</code>, it is the CAM connection. Its name should be <code>assurance-logan</code>.</li>
           <li>If the same restricted entry is still named <code>logan-mcp</code>, rename only that table header to <code>[mcp_servers.assurance-logan]</code>, preserve its command and arguments, then restart Codex.</li>
-          <li>An administrator entry uses a personal Linux login and the root-owned <code>admin-launch</code> command. Keep it separate and name it <code>assurance-logan-admin</code>.</li>
+          <li>An administrator entry also uses the name <code>assurance-logan</code>, but it must use a personal Linux login and the root-owned <code>admin-launch</code> command.</li>
         </ol>
 
         <div class="callout">
-          <strong>Iustin has two deliberately separate roles</strong>
-          His CAM connection remains <code>assurance-logan</code> and stays limited to customers 176/174. If he also needs unrestricted MCP administrator access, configure the separate <code>assurance-logan-admin</code> entry through <code>admin-launch iustin.dorila</code>. Provisioning and revocation continue to use SSH plus <code>cam-admin</code>.
+          <strong>Choose Iustin's role before handoff</strong>
+          If Iustin remains a CAM, keep his <code>assurance-logan</code> connection limited to customers 176/174. If he becomes an administrator, revoke his CAM credential first and replace its local configuration with the administrator <code>assurance-logan</code> entry through <code>admin-launch iustin.dorila</code>. Do not retain both connections.
         </div>
       </section>
 
@@ -542,7 +543,7 @@ iustin ALL=(root) NOPASSWD: ASSURANCE_LOGAN_IUSTIN</code></pre></div>
         <div class="code-block"><button class="copy" type="button">Copy</button><pre><code>sudo visudo -cf /etc/sudoers.d/assurance-logan-&lt;linux-login&gt;
 sudo -l
 sudo /opt/logan-mcp/bin/cam-admin bootstrap-check --json</code></pre></div>
-        <p>Require <code>SUCCESS</code>. Configure the local <code>assurance-logan-admin</code> table using section 3. Runtime deployment/bootstrap remains a separate full platform-administrator capability.</p>
+        <p>Require <code>SUCCESS</code>. Configure the local <code>assurance-logan</code> table using section 3. Runtime deployment/bootstrap remains a separate full platform-administrator capability.</p>
       </section>
 
       <section id="new-admin-legacy" hidden>
