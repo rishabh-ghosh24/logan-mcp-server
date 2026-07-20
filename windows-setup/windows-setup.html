@@ -3,7 +3,7 @@
 <head>
   <meta charset="utf-8">
   <meta name="viewport" content="width=device-width, initial-scale=1">
-  <title>Logan MCP Windows Setup</title>
+  <title>Assurance Logan MCP Windows Setup</title>
   <style>
     :root {
       color-scheme: light;
@@ -144,8 +144,8 @@
 </head>
 <body>
   <main>
-    <h1>Logan MCP Windows Setup</h1>
-    <p class="lead">Use this guide to connect Codex App on Windows to the shared Logan MCP server.</p>
+    <h1>Assurance Logan MCP Windows Setup</h1>
+    <p class="lead">Use this guide to connect an unrestricted Assurance team member to the shared Logan MCP server.</p>
 
     <section class="card">
       <h2>Recommended: One-Time Codex Installer</h2>
@@ -169,7 +169,7 @@ windows-setup.html</code></pre>
         The installer normalizes uppercase input to lowercase. For example, <code>Rishabh.Ghosh</code> becomes <code>rishabh.ghosh</code>.
       </div>
 
-      <p>The generated Codex MCP server name is <code>logan-mcp</code>.</p>
+      <p>The generated Codex MCP server name is <code>assurance-logan</code>. It uses the root-owned production runtime under <code>/opt/logan-mcp</code>, so source-checkout directory changes do not break the connection.</p>
       <div class="warning">
         <strong>Sharing note:</strong> Add the real <code>logan.key</code> file locally, zip the <code>windows-setup</code> folder, and send it through your approved internal channel. Do not commit <code>logan.key</code> to git.
       </div>
@@ -178,8 +178,8 @@ windows-setup.html</code></pre>
     <section class="card">
       <h2>Using Logan MCP In Codex</h2>
       <p>Open a new Codex chat and type:</p>
-      <pre><code>connect to logan-mcp server</code></pre>
-      <p>After Codex confirms the <code>logan-mcp</code> server is connected, continue in natural language. For example, ask it to list log sources, investigate recent errors, or run a Log Analytics query.</p>
+      <pre><code>connect to assurance-logan MCP server</code></pre>
+      <p>After Codex confirms the <code>assurance-logan</code> server is connected, continue in natural language. For example, ask it to list log sources, investigate recent errors, or run a Log Analytics query.</p>
     </section>
 
     <section class="card">
@@ -187,8 +187,9 @@ windows-setup.html</code></pre>
       <ul>
         <li>Copies <code>logan.key</code> to a fresh key file under <code>%USERPROFILE%\.logan-mcp\</code>.</li>
         <li>Backs up <code>%USERPROFILE%\.codex\config.toml</code> if it already exists.</li>
-        <li>Appends or replaces only <code>[mcp_servers.logan-mcp]</code>.</li>
-        <li>Tests SSH connectivity before writing the Codex config.</li>
+        <li>Removes the legacy automation1 <code>[mcp_servers.logan-mcp]</code> entry and replaces <code>[mcp_servers.assurance-logan]</code>.</li>
+        <li>Pins automation1's SSH host key instead of disabling host verification.</li>
+        <li>Tests SSH and the protected <code>/opt/logan-mcp/bin/admin-launch</code> entry point before writing the Codex config.</li>
         <li>Asks whether to close running Codex processes so the new config can load.</li>
       </ul>
     </section>
@@ -235,23 +236,23 @@ windows-setup.html</code></pre>
         <li>Set keepalives to <code>30</code> seconds.</li>
         <li>Set auto-login username to <code>opc</code>.</li>
         <li>Browse to your <code>.ppk</code> key file under SSH authentication settings.</li>
-        <li>Save the session as <code>logan-mcp</code>.</li>
+        <li>Save the session as <code>assurance-logan</code>.</li>
       </ol>
 
       <h3>Step 3: Cache The Host Key</h3>
-      <pre><code>"C:\Program Files\PuTTY\plink.exe" -load logan-mcp "echo hello"</code></pre>
+      <pre><code>"C:\Program Files\PuTTY\plink.exe" -load assurance-logan "echo hello"</code></pre>
       <p>Type <code>y</code> when prompted. You should see <code>hello</code>.</p>
 
       <h3>Step 4: Configure Your MCP Client</h3>
       <pre><code>{
   "mcpServers": {
-    "logan-mcp": {
+    "assurance-logan": {
       "command": "C:\\Program Files\\PuTTY\\plink.exe",
       "args": [
-        "-load", "logan-mcp",
+        "-load", "assurance-logan",
         "-batch",
         "-T",
-        "cd /home/opc/logan-mcp-server && source venv/bin/activate && oci-logan-mcp --user firstname.lastname"
+        "sudo -n /opt/logan-mcp/bin/admin-launch firstname.lastname"
       ]
     }
   }
@@ -290,14 +291,14 @@ windows-setup.html</code></pre>
             <td>Use the updated installer, which ignores already-exited Codex processes.</td>
           </tr>
           <tr>
-            <td>Codex does not show <code>logan-mcp</code></td>
+            <td>Codex does not show <code>assurance-logan</code></td>
             <td>Codex did not fully restart.</td>
             <td>Let the installer close Codex, or close all Codex processes from Task Manager and open Codex again.</td>
           </tr>
           <tr>
             <td>Server connects then immediately disconnects</td>
-            <td>Windows OpenSSH stdio handling or remote path/venv issue.</td>
-            <td>First verify SSH manually. If the remote command works but Codex disconnects, use the PuTTY fallback.</td>
+            <td>Windows OpenSSH stdio handling or an unavailable production launcher.</td>
+            <td>First verify SSH and <code>sudo -n /opt/logan-mcp/bin/admin-launch firstname.lastname</code>. If that works but Codex disconnects, use the PuTTY fallback.</td>
           </tr>
           <tr>
             <td><code>Network error</code> or timeout</td>

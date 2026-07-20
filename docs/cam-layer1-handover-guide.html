@@ -327,7 +327,7 @@
       <h1>Assurance Logan CAM access</h1>
       <p>A practical administrator and recipient guide for customer-scoped Logan MCP access through Codex on macOS and Windows.</p>
       <div class="hero-meta">
-        <span class="badge">Updated 17 July 2026</span>
+        <span class="badge">Updated 20 July 2026</span>
         <span class="badge">Restricted server: assurance-logan</span>
         <span class="badge">Administrator runtime baseline: a7b2450</span>
       </div>
@@ -342,7 +342,7 @@
         <a href="#security">Security boundary</a>
         <a href="#os-runbooks">OS-grouped runbooks</a>
         <a href="#roles">Roles and Iustin</a>
-        <a href="#new-admin">Add an administrator</a>
+        <a href="#new-admin">Add an Assurance teammate</a>
         <a href="#server">Server checks</a>
         <a href="#provision-mac">Provision from Mac</a>
         <a href="#provision-windows">Provision from Windows</a>
@@ -365,7 +365,7 @@
           <div class="status"><small>Feature branch</small><strong>feat/cam-layer1-phase1</strong></div>
           <div class="status"><small>Required runtime baseline</small><strong>a7b2450 or later</strong></div>
           <div class="status"><small>automation1 deployment</small><strong class="good-text">Runtime refreshed • 12/12 checks passed</strong></div>
-          <div class="status"><small>Full local suite</small><strong class="good-text">1,574 passed</strong></div>
+          <div class="status"><small>Full local suite</small><strong class="good-text">1,583 passed</strong></div>
           <div class="status"><small>Linux + macOS</small><strong class="good-text">Live acceptance passed</strong></div>
           <div class="status"><small>Native Windows</small><strong class="warn-text">Validation still required</strong></div>
           <div class="status"><small>Integration state</small><strong>Local-only and unmerged</strong></div>
@@ -404,45 +404,21 @@
 
       <section id="os-runbooks">
         <h2>3. Operating runbooks grouped by OS</h2>
-        <p class="lede">Use this section for the normal handoff. The Linux VM always runs the root-owned runtime under <code>/opt/logan-mcp</code>. Both administrators and CAM users see the MCP server as <code>assurance-logan</code>. Their role-specific SSH credential and remote launcher—not the local display name—determine their access.</p>
+        <p class="lede">Use this section for the normal handoff. The Linux VM always runs the root-owned runtime under <code>/opt/logan-mcp</code>. Unrestricted Assurance team members share the approved automation1 <code>opc</code> key; CAM users receive recipient-specific forced-command keys. Everyone sees the MCP server as <code>assurance-logan</code>.</p>
 
         <div class="callout danger">
-          <strong>Same name, different security path</strong>
-          Give each person exactly one role-specific <code>assurance-logan</code> configuration. An administrator configuration uses an individual Linux login plus the protected <code>admin-launch</code> command. A CAM configuration uses only the recipient's forced-command key. Never combine or exchange the two configurations.
+          <strong>Never give the shared Assurance key to a CAM</strong>
+          The shared <code>opc</code> key grants normal VM access and unrestricted Logan access. Only the approved Assurance team receives it. CAM users receive only their generated restricted bundle.
         </div>
 
-        <h3>A. Linux server + macOS/Linux administrator workstation</h3>
+        <h3>A. macOS unrestricted Assurance user and CAM administration</h3>
 
-        <h3>A1. Existing platform administrator: authorize an MCP administrator</h3>
-        <p>Replace <code>iustin</code> with the person's actual Linux login and <code>iustin.dorila</code> with the permanent audited administrator id.</p>
-        <div class="code-block"><button class="copy" type="button">Copy</button><pre><code>sudo visudo -f /etc/sudoers.d/assurance-logan-iustin</code></pre></div>
-        <p>Insert this identity-pinned rule:</p>
-        <div class="code-block"><button class="copy" type="button">Copy</button><pre><code>Cmnd_Alias ASSURANCE_LOGAN_IUSTIN = /opt/logan-mcp/bin/admin-launch iustin.dorila, /opt/logan-mcp/bin/cam-admin *
-iustin ALL=(root) NOPASSWD: ASSURANCE_LOGAN_IUSTIN</code></pre></div>
-        <div class="code-block"><button class="copy" type="button">Copy</button><pre><code>sudo visudo -cf /etc/sudoers.d/assurance-logan-iustin
-sudo /opt/logan-mcp/bin/cam-admin bootstrap-check --json</code></pre></div>
-        <p>Require valid sudoers syntax and <code>SUCCESS</code>. The exact <code>admin-launch iustin.dorila</code> rule prevents the administrator from selecting a different audit identity.</p>
-
-        <h3>A2. Administrator: configure Codex on macOS or Linux</h3>
-        <p>Configure <code>automation1</code> in <code>~/.ssh/config</code> with the administrator's individual SSH key and pinned host verification:</p>
-        <div class="code-block"><button class="copy" type="button">Copy</button><pre><code>Host automation1
-    HostName 130.162.53.112
-    User iustin
-    IdentityFile ~/.ssh/&lt;individual-admin-key&gt;
-    IdentitiesOnly yes
-    BatchMode yes
-    StrictHostKeyChecking yes
-    UserKnownHostsFile ~/.ssh/known_hosts
-    ServerAliveInterval 60
-    ServerAliveCountMax 3</code></pre></div>
-        <p>Add this table to <code>~/.codex/config.toml</code>:</p>
-        <div class="code-block"><button class="copy" type="button">Copy</button><pre><code>[mcp_servers.assurance-logan]
-command = "ssh"
-args = ["-T", "-o", "BatchMode=yes", "automation1", "sudo", "-n", "/opt/logan-mcp/bin/admin-launch", "iustin.dorila"]</code></pre></div>
-        <p>Restart Codex, run <code>codex mcp list</code>, and test with:</p>
+        <h3>A1. Unrestricted Assurance team member: install on macOS</h3>
+        <p>Place the approved shared private key beside <code>macos-setup/Install-Logan-MCP.command</code> as <code>logan.key</code>. Deliver that private package through the approved secure channel, then double-click the installer and enter the person's <code>firstname.lastname</code> identity.</p>
+        <p>The installer migrates the legacy <code>logan-mcp</code> entry, pins the automation1 host key, and configures <code>assurance-logan</code> through <code>/opt/logan-mcp/bin/admin-launch</code>. Restart Codex and test:</p>
         <div class="code-block"><button class="copy" type="button">Copy</button><pre><code>Use only the assurance-logan MCP server. Test the connection and list the available administrator tools.</code></pre></div>
 
-        <h3>A3. Administrator: add a CAM from macOS</h3>
+        <h3>A2. Iustin or Rishabh: add a CAM from macOS</h3>
         <div class="code-block"><button class="copy" type="button">Copy</button><pre><code>cd /Users/&lt;admin&gt;/github/logan-mcp-server/.worktrees/cam-layer1-phase1
 
 ./cam-setup/admin/macos/Provision-Logan-CAM.command \
@@ -456,7 +432,7 @@ args = ["-T", "-o", "BatchMode=yes", "automation1", "sudo", "-n", "/opt/logan-mc
   'sudo /opt/logan-mcp/bin/cam-admin verify --cam jane.doe --json'</code></pre></div>
         <div class="callout warn"><strong>Native Linux desktop packaging</strong>The supported Unix recipient installer is the macOS <code>.command</code> package. Server administration works from Linux through OpenSSH, but a native Linux CAM desktop installer is not included in this release.</div>
 
-        <h3>A4. CAM recipient: install and use on macOS</h3>
+        <h3>A3. CAM recipient: install and use on macOS</h3>
         <ol class="steps">
           <li>Download the recipient-specific ZIP from the approved secure transfer and extract it.</li>
           <li>Double-click <code>Install-Logan-MCP.command</code>. Do not edit the key or installer.</li>
@@ -464,19 +440,13 @@ args = ["-T", "-o", "BatchMode=yes", "automation1", "sudo", "-n", "/opt/logan-mc
           <li>Run the acceptance prompts in section 11. The user must see only their approved entities and an explicit denial for another customer.</li>
         </ol>
 
-        <h3>B. Windows administrator and CAM workstation</h3>
+        <h3>B. Windows unrestricted Assurance user and CAM administration</h3>
 
-        <h3>B1. Existing platform administrator: authorize the Windows-based administrator</h3>
-        <p>The Linux VM-side sudoers rule is identical to A1. Windows changes only the local SSH/Codex client commands. The administrator still needs an individual Linux login, individual SSH key, and an identity-pinned <code>admin-launch</code> rule.</p>
+        <h3>B1. Unrestricted Assurance team member: install on Windows</h3>
+        <p>Place the approved shared private key beside <code>windows-setup\Double-Click-to-Install.cmd</code> as <code>logan.key</code>. Deliver the private package through the approved secure channel. The recipient double-clicks the installer and enters their <code>firstname.lastname</code> identity.</p>
+        <p>The installer migrates the legacy <code>logan-mcp</code> entry, pins the host key, tests <code>admin-launch</code>, and installs <code>assurance-logan</code>. Restart Codex and use the same unrestricted test prompt from A1.</p>
 
-        <h3>B2. Administrator: configure Codex on Windows</h3>
-        <p>Add the <code>automation1</code> block from A2 to <code>%USERPROFILE%\.ssh\config</code>, using a Windows key path such as <code>C:/Users/Iustin/.ssh/automation1-admin.key</code>. Then add this to <code>%USERPROFILE%\.codex\config.toml</code>:</p>
-        <div class="code-block"><button class="copy" type="button">Copy</button><pre><code>[mcp_servers.assurance-logan]
-command = "ssh.exe"
-args = ["-T", "-o", "BatchMode=yes", "automation1", "sudo", "-n", "/opt/logan-mcp/bin/admin-launch", "iustin.dorila"]</code></pre></div>
-        <p>Restart Codex, run <code>codex mcp list</code>, and use the same <code>assurance-logan</code> test prompt from A2.</p>
-
-        <h3>B3. Administrator: add a CAM from Windows</h3>
+        <h3>B2. Iustin or Rishabh: add a CAM from Windows</h3>
         <div class="code-block"><button class="copy" type="button">Copy</button><pre><code>.\cam-setup\admin\windows\Provision-Logan-CAM.ps1 `
   -CamId "jane.doe" `
   -Customers 176,174 `
@@ -486,7 +456,7 @@ args = ["-T", "-o", "BatchMode=yes", "automation1", "sudo", "-n", "/opt/logan-mc
         <p>Verify with:</p>
         <div class="code-block"><button class="copy" type="button">Copy</button><pre><code>ssh.exe automation1 "sudo /opt/logan-mcp/bin/cam-admin verify --cam jane.doe --json"</code></pre></div>
 
-        <h3>B4. CAM recipient: install and use on Windows</h3>
+        <h3>B3. CAM recipient: install and use on Windows</h3>
         <ol class="steps">
           <li>Download and extract the recipient-specific ZIP.</li>
           <li>Double-click <code>Double-Click-to-Install.cmd</code>. Stop if key or known-host ACL validation fails.</li>
@@ -498,85 +468,43 @@ args = ["-T", "-o", "BatchMode=yes", "automation1", "sudo", "-n", "/opt/logan-mc
 
       <section id="roles">
         <h2>3. Roles and Iustin's existing setup</h2>
-        <p>Assign each person exactly one role. Both roles use the local MCP name <code>assurance-logan</code>, but their credentials and remote launch paths remain strictly separate.</p>
+        <p>There are two technical access groups. Approved Assurance team members have unrestricted VM and Logan access through the shared <code>opc</code> key. CAM users have only their recipient-specific forced-command key and assigned entities. Operationally, Iustin handles CAM provisioning and revocation, while other Assurance teammates normally use Logan without performing those tasks.</p>
         <div class="table-wrap">
           <table>
             <thead><tr><th>Role</th><th>Uses</th><th>Must not use</th></tr></thead>
             <tbody>
-              <tr><td><strong>Platform administrator</strong></td><td>Individual VM login, approved SSH key, and controlled <code>sudo</code> access to <code>cam-admin</code>.</td><td>A recipient CAM private key for administration.</td></tr>
+              <tr><td><strong>Unrestricted Assurance team</strong></td><td>The approved shared automation1 key, normal <code>opc</code> access, and unrestricted <code>assurance-logan</code> through <code>admin-launch</code>.</td><td>A recipient CAM private key for unrestricted use.</td></tr>
               <tr><td><strong>CAM user</strong></td><td>Recipient-specific bundle that installs the <code>assurance-logan</code> MCP entry.</td><td>Regular VM access, administrator key, or hand-edited policy.</td></tr>
             </tbody>
           </table>
         </div>
 
         <h3>Iustin Dorila</h3>
-        <p>Iustin already has a server-side CAM assignment for customers <code>176</code> and <code>174</code>. Do not provision him again merely to adopt the new MCP display name; re-provisioning is a key rotation.</p>
+        <p>Iustin is now an unrestricted Assurance administrator, not a CAM. Revoke his older CAM credential for customers <code>176</code> and <code>174</code>, then run the unrestricted Windows installer with identity <code>iustin.dorila</code>.</p>
 
         <ol class="steps">
-          <li>On Iustin's computer, run <code>codex mcp list</code> or inspect <code>~/.codex/config.toml</code>.</li>
-          <li>If his restricted entry connects as <code>cam@…</code> with <code>logan-cam.key</code>, it is the CAM connection. Its name should be <code>assurance-logan</code>.</li>
-          <li>If the same restricted entry is still named <code>logan-mcp</code>, rename only that table header to <code>[mcp_servers.assurance-logan]</code>, preserve its command and arguments, then restart Codex.</li>
-          <li>An administrator entry also uses the name <code>assurance-logan</code>, but it must use a personal Linux login and the root-owned <code>admin-launch</code> command.</li>
+          <li>Deprovision the obsolete <code>iustin.dorila</code> CAM assignment and verify its restricted key is revoked.</li>
+          <li>Package <code>windows-setup</code> with the approved shared <code>logan.key</code> and deliver it securely.</li>
+          <li>Iustin double-clicks <code>Double-Click-to-Install.cmd</code> and enters <code>iustin.dorila</code>.</li>
+          <li>Restart Codex and confirm the installed <code>assurance-logan</code> command ends with <code>admin-launch iustin.dorila</code>.</li>
         </ol>
 
         <div class="callout">
-          <strong>Choose Iustin's role before handoff</strong>
-          If Iustin remains a CAM, keep his <code>assurance-logan</code> connection limited to customers 176/174. If he becomes an administrator, revoke his CAM credential first and replace its local configuration with the administrator <code>assurance-logan</code> entry through <code>admin-launch iustin.dorila</code>. Do not retain both connections.
+          <strong>Same access, separate user identity</strong>
+          Rishabh, Iustin, Andrei, and other approved Assurance teammates may share the VM key, but each installer run must use the person's own <code>firstname.lastname</code> value so Logan keeps per-user state and audit identity separate.
         </div>
       </section>
 
       <section id="new-admin">
-        <h2>4. Add another Assurance Logan administrator</h2>
-        <p>Use an individual Linux account, an individual SSH key, and one permanent audited administrator id. Never share the <code>opc</code> key or place an administrator key in the restricted <code>cam</code> account.</p>
+        <h2>4. Add another unrestricted Assurance team member</h2>
+        <p>Use the approved shared automation1 key and the person's permanent <code>firstname.lastname</code> Logan identity. This package grants normal VM access and unrestricted MCP access, so deliver it only to approved Assurance teammates.</p>
         <ol class="steps">
-          <li>Create or identify the person's normal Linux login through the organization's VM access process.</li>
-          <li>Choose the audited id, normally <code>firstname.lastname</code>.</li>
-          <li>Create an identity-specific sudoers rule. Do not wildcard <code>admin-launch</code>, because that would allow selection of another audit identity.</li>
+          <li>Copy the appropriate setup directory to a private staging location.</li>
+          <li>Add the approved shared private key as <code>logan.key</code>. Never commit or place that assembled package in a broadly shared folder.</li>
+          <li>Deliver the private package through the approved recipient-specific secure channel.</li>
+          <li>The recipient runs the installer, enters their identity, restarts Codex, and tests <code>assurance-logan</code>.</li>
         </ol>
-        <div class="code-block"><button class="copy" type="button">Copy</button><pre><code>sudo visudo -f /etc/sudoers.d/assurance-logan-&lt;linux-login&gt;</code></pre></div>
-        <p>Example for Linux login <code>iustin</code> and audited id <code>iustin.dorila</code>:</p>
-        <div class="code-block"><button class="copy" type="button">Copy</button><pre><code>Cmnd_Alias ASSURANCE_LOGAN_IUSTIN = /opt/logan-mcp/bin/admin-launch iustin.dorila, /opt/logan-mcp/bin/cam-admin *
-iustin ALL=(root) NOPASSWD: ASSURANCE_LOGAN_IUSTIN</code></pre></div>
-        <ol class="steps" start="4" style="counter-reset: step 3">
-          <li>Validate the rule and have the administrator confirm their approved commands.</li>
-        </ol>
-        <div class="code-block"><button class="copy" type="button">Copy</button><pre><code>sudo visudo -cf /etc/sudoers.d/assurance-logan-&lt;linux-login&gt;
-sudo -l
-sudo /opt/logan-mcp/bin/cam-admin bootstrap-check --json</code></pre></div>
-        <p>Require <code>SUCCESS</code>. Configure the local <code>assurance-logan</code> table using section 3. Runtime deployment/bootstrap remains a separate full platform-administrator capability.</p>
-      </section>
-
-      <section id="new-admin-legacy" hidden>
-        <h2>4. Add another CAM administrator</h2>
-        <p>Use an individual Linux account and individual SSH key. Do not share the <code>opc</code> key and do not place an administrator's key in the restricted <code>cam</code> account.</p>
-
-        <ol class="steps">
-          <li>Create or identify the administrator's normal Linux login according to the organization's VM access process.</li>
-          <li>As an existing full administrator, add a dedicated least-privilege group and the administrator to it.</li>
-        </ol>
-
-        <div class="code-block"><button class="copy" type="button">Copy</button><pre><code>ADMIN_USER=&lt;linux-login&gt;
-sudo groupadd --force logan-cam-admins
-sudo usermod -aG logan-cam-admins "$ADMIN_USER"</code></pre></div>
-
-        <p>Create <code>/etc/sudoers.d/logan-cam-admins</code> with <code>visudo</code. The root-owned <code>cam-admin</code> parser is the administrative boundary for these operations.</p>
-
-        <div class="code-block"><button class="copy" type="button">Copy</button><pre><code>sudo visudo -f /etc/sudoers.d/logan-cam-admins</code></pre></div>
-
-        <p>Insert:</p>
-
-        <div class="code-block"><button class="copy" type="button">Copy</button><pre><code>%logan-cam-admins ALL=(root) NOPASSWD: /opt/logan-mcp/bin/cam-admin *</code></pre></div>
-
-        <ol class="steps" start="3" style="counter-reset: step 2">
-          <li>Validate the sudoers file and have the new administrator start a fresh login session so group membership is refreshed.</li>
-        </ol>
-
-        <div class="code-block"><button class="copy" type="button">Copy</button><pre><code>sudo visudo -cf /etc/sudoers.d/logan-cam-admins
-id
-sudo -l
-sudo /opt/logan-mcp/bin/cam-admin bootstrap-check --json</code></pre></div>
-
-        <p>Require <code>SUCCESS</code> from <code>bootstrap-check</code>. If the person also needs to deploy or bootstrap runtime code, approve that as a separate platform-administrator capability; do not broaden this sudo rule casually.</p>
+        <p>Windows uses <code>windows-setup</code>; macOS uses <code>macos-setup</code>. Both migrate the obsolete source-path configuration to the stable root-owned <code>/opt/logan-mcp/bin/admin-launch</code> entry.</p>
       </section>
 
       <section id="server">
@@ -811,15 +739,18 @@ ssh automation1 \
 
       <section id="windows-gate">
         <h2>13. Native Windows release gate</h2>
-        <p>Run this section on a real Windows host before handing the Windows workflow to production CAM users.</p>
+        <p>Run this section on a real Windows host before handing either Windows package to production users.</p>
 
         <ol class="steps">
-          <li>Install a current Pester version and run both repository suites.</li>
+          <li>Test the unrestricted Assurance installer in a temporary Windows profile. Seed that profile with a legacy <code>[mcp_servers.logan-mcp]</code> entry, place the approved shared key beside <code>windows-setup\Double-Click-to-Install.cmd</code> as <code>logan.key</code>, and run the installer.</li>
+          <li>Confirm it creates exactly one <code>[mcp_servers.assurance-logan]</code> entry using <code>admin-launch &lt;firstname.lastname&gt;</code>, preserves unrelated Codex settings, pins the expected automation1 host key, and gives the key and known-host file private ACLs.</li>
+          <li>Run the unrestricted installer again and confirm idempotent behavior, then restart Codex and complete a live unrestricted MCP smoke test.</li>
+          <li>Install a current Pester version and run both CAM repository suites.</li>
         </ol>
         <div class="code-block"><button class="copy" type="button">Copy</button><pre><code>Invoke-Pester .\cam-setup\tests\windows\CamInstaller.Tests.ps1 -Output Detailed
 Invoke-Pester .\cam-setup\tests\windows\CamAdmin.Tests.ps1 -Output Detailed</code></pre></div>
 
-        <ol class="steps" start="2" style="counter-reset: step 1">
+        <ol class="steps" start="5" style="counter-reset: step 4">
           <li>Provision a non-production test CAM and install it into a temporary Windows profile.</li>
           <li>Confirm the private key and known-host files do not inherit broad ACLs and are not writable by other standard users.</li>
           <li>Confirm unrelated <code>config.toml</code> settings and MCP servers remain unchanged.</li>
@@ -829,7 +760,7 @@ Invoke-Pester .\cam-setup\tests\windows\CamAdmin.Tests.ps1 -Output Detailed</cod
           <li>Deprovision the test CAM and confirm its key no longer connects.</li>
         </ol>
 
-        <div class="callout warn"><strong>Approval rule</strong>Record native Windows PASS only after both Pester suites and every manual check above pass. Until then, label the Windows package “release candidate.”</div>
+        <div class="callout warn"><strong>Approval rule</strong>Record native Windows PASS only after the unrestricted installer smoke test, both CAM Pester suites, and every manual check above pass. Until then, label both Windows packages “release candidate.”</div>
       </section>
 
       <section id="records">
@@ -871,7 +802,7 @@ Invoke-Pester .\cam-setup\tests\windows\CamAdmin.Tests.ps1 -Output Detailed</cod
         </div>
       </section>
 
-      <p class="footer">Assurance Logan CAM Layer 1 • administrator and handover guide • 17 July 2026</p>
+      <p class="footer">Assurance Logan CAM Layer 1 • administrator and handover guide • 20 July 2026</p>
     </main>
   </div>
 

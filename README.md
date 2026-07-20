@@ -63,22 +63,25 @@ Works with Claude Desktop, Claude Code, or any MCP client:
 - **Claude Desktop:** `~/Library/Application Support/Claude/claude_desktop_config.json` (macOS) or `%APPDATA%\Claude\claude_desktop_config.json` (Windows)
 - **Claude Code:** `~/.claude.json` or project `.mcp.json`
 
-#### Remote VM via SSH
+#### Managed remote VM via SSH
 
 For running on an OCI VM with instance principal auth. This config goes in your **local** MCP client:
 
 ```json
 {
   "mcpServers": {
-    "oci-log-analytics": {
+    "assurance-logan": {
       "command": "ssh",
       "args": [
+        "-T",
         "-i", "~/.ssh/your-key",
-        "-o", "StrictHostKeyChecking=no",
+        "-o", "IdentitiesOnly=yes",
+        "-o", "StrictHostKeyChecking=yes",
+        "-o", "UserKnownHostsFile=~/.ssh/known_hosts",
         "-o", "ServerAliveInterval=60",
         "-o", "ServerAliveCountMax=3",
         "opc@your-vm-ip",
-        "cd /path/to/logan-mcp-server && source venv/bin/activate && oci-logan-mcp --user firstname.lastname"
+        "sudo -n /opt/logan-mcp/bin/admin-launch firstname.lastname"
       ]
     }
   }
@@ -92,9 +95,9 @@ For running on an OCI VM with instance principal auth. This config goes in your 
 Add to `~/.codex/config.toml`:
 
 ```toml
-[mcp_servers.logan-mcp]
+[mcp_servers.assurance-logan]
 command = "ssh"
-args = ["-i", "~/.ssh/your-key", "-o", "StrictHostKeyChecking=no", "-o", "ServerAliveInterval=60", "-o", "ServerAliveCountMax=3", "opc@your-vm-ip", "cd /path/to/logan-mcp-server && source venv/bin/activate && oci-logan-mcp --user firstname.lastname"]
+args = ["-T", "-i", "~/.ssh/your-key", "-o", "IdentitiesOnly=yes", "-o", "StrictHostKeyChecking=yes", "-o", "UserKnownHostsFile=~/.ssh/known_hosts", "-o", "ServerAliveInterval=60", "-o", "ServerAliveCountMax=3", "opc@your-vm-ip", "sudo -n /opt/logan-mcp/bin/admin-launch firstname.lastname"]
 ```
 
 #### Codex App
@@ -115,38 +118,25 @@ The real `logan.key` is not committed to this repo. Add it locally to the
 
 Double-click `Double-Click-to-Install.cmd`, enter your username in
 `firstname.lastname` format, and let the installer close Codex when prompted.
-The installer creates a Codex MCP server named `logan-mcp`, copies the private
-key to `~/.logan-mcp/`, and backs up `~/.codex/config.toml` before updating it.
+The installer creates a Codex MCP server named `assurance-logan`, copies the private
+key to `~/.logan-mcp/`, pins the automation1 host key, migrates the legacy
+`logan-mcp` entry, and backs up `~/.codex/config.toml` before updating it.
 At the end, it can close running Codex processes for you so the new MCP config
 is loaded on the next launch.
 
-Manual Codex App setup is still possible for non-Windows users or advanced
-troubleshooting.
+For macOS Assurance teammates, package `macos-setup/Install-Logan-MCP.command`,
+`macos-setup/macos-setup.html`, and the same approved `logan.key`. The Mac
+installer applies the same pinned, stable `assurance-logan` configuration.
 
 For root-controlled, per-CAM Codex App access with dedicated keys, customer
 scoping, secure handoff, and revocation, use the
 [CAM Layer 1 administrator guide](docs/cam-layer1-admin-guide.md). This workflow
 is separate from the general-purpose `opc` setup below.
 
-In the Codex app, go to **MCP settings -> Connect to a custom MCP** and fill in:
-
-| Field | Value |
-|---|---|
-| **Name** | `logan-mcp` |
-| **Type** | `STDIO` |
-| **Command to launch** | `ssh` |
-| **Argument 1** | `-i` |
-| **Argument 2** | `/path/to/.ssh/your-key` |
-| **Argument 3** | `-o` |
-| **Argument 4** | `StrictHostKeyChecking=no` |
-| **Argument 5** | `-o` |
-| **Argument 6** | `ServerAliveInterval=60` |
-| **Argument 7** | `-o` |
-| **Argument 8** | `ServerAliveCountMax=3` |
-| **Argument 9** | `opc@your-vm-ip` |
-| **Argument 10** | `cd /home/opc/logan-mcp-server && source venv/bin/activate && oci-logan-mcp --user firstname.lastname` |
-
-Click **Save**, then start a new Codex session to connect.
+For advanced manual configuration, use the TOML example above and a
+separately verified pinned host-key file. The packaged installers are preferred
+because they apply the key ACL, host pin, legacy-name migration, and config
+backup consistently.
 
 > **Windows users:** Prefer the one-time installer above. If the generated
 > `ssh` config connects but immediately disconnects, Windows OpenSSH may not be
@@ -558,18 +548,18 @@ The username is resolved in this order:
 2. `LOGAN_USER` environment variable
 3. System `$USER` (default fallback — usually `opc` on shared VMs, so always set `--user` explicitly)
 
-**Example:** In your MCP client SSH config, append `--user firstname.lastname` to the remote command:
+**Example:** In a local development checkout, append `--user firstname.lastname` to the command:
 
 ```
 cd /path/to/logan-mcp-server && source venv/bin/activate && oci-logan-mcp --user david.smith
 ```
 
-For Codex CLI (`~/.codex/config.toml`):
+For the managed automation1 deployment in Codex CLI (`~/.codex/config.toml`):
 
 ```toml
-[mcp_servers.logan-mcp]
+[mcp_servers.assurance-logan]
 command = "ssh"
-args = ["-i", "~/.ssh/your-key", "-o", "StrictHostKeyChecking=no", "-o", "ServerAliveInterval=60", "-o", "ServerAliveCountMax=3", "opc@your-vm-ip", "cd /path/to/logan-mcp-server && source venv/bin/activate && oci-logan-mcp --user david.smith"]
+args = ["-T", "-i", "~/.ssh/your-key", "-o", "IdentitiesOnly=yes", "-o", "StrictHostKeyChecking=yes", "-o", "UserKnownHostsFile=~/.ssh/known_hosts", "-o", "ServerAliveInterval=60", "-o", "ServerAliveCountMax=3", "opc@your-vm-ip", "sudo -n /opt/logan-mcp/bin/admin-launch david.smith"]
 ```
 
 Each user's queries and preferences are stored under `~/.oci-logan-mcp/users/<username>/`. When a second user connects with a different name, they get their own isolated storage.

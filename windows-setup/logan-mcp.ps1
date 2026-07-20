@@ -12,7 +12,8 @@ $ErrorActionPreference = "Stop"
 
 $VmHost = "130.162.53.112"
 $RemoteUser = "opc"
-$RemoteCommandPrefix = "cd /home/opc/logan-mcp-server && source venv/bin/activate && oci-logan-mcp --user"
+$VmHostPublicKey = "ssh-ed25519 AAAAC3NzaC1lZDI1NTE5AAAAIFcj0yHMayP5k838JNY37ZUoyrv79CYtnkBf0BvXsqz1"
+$RemoteCommandPrefix = "sudo -n /opt/logan-mcp/bin/admin-launch"
 
 function ConvertTo-LoganUserName {
     param([string]$RawUserName)
@@ -40,13 +41,48 @@ function Write-Utf8NoBom {
     [System.IO.File]::WriteAllText($Path, $Value, $encoding)
 }
 
-function Set-PrivateKeyAcl {
-    param([string]$KeyPath)
+function Assert-SafeExistingFile {
+    param([string]$Path, [string]$Label)
 
-    $user = [System.Security.Principal.WindowsIdentity]::GetCurrent().Name
-    $escapedPath = $KeyPath.Replace('"', '\"')
-    & cmd.exe /d /c "icacls `"$escapedPath`" /inheritance:r >nul 2>nul"
-    & cmd.exe /d /c "icacls `"$escapedPath`" /grant:r `"${user}:(F)`" `"SYSTEM:(R)`" `"Administrators:(R)`" >nul 2>nul"
+    $item = Get-Item -LiteralPath $Path -Force -ErrorAction SilentlyContinue
+    if (-not $item) {
+        return
+    }
+    if (($item.Attributes -band [IO.FileAttributes]::ReparsePoint) -ne 0) {
+        throw "$Label must not be a reparse point or symbolic link: $Path"
+    }
+    if ($item.PSIsContainer -or -not (Test-Path -LiteralPath $Path -PathType Leaf)) {
+        throw "$Label must be a regular file: $Path"
+    }
+}
+
+function New-PrivateFileSecurity {
+    $currentSid = [Security.Principal.WindowsIdentity]::GetCurrent().User
+    $acl = New-Object Security.AccessControl.FileSecurity
+    $acl.SetOwner($currentSid)
+    $acl.SetAccessRuleProtection($true, $false)
+    $systemSid = [Security.Principal.SecurityIdentifier]::new('S-1-5-18')
+    $administratorsSid = [Security.Principal.SecurityIdentifier]::new('S-1-5-32-544')
+    $rules = @(
+        [Security.AccessControl.FileSystemAccessRule]::new($currentSid, [Security.AccessControl.FileSystemRights]::FullControl, [Security.AccessControl.AccessControlType]::Allow),
+        [Security.AccessControl.FileSystemAccessRule]::new($systemSid, [Security.AccessControl.FileSystemRights]::Read, [Security.AccessControl.AccessControlType]::Allow),
+        [Security.AccessControl.FileSystemAccessRule]::new($administratorsSid, [Security.AccessControl.FileSystemRights]::Read, [Security.AccessControl.AccessControlType]::Allow)
+    )
+    foreach ($rule in $rules) {
+        [void]$acl.AddAccessRule($rule)
+    }
+    return $acl
+}
+
+function Set-PrivateFileAcl {
+    param([string]$Path)
+
+    Set-Acl -LiteralPath $Path -AclObject (New-PrivateFileSecurity)
+    $applied = Get-Acl -LiteralPath $Path
+    if (-not $applied.AreAccessRulesProtected -or @($applied.Access).Count -ne 3 -or
+        @($applied.Access | Where-Object { $_.IsInherited }).Count -ne 0) {
+        throw "Failed to apply the private-file ACL to '$Path'."
+    }
 }
 
 function Remove-OldInstalledKeys {
@@ -63,14 +99,39 @@ function Remove-OldInstalledKeys {
 function Remove-ExistingLoganBlock {
     param([string]$ConfigText)
 
-    $pattern = '(?ms)^\[mcp_servers\.logan-mcp\]\r?\n.*?(?=^\[|\z)'
-    return [regex]::Replace($ConfigText, $pattern, '').TrimEnd()
+    $result = New-Object Text.StringBuilder
+    $skip = $false
+    $insideMcpServers = $false
+    $lines = [regex]::Split($ConfigText, '(?<=\r\n)|(?<!\r)(?<=\n)|(?<=\r)(?!\n)')
+    foreach ($line in $lines) {
+        if ($line.Contains('"""') -or $line.Contains("'''")) {
+            throw 'Multiline TOML strings are unsupported; config.toml was not changed.'
+        }
+        $trimmed = $line.Trim()
+        $compact = ($trimmed -replace '\s', '').Replace('"', '').Replace("'", '')
+        if ($trimmed.StartsWith('[')) {
+            $insideMcpServers = $compact -eq '[mcp_servers]'
+            $skip = $compact -match '^\[\[?mcp_servers\.(?:logan-mcp|assurance-logan)(?:\.|\]|$)'
+        }
+        elseif (-not $skip -and $insideMcpServers -and
+            $compact -match '^(?:logan-mcp|assurance-logan)=') {
+            throw 'Unsupported inline Logan MCP declaration in config.toml.'
+        }
+        elseif (-not $skip -and $compact -match '^mcp_servers\.(?:logan-mcp|assurance-logan)=') {
+            throw 'Unsupported dotted Logan MCP declaration in config.toml.'
+        }
+        if (-not $skip) {
+            [void]$result.Append($line)
+        }
+    }
+    return $result.ToString().TrimEnd()
 }
 
 function Write-CodexConfig {
     param(
         [string]$ConfigPath,
         [string]$KeyPath,
+        [string]$KnownHostsPath,
         [string]$LoganUser
     )
 
@@ -80,18 +141,21 @@ function Write-CodexConfig {
     $existing = ""
     if (Test-Path -LiteralPath $ConfigPath) {
         $existing = Get-Content -LiteralPath $ConfigPath -Raw
-        $timestamp = Get-Date -Format "yyyyMMdd-HHmmss"
-        Copy-Item -LiteralPath $ConfigPath -Destination "$ConfigPath.backup-$timestamp" -Force
     }
 
     $remoteCommand = "$RemoteCommandPrefix $LoganUser"
     $args = @(
+        "-T",
         "-i",
         $KeyPath,
         "-o",
         "BatchMode=yes",
         "-o",
-        "StrictHostKeyChecking=no",
+        "IdentitiesOnly=yes",
+        "-o",
+        "StrictHostKeyChecking=yes",
+        "-o",
+        "UserKnownHostsFile=$KnownHostsPath",
         "-o",
         "ServerAliveInterval=60",
         "-o",
@@ -102,8 +166,8 @@ function Write-CodexConfig {
 
     $argsText = ($args | ForEach-Object { ConvertTo-TomlString $_ }) -join ", "
     $loganBlock = @"
-[mcp_servers.logan-mcp]
-command = "ssh"
+[mcp_servers.assurance-logan]
+command = "ssh.exe"
 args = [$argsText]
 "@
 
@@ -113,31 +177,53 @@ args = [$argsText]
     } else {
         $updated = $loganBlock + "`r`n"
     }
-    Write-Utf8NoBom -Path $ConfigPath -Value $updated
+    $candidatePath = Join-Path $configDir ('.{0}.{1}.tmp' -f ([IO.Path]::GetFileName($ConfigPath)), [guid]::NewGuid().ToString('N'))
+    try {
+        Write-Utf8NoBom -Path $candidatePath -Value $updated
+        if (Test-Path -LiteralPath $ConfigPath) {
+            $timestamp = [DateTime]::UtcNow.ToString('yyyyMMddTHHmmssfffffffZ')
+            Copy-Item -LiteralPath $ConfigPath -Destination "$ConfigPath.backup-$timestamp"
+            [IO.File]::Replace($candidatePath, $ConfigPath, [string]$null)
+        }
+        else {
+            Move-Item -LiteralPath $candidatePath -Destination $ConfigPath
+        }
+    }
+    catch {
+        if (Test-Path -LiteralPath $candidatePath) {
+            Remove-Item -LiteralPath $candidatePath -Force
+        }
+        throw
+    }
 }
 
 function Test-LoganSshConnection {
-    param([string]$KeyPath)
+    param([string]$KeyPath, [string]$KnownHostsPath)
 
     $sshArgs = @(
+        "-T",
         "-i",
         $KeyPath,
         "-o",
         "BatchMode=yes",
         "-o",
-        "StrictHostKeyChecking=no",
+        "IdentitiesOnly=yes",
+        "-o",
+        "StrictHostKeyChecking=yes",
+        "-o",
+        "UserKnownHostsFile=$KnownHostsPath",
         "-o",
         "ServerAliveInterval=60",
         "-o",
         "ServerAliveCountMax=3",
         "$RemoteUser@$VmHost",
-        "echo logan-mcp-ok"
+        "sudo -n test -x /opt/logan-mcp/bin/admin-launch && echo assurance-logan-ok"
     )
 
     & ssh.exe @sshArgs
 
     if ($LASTEXITCODE -ne 0) {
-        throw "SSH test failed. Check that logan.key is valid and access to $VmHost is allowed."
+        throw "SSH or admin-launch test failed. Check logan.key and access to $VmHost."
     }
 }
 
@@ -157,7 +243,7 @@ function Confirm-CodexRestart {
     }
 
     Write-Host ""
-    Write-Host "Codex must be fully restarted before it can use logan-mcp."
+    Write-Host "Codex must be fully restarted before it can use assurance-logan."
     Write-Host "This will close running Codex windows and background Codex processes."
     Write-Host "Save or finish any active Codex work before continuing."
     $answer = Read-Host "Press Enter to close Codex now, or type S and press Enter to skip"
@@ -169,7 +255,7 @@ function Confirm-CodexRestart {
     foreach ($process in $codexProcesses) {
         Stop-Process -Id $process.Id -Force -ErrorAction SilentlyContinue
     }
-    Write-Host "Closed Codex. Open Codex App again to use logan-mcp."
+    Write-Host "Closed Codex. Open Codex App again to use assurance-logan."
 }
 
 function Invoke-Install {
@@ -188,32 +274,38 @@ function Invoke-Install {
     }
 
     $loganUser = ConvertTo-LoganUserName $UserName
-    if (-not (Test-Path -LiteralPath $KeySourcePath)) {
+    if (-not (Test-Path -LiteralPath $KeySourcePath -PathType Leaf)) {
         throw "Missing SSH key: $KeySourcePath. Place logan.key beside this installer and run it again."
     }
+    Assert-SafeExistingFile -Path $KeySourcePath -Label 'Installer private key'
 
     New-Item -ItemType Directory -Force -Path $InstallDir | Out-Null
     $keyFileName = "logan-{0}.key" -f (Get-Date -Format "yyyyMMddHHmmssfff")
     $keyPath = Join-Path $InstallDir $keyFileName
+    $knownHostsPath = Join-Path $InstallDir "known_hosts"
+    Assert-SafeExistingFile -Path $knownHostsPath -Label 'known_hosts path'
+    Assert-SafeExistingFile -Path $CodexConfigPath -Label 'Codex config path'
     Copy-Item -LiteralPath $KeySourcePath -Destination $keyPath -Force
+    Write-Utf8NoBom -Path $knownHostsPath -Value "$VmHost $VmHostPublicKey`r`n"
 
     if (-not $SkipAcl) {
-        Set-PrivateKeyAcl $keyPath
+        Set-PrivateFileAcl $keyPath
+        Set-PrivateFileAcl $knownHostsPath
     }
-    Remove-OldInstalledKeys -InstallDir $InstallDir -CurrentKeyPath $keyPath
-
     if (-not $SkipSshTest) {
-        Write-Host "Testing SSH connection to logan-mcp VM..."
-        Test-LoganSshConnection -KeyPath $keyPath
+        Write-Host "Testing SSH connection to the assurance-logan runtime..."
+        Test-LoganSshConnection -KeyPath $keyPath -KnownHostsPath $knownHostsPath
     }
 
     Write-CodexConfig `
         -ConfigPath $CodexConfigPath `
         -KeyPath $keyPath `
+        -KnownHostsPath $knownHostsPath `
         -LoganUser $loganUser
+    Remove-OldInstalledKeys -InstallDir $InstallDir -CurrentKeyPath $keyPath
 
     Write-Host ""
-    Write-Host "Configured Codex MCP server: logan-mcp"
+    Write-Host "Configured Codex MCP server: assurance-logan"
     Write-Host "Config file: $CodexConfigPath"
     if (-not $SkipCodexRestartPrompt) {
         Confirm-CodexRestart

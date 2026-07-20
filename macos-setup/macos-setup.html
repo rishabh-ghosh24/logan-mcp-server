@@ -1,0 +1,54 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>Assurance Logan MCP macOS Setup</title>
+  <style>
+    body { margin: 0; background: #f7f8fa; color: #17202a; font: 15px/1.55 -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif; }
+    main { max-width: 860px; margin: 0 auto; padding: 36px 20px 56px; }
+    h1 { margin-bottom: 8px; font-size: 34px; }
+    h2 { margin-top: 30px; }
+    .lead { color: #52606d; font-size: 17px; }
+    .card { margin-top: 18px; padding: 18px 20px; background: white; border: 1px solid #d8dee6; border-radius: 8px; }
+    .warning { border-left: 4px solid #b42318; background: #fff1f0; padding: 12px 14px; }
+    code { background: #eef2f7; border: 1px solid #d8dee6; border-radius: 4px; padding: 1px 5px; }
+    pre { overflow-x: auto; background: #111827; color: #f9fafb; border-radius: 6px; padding: 14px 16px; }
+    pre code { background: transparent; border: 0; padding: 0; }
+    li { margin: 6px 0; }
+  </style>
+</head>
+<body>
+  <main>
+    <h1>Assurance Logan MCP macOS Setup</h1>
+    <p class="lead">One-time setup for unrestricted Assurance team members.</p>
+
+    <section class="card">
+      <h2>Package contents</h2>
+      <pre><code>macos-setup/
+Install-Logan-MCP.command
+logan.key
+macos-setup.html</code></pre>
+      <div class="warning"><strong>Credential:</strong> <code>logan.key</code> is the approved shared automation1 key. Never commit it to Git. Deliver the package only through the approved internal secure channel.</div>
+    </section>
+
+    <section class="card">
+      <h2>Install</h2>
+      <ol>
+        <li>Extract the private package.</li>
+        <li>Double-click <code>Install-Logan-MCP.command</code>.</li>
+        <li>Enter the user's identity in <code>firstname.lastname</code> format.</li>
+        <li>Require the SSH test and installation to succeed.</li>
+        <li>Restart Codex completely.</li>
+      </ol>
+      <p>The installer backs up the existing Codex config, migrates the old <code>logan-mcp</code> entry, pins automation1's SSH host key, and creates <code>assurance-logan</code> through <code>/opt/logan-mcp/bin/admin-launch</code>.</p>
+    </section>
+
+    <section class="card">
+      <h2>Test</h2>
+      <pre><code>Use only the assurance-logan MCP server. Test the connection.</code></pre>
+      <p>Then use Assurance Logan normally. This unrestricted package is not for CAM users.</p>
+    </section>
+  </main>
+</body>
+</html>

@@ -48,6 +48,7 @@ logs/
 
 # Local Logan MCP installer key
 windows-setup/logan.key
+macos-setup/logan.key
 
 # Generated CAM provisioning artifacts (bearer credentials)
 cam-setup/output/
