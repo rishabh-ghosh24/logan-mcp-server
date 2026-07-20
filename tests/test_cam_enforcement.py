@@ -434,6 +434,23 @@ async def test_set_compartment_handler_is_defense_in_depth_blocked_for_cam():
     assert "root-controlled production compartment" in payload["error"]
 
 
+def test_cam_tenancy_notice_preserves_entity_scope():
+    from oci_logan_mcp.handlers import MCPHandlers
+
+    h = MCPHandlers.__new__(MCPHandlers)
+    h.access_profile = _profile()
+    h.settings = SimpleNamespace(log_analytics=SimpleNamespace(
+        default_compartment_id="ocid1.compartment.production",
+        default_compartment_name="LoggingAnalyticsData",
+    ))
+
+    notice = MCPHandlers._scope_notice(h, {"scope": "tenancy"})
+
+    assert "LoggingAnalyticsData" in notice
+    assert "assigned customer entities" in notice
+    assert "subcompartments" not in notice
+
+
 @pytest.mark.asyncio
 async def test_handle_tool_call_explains_explicit_entity_access_denial():
     from oci_logan_mcp.access_control import EntityAccessDenied

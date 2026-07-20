@@ -948,6 +948,12 @@ class MCPHandlers:
         if args.get("scope") != "tenancy":
             return None
         _, production_name = self._production_scope()
+        if self.access_profile is not None:
+            return (
+                f"Production data exists in the {production_name} compartment only; "
+                "the tenancy-wide request was therefore kept in that production "
+                "compartment and remained limited to your assigned customer entities."
+            )
         return (
             f"Production data exists in the {production_name} compartment only; "
             "the tenancy-wide request was therefore run in that production "
