@@ -365,7 +365,7 @@
           <div class="status"><small>Feature branch</small><strong>feat/cam-layer1-phase1</strong></div>
           <div class="status"><small>Required runtime baseline</small><strong>a7b2450 or later</strong></div>
           <div class="status"><small>automation1 deployment</small><strong class="good-text">Runtime refreshed • 12/12 checks passed</strong></div>
-          <div class="status"><small>Full local suite</small><strong class="good-text">1,583 passed</strong></div>
+          <div class="status"><small>Full local suite</small><strong class="good-text">1,590 passed</strong></div>
           <div class="status"><small>Linux + macOS</small><strong class="good-text">Live acceptance passed</strong></div>
           <div class="status"><small>Native Windows</small><strong class="warn-text">Validation still required</strong></div>
           <div class="status"><small>Integration state</small><strong>Local-only and unmerged</strong></div>
@@ -395,6 +395,11 @@
         <p>The policy lives at <code>/etc/logan-mcp/access_control.yaml</code>. Runtime code, policy, immutable configuration, launcher, and managed <code>authorized_keys</code> are root-owned. Password login, PTY allocation, forwarding, tunnelling, user RC files, arbitrary remote commands, SCP, and SFTP are disabled for the restricted account.</p>
 
         <p>The CAM sees only their configured <code>resolved_entities</code>. Allowed queries are automatically constrained to those entities. An explicit request for another customer returns <code>ENTITY_ACCESS_DENIED</code> and tells the user to contact an administrator. A genuine zero-log response therefore means the allowed query ran but found no matching data.</p>
+
+        <div class="callout good">
+          <strong>Production scope for everyone</strong>
+          Every fresh Assurance or CAM connection starts in <code>LoggingAnalyticsData</code> in Germany Central (Frankfurt), OCI region <code>eu-frankfurt-1</code>. “All customers” or “entire tenancy” requests stay in that compartment and explain that production data exists there only. Assurance users may select another compartment for the current session only after the warning and an explicit confirmation. CAM users never receive <code>set_compartment</code>; their compartment and entity scope remain root-controlled.
+        </div>
 
         <div class="callout danger">
           <strong>Never give a CAM regular VM credentials</strong>
@@ -683,7 +688,7 @@ tar -tf $Zip</code></pre></div>
 
         <h3>C. Allowed data</h3>
         <div class="code-block"><button class="copy" type="button">Copy</button><pre><code>Use only the assurance-logan MCP server. Show all logs from the last 7 days grouped by log source.</code></pre></div>
-        <p>The result is scoped to the allowed entities even if generated prose incorrectly says “entire tenancy.” Judge enforcement by the returned entities and server behavior, not that phrase.</p>
+        <p>The result is scoped to the allowed entities. If the prompt is phrased as “entire tenancy,” the response must explain that production data exists in <code>LoggingAnalyticsData</code> only; the CAM entity allow-list still applies.</p>
 
         <h3>D. Denied customer</h3>
         <div class="code-block"><button class="copy" type="button">Copy</button><pre><code>Use only the assurance-logan MCP server. Show the same 7-day log data for Customer114_Network_Rail_Infrastructure_Limited.</code></pre></div>

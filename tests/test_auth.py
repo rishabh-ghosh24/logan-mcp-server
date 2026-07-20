@@ -31,6 +31,17 @@ class TestGetSigner:
         get_signer(config)
         mock_fn.assert_called_once()
 
+    @patch("oci_logan_mcp.auth._get_instance_principal_signer")
+    def test_explicit_region_overrides_signer_region(self, mock_fn):
+        mock_fn.return_value = ({"region": "us-ashburn-1"}, MagicMock())
+
+        oci_config, _ = get_signer(OCIConfig(
+            auth_type="instance_principal",
+            region="eu-frankfurt-1",
+        ))
+
+        assert oci_config["region"] == "eu-frankfurt-1"
+
     @patch("oci_logan_mcp.auth._get_resource_principal_signer")
     def test_resource_principal_auth_type(self, mock_fn):
         """resource_principal routes to _get_resource_principal_signer."""

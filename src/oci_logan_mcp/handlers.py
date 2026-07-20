@@ -21,7 +21,7 @@ from .context_manager import ContextManager
 from .user_store import UserStore
 from .preferences import PreferenceStore
 from .query_auto_saver import QueryAutoSaver
-from .config import Settings, save_config
+from .config import Settings
 from .resources import get_syntax_guide, get_reference_docs
 from .alarm_service import AlarmService
 from .dashboard_service import DashboardService
@@ -66,6 +66,14 @@ if TYPE_CHECKING:
 logger = logging.getLogger(__name__)
 
 REPORT_EMAIL_TOPIC_PREFERENCE_KEY = "report.email_topic"
+PRODUCTION_SCOPE_TOOLS = frozenset({
+    "run_query",
+    "run_saved_search",
+    "visualize",
+    "export_results",
+    "get_log_summary",
+    "set_compartment",
+})
 REQUIRED_AUDIT_TOOLS = frozenset({
     *MUTATING_TOOLS,
     "export_results",
@@ -349,6 +357,26 @@ class MCPHandlers:
                     "tool": name,
                     "error": "This tool is not permitted in access-controlled (CAM) mode.",
                 }, indent=2)}]
+
+        # Assurance users may work in a non-production compartment, but only
+        # after the client has shown the production-data warning and received
+        # an explicit confirmation. CAM calls are already pinned by their
+        # root-controlled profile and never reach this path for set_compartment.
+        scope_warning = self._non_production_confirmation(name, arguments)
+        if scope_warning is not None:
+            self._write_audit_event(
+                user=user_id,
+                tool=name,
+                args=arguments,
+                outcome="confirmation_required",
+                trace_id=trace_id,
+                audit_ref=audit_ref,
+                audit_strictness=audit_strictness,
+                result_summary=scope_warning,
+                blocked=True,
+                block_reason="non_production_scope_confirmation",
+            )
+            return [{"type": "text", "text": json.dumps(scope_warning, indent=2)}]
 
         # --- Read-only guard (runs BEFORE confirmation gate) ---
         try:
@@ -876,8 +904,58 @@ class MCPHandlers:
         }
         return [{"type": "text", "text": json.dumps(result_dict, indent=2)}]
 
+    def _production_scope(self) -> tuple[str, str]:
+        """Return the configured production compartment ID and display name."""
+        return (
+            self.settings.log_analytics.default_compartment_id,
+            self.settings.log_analytics.default_compartment_name
+            or "the configured production compartment",
+        )
+
+    def _non_production_confirmation(
+        self, tool_name: str, args: Dict
+    ) -> Optional[Dict[str, Any]]:
+        """Return a warning payload before an Assurance call leaves production."""
+        if self.access_profile is not None or tool_name not in PRODUCTION_SCOPE_TOOLS:
+            return None
+        if args.get("scope") == "tenancy":
+            return None
+
+        requested_id = args.get("compartment_id")
+        production_id, production_name = self._production_scope()
+        if not requested_id or not production_id or requested_id == production_id:
+            return None
+        if args.get("confirm_non_production") is True:
+            return None
+
+        return {
+            "status": "confirmation_required",
+            "warning": (
+                f"Production data exists in {production_name} only. "
+                "Do you still want to change to another compartment?"
+            ),
+            "production_compartment_name": production_name,
+            "production_compartment_id": production_id,
+            "requested_compartment_id": requested_id,
+            "instructions": (
+                "Ask the user this question and wait for an explicit yes. "
+                "Only then retry the same call with confirm_non_production=true."
+            ),
+        }
+
+    def _scope_notice(self, args: Dict) -> Optional[str]:
+        """Explain why a tenancy-worded request remains in production."""
+        if args.get("scope") != "tenancy":
+            return None
+        _, production_name = self._production_scope()
+        return (
+            f"Production data exists in the {production_name} compartment only; "
+            "the tenancy-wide request was therefore run in that production "
+            "compartment, including its subcompartments."
+        )
+
     def _resolve_scope(self, args: Dict) -> tuple:
-        """Resolve scope parameter to compartment_id and include_subcompartments."""
+        """Resolve scope to compartment_id and include_subcompartments."""
         scope = args.get("scope", "default")
         compartment_id = args.get("compartment_id")
         include_subs = args.get("include_subcompartments", True)
@@ -886,17 +964,16 @@ class MCPHandlers:
             include_subs = include_subs.lower() in ("true", "yes", "1")
 
         if scope == "tenancy":
-            tenancy_id = self.oci_client._config.get("tenancy")
-            if tenancy_id:
-                compartment_id = tenancy_id
-                include_subs = True
-                logger.info(f"Scope=tenancy: using tenancy OCID {tenancy_id[:50]}...")
+            compartment_id, _ = self._production_scope()
+            include_subs = True
+            logger.info("Scope=tenancy: using production compartment %s", compartment_id)
 
         return compartment_id, include_subs
 
     async def _run_query(self, args: Dict) -> List[Dict]:
         """Execute a query."""
         compartment_id, include_subs = self._resolve_scope(args)
+        scope_notice = self._scope_notice(args)
         budget_override = bool(args.get("budget_override", False))
 
         query_text = args["query"]
@@ -953,8 +1030,13 @@ class MCPHandlers:
         # Use compact formatter for cluster queries
         if self._is_cluster_query(query_text):
             formatted = self._format_cluster_result(result)
+            if scope_notice:
+                formatted["scope_notice"] = scope_notice
             return [{"type": "text", "text": json.dumps(formatted, indent=2, default=str)}]
 
+        if scope_notice and isinstance(result, dict):
+            result = dict(result)
+            result["scope_notice"] = scope_notice
         return [{"type": "text", "text": json.dumps(result, indent=2, default=str)}]
 
     async def _create_log_source_from_sample(self, args: Dict) -> List[Dict]:
@@ -1085,6 +1167,7 @@ class MCPHandlers:
             return [{"type": "text", "text": "Saved search has no query defined"}]
 
         compartment_id, include_subs = self._resolve_scope(args)
+        scope_notice = self._scope_notice(args)
         result = await self.query_engine.execute(
             query=query,
             time_range=args.get("time_range", "last_1_hour"),
@@ -1093,6 +1176,9 @@ class MCPHandlers:
             include_subcompartments=include_subs,
             compartment_id=compartment_id,
         )
+        if scope_notice and isinstance(result, dict):
+            result = dict(result)
+            result["scope_notice"] = scope_notice
         return [{"type": "text", "text": json.dumps(result, indent=2, default=str)}]
 
     async def _run_batch_queries(self, args: Dict) -> List[Dict]:
@@ -2127,6 +2213,7 @@ class MCPHandlers:
     async def _visualize(self, args: Dict) -> List[Dict]:
         """Generate visualization."""
         compartment_id, include_subs = self._resolve_scope(args)
+        scope_notice = self._scope_notice(args)
 
         query_result = await self.query_engine.execute(
             query=args["query"],
@@ -2161,7 +2248,8 @@ class MCPHandlers:
             },
             {
                 "type": "text",
-                "text": f"Raw data ({len(viz_result['raw_data'])} records): "
+                "text": ((scope_notice + "\n\n") if scope_notice else "")
+                + f"Raw data ({len(viz_result['raw_data'])} records): "
                 + json.dumps(viz_result["raw_data"][:10], indent=2, default=str),
             },
         ]
@@ -2169,6 +2257,7 @@ class MCPHandlers:
     async def _export_results(self, args: Dict) -> List[Dict]:
         """Export query results."""
         compartment_id, include_subs = self._resolve_scope(args)
+        scope_notice = self._scope_notice(args)
 
         result = await self.query_engine.execute(
             query=args["query"],
@@ -2186,23 +2275,37 @@ class MCPHandlers:
         exported = self.export_service.export(
             data=result["data"], format=args["format"]
         )
+        if scope_notice:
+            exported = scope_notice + "\n\n" + exported
         return [{"type": "text", "text": exported}]
 
     async def _set_compartment(self, args: Dict) -> List[Dict]:
-        """Set compartment context and persist to config."""
+        """Set a session-only Assurance compartment after explicit confirmation."""
+        if self.access_profile is not None:
+            return [{"type": "text", "text": json.dumps({
+                "status": "access_denied",
+                "tool": "set_compartment",
+                "error": (
+                    "CAM sessions are pinned to the root-controlled production "
+                    "compartment and cannot change it."
+                ),
+            }, indent=2)}]
+        warning = self._non_production_confirmation("set_compartment", args)
+        if warning is not None:
+            return [{"type": "text", "text": json.dumps(warning, indent=2)}]
         new_id = args["compartment_id"]
         self.oci_client.compartment_id = new_id
-        self.settings.log_analytics.default_compartment_id = new_id
         self.cache.clear()
 
-        try:
-            save_config(self.settings)
-            logger.info(f"Persisted default compartment to config: {new_id}")
-        except Exception as e:
-            logger.warning(f"Failed to persist compartment to config: {e}")
-
         return [
-            {"type": "text", "text": f"Compartment set to: {new_id}"}
+            {
+                "type": "text",
+                "text": (
+                    f"Session compartment set to: {new_id}. "
+                    "The production default is unchanged and will be restored "
+                    "when the MCP connection restarts."
+                ),
+            }
         ]
 
     async def _set_namespace(self, args: Dict) -> List[Dict]:
@@ -2216,6 +2319,10 @@ class MCPHandlers:
         context = {
             "namespace": self.oci_client.namespace,
             "compartment_id": self.oci_client.compartment_id,
+            "production_compartment_id": self.settings.log_analytics.default_compartment_id,
+            "production_compartment_name": self.settings.log_analytics.default_compartment_name,
+            "region": self.oci_client._config.get("region", self.settings.oci.region),
+            "production_region": self.settings.oci.region,
             "default_time_range": self.settings.query.default_time_range,
             "max_results": self.settings.query.max_results,
         }
@@ -2410,6 +2517,7 @@ class MCPHandlers:
         """Get summary of available log data."""
         time_range = args.get("time_range", "last_24_hours")
         compartment_id, include_subs = self._resolve_scope(args)
+        scope_notice = self._scope_notice(args)
 
         try:
             result = await self.query_engine.execute(
@@ -2419,6 +2527,10 @@ class MCPHandlers:
                 compartment_id=compartment_id,
                 use_cache=False,
             )
+
+            if scope_notice:
+                result = dict(result)
+                result["scope_notice"] = scope_notice
 
             data = result.get("data", {})
             rows = data.get("rows", [])

@@ -286,12 +286,16 @@ def get_tools() -> List[Dict[str, Any]]:
                     },
                     "compartment_id": {
                         "type": "string",
-                        "description": "Optional compartment OCID to query. If not specified, uses default compartment from config.",
+                        "description": "Optional Assurance-only compartment OCID. If omitted, uses the LoggingAnalyticsData production default. A different OCID requires explicit user confirmation.",
                     },
                     "scope": {
                         "type": "string",
                         "enum": ["default", "tenancy"],
-                        "description": "Query scope: 'default' uses your configured compartment, 'tenancy' queries ALL compartments across the entire tenancy. Use 'tenancy' when user asks for logs 'across all compartments', 'entire tenancy', 'organization-wide', etc. When scope='tenancy', include_subcompartments is automatically set to true.",
+                        "description": "Query scope: 'default' uses LoggingAnalyticsData. For requests phrased as all customers, all compartments, or the entire tenancy, use 'tenancy'; the server still queries LoggingAnalyticsData because production data exists there only, includes subcompartments, and returns a notice that must be shown to the user.",
+                    },
+                    "confirm_non_production": {
+                        "type": "boolean",
+                        "description": "Set true only after the server returned the production-data warning and the user explicitly answered yes. Never set preemptively.",
                     },
                     "budget_override": {
                         "type": "boolean",
@@ -1095,12 +1099,16 @@ def get_tools() -> List[Dict[str, Any]]:
                     },
                     "compartment_id": {
                         "type": "string",
-                        "description": "Optional compartment OCID to query. If not specified, uses default compartment from config.",
+                        "description": "Optional Assurance-only compartment OCID. If omitted, uses LoggingAnalyticsData. A different OCID requires explicit user confirmation.",
                     },
                     "scope": {
                         "type": "string",
                         "enum": ["default", "tenancy"],
-                        "description": "Query scope: 'default' uses your configured compartment, 'tenancy' queries ALL compartments across the entire tenancy.",
+                        "description": "Use 'tenancy' for all-customer or tenancy-worded requests. The server keeps the query in LoggingAnalyticsData and returns the production-scope notice that must be shown to the user.",
+                    },
+                    "confirm_non_production": {
+                        "type": "boolean",
+                        "description": "Set true only after showing the server warning and receiving an explicit yes from the user.",
                     },
                 },
                 "required": ["query", "chart_type"],
@@ -1141,12 +1149,16 @@ def get_tools() -> List[Dict[str, Any]]:
                     },
                     "compartment_id": {
                         "type": "string",
-                        "description": "Optional compartment OCID to query. If not specified, uses default compartment from config.",
+                        "description": "Optional Assurance-only compartment OCID. If omitted, uses LoggingAnalyticsData. A different OCID requires explicit user confirmation.",
                     },
                     "scope": {
                         "type": "string",
                         "enum": ["default", "tenancy"],
-                        "description": "Query scope: 'default' uses your configured compartment, 'tenancy' queries ALL compartments across the entire tenancy.",
+                        "description": "Use 'tenancy' for all-customer or tenancy-worded requests. The server keeps the query in LoggingAnalyticsData and returns the production-scope notice that must be shown to the user.",
+                    },
+                    "confirm_non_production": {
+                        "type": "boolean",
+                        "description": "Set true only after showing the server warning and receiving an explicit yes from the user.",
                     },
                 },
                 "required": ["query", "format"],
@@ -1155,14 +1167,18 @@ def get_tools() -> List[Dict[str, Any]]:
         # Configuration Tools
         {
             "name": "set_compartment",
-            "description": "Change the current compartment context.",
+            "description": "Assurance only: change the current session compartment. LoggingAnalyticsData remains the production default. A different compartment first returns a warning; ask the user and retry with confirm_non_production=true only after an explicit yes. CAM users cannot access this tool.",
             "inputSchema": {
                 "type": "object",
                 "properties": {
                     "compartment_id": {
                         "type": "string",
                         "description": "Compartment OCID",
-                    }
+                    },
+                    "confirm_non_production": {
+                        "type": "boolean",
+                        "description": "Set true only after showing the server warning and receiving an explicit yes from the user.",
+                    },
                 },
                 "required": ["compartment_id"],
             },
@@ -1183,7 +1199,7 @@ def get_tools() -> List[Dict[str, Any]]:
         },
         {
             "name": "get_current_context",
-            "description": "Get the current namespace, compartment, and configuration context.",
+            "description": "Get the current and production-default namespace, compartment, region, and configuration context.",
             "inputSchema": {"type": "object", "properties": {}},
         },
         {
@@ -1281,7 +1297,7 @@ def get_tools() -> List[Dict[str, Any]]:
                     "scope": {
                         "type": "string",
                         "enum": ["default", "tenancy"],
-                        "description": "Scope: 'default' for current compartment, 'tenancy' for all compartments.",
+                        "description": "Use 'tenancy' for all-customer or tenancy-worded requests. Production data remains scoped to LoggingAnalyticsData and the returned notice must be shown to the user.",
                     },
                 },
             },

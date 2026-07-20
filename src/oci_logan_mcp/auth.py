@@ -22,13 +22,20 @@ def get_signer(config: OCIConfig) -> Tuple[dict, Any]:
         oci.exceptions.InvalidConfig: If config is invalid.
     """
     if config.auth_type == "config_file":
-        return _get_config_file_signer(config)
+        oci_config, signer = _get_config_file_signer(config)
     elif config.auth_type == "instance_principal":
-        return _get_instance_principal_signer()
+        oci_config, signer = _get_instance_principal_signer()
     elif config.auth_type == "resource_principal":
-        return _get_resource_principal_signer()
+        oci_config, signer = _get_resource_principal_signer()
     else:
         raise ValueError(f"Unknown auth type: {config.auth_type}")
+
+    # An explicit service region is the deployment default. Authentication
+    # still comes from the selected signer, but OCI service clients are built
+    # for this region instead of inheriting a laptop or VM profile default.
+    if config.region:
+        oci_config["region"] = config.region
+    return oci_config, signer
 
 
 def _get_config_file_signer(config: OCIConfig) -> Tuple[dict, Any]:

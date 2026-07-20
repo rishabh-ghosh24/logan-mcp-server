@@ -26,6 +26,8 @@ def settings(tmp_path):
     s = Settings()
     s.log_analytics.namespace = "testns"
     s.log_analytics.default_compartment_id = "ocid1.compartment.default"
+    s.log_analytics.default_compartment_name = "LoggingAnalyticsData"
+    s.oci.region = "eu-frankfurt-1"
     s.query.max_results = 1000
     s.query.default_time_range = "last_1_hour"
     s.report_delivery.artifact_dir = tmp_path / "reports"
@@ -205,6 +207,27 @@ class TestToolRouting:
         assert "Unknown tool" in result[0]["text"]
 
     @pytest.mark.asyncio
+    async def test_assurance_set_compartment_is_blocked_until_confirmation(
+        self, handlers, mock_oci_client
+    ):
+        result = await handlers.handle_tool_call(
+            "set_compartment", {"compartment_id": "ocid1.compartment.test"}
+        )
+
+        payload = json.loads(result[0]["text"])
+        assert payload["status"] == "confirmation_required"
+        assert payload["production_compartment_name"] == "LoggingAnalyticsData"
+        assert mock_oci_client.compartment_id == "ocid1.compartment.default"
+
+        result = await handlers.handle_tool_call("set_compartment", {
+            "compartment_id": "ocid1.compartment.test",
+            "confirm_non_production": True,
+        })
+
+        assert "Session compartment set" in result[0]["text"]
+        assert mock_oci_client.compartment_id == "ocid1.compartment.test"
+
+    @pytest.mark.asyncio
     async def test_all_tool_names_registered(self, handlers):
         """All expected tool names should be in the handlers dict."""
         expected_tools = [
@@ -284,12 +307,13 @@ class TestResolveScope:
         assert include_subs is False
 
     def test_tenancy_scope(self, handlers):
-        """Tenancy scope should use tenancy OCID and force include_subs=True."""
+        """Tenancy wording should stay in production and include subcompartments."""
         compartment_id, include_subs = handlers._resolve_scope(
             {"scope": "tenancy"}
         )
-        assert compartment_id == "ocid1.tenancy.test"
+        assert compartment_id == "ocid1.compartment.default"
         assert include_subs is True
+        assert "LoggingAnalyticsData" in handlers._scope_notice({"scope": "tenancy"})
 
     def test_tenancy_scope_overrides_false_subs(self, handlers):
         """Tenancy scope should override include_subcompartments=False."""
@@ -394,12 +418,36 @@ class TestConfigurationHandlers:
 
     @pytest.mark.asyncio
     async def test_set_compartment(self, handlers, mock_oci_client, mock_cache):
-        """Should update client compartment and clear cache."""
+        """A non-production session switch requires explicit confirmation."""
         result = await handlers._set_compartment({"compartment_id": "ocid1.comp.new"})
+
+        warning = json.loads(result[0]["text"])
+        assert warning["status"] == "confirmation_required"
+        assert "LoggingAnalyticsData" in warning["warning"]
+        assert mock_oci_client.compartment_id == "ocid1.compartment.default"
+        mock_cache.clear.assert_not_called()
+
+        result = await handlers._set_compartment({
+            "compartment_id": "ocid1.comp.new",
+            "confirm_non_production": True,
+        })
 
         assert mock_oci_client.compartment_id == "ocid1.comp.new"
         mock_cache.clear.assert_called_once()
         assert "ocid1.comp.new" in result[0]["text"]
+        assert handlers.settings.log_analytics.default_compartment_id == "ocid1.compartment.default"
+
+    @pytest.mark.asyncio
+    async def test_set_production_compartment_needs_no_confirmation(
+        self, handlers, mock_oci_client, mock_cache
+    ):
+        result = await handlers._set_compartment({
+            "compartment_id": "ocid1.compartment.default"
+        })
+
+        assert mock_oci_client.compartment_id == "ocid1.compartment.default"
+        mock_cache.clear.assert_called_once()
+        assert "Session compartment set" in result[0]["text"]
 
     @pytest.mark.asyncio
     async def test_set_namespace(self, handlers, mock_oci_client, mock_cache):
@@ -418,6 +466,8 @@ class TestConfigurationHandlers:
 
         assert "namespace" in context
         assert "compartment_id" in context
+        assert context["production_compartment_name"] == "LoggingAnalyticsData"
+        assert context["production_region"] == "eu-frankfurt-1"
         assert "max_results" in context
 
 

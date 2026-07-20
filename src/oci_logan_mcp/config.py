@@ -27,6 +27,7 @@ class OCIConfig:
     config_path: Path = field(default_factory=lambda: Path.home() / ".oci" / "config")
     profile: str = "DEFAULT"
     auth_type: Literal["config_file", "instance_principal", "resource_principal"] = "config_file"
+    region: str = ""
 
 
 @dataclass
@@ -35,6 +36,7 @@ class LogAnalyticsConfig:
 
     namespace: str = ""
     default_compartment_id: str = ""
+    default_compartment_name: str = ""
     default_log_group_id: Optional[str] = None
 
 
@@ -165,10 +167,12 @@ class Settings:
                 "config_path": str(self.oci.config_path),
                 "profile": self.oci.profile,
                 "auth_type": self.oci.auth_type,
+                "region": self.oci.region,
             },
             "log_analytics": {
                 "namespace": self.log_analytics.namespace,
                 "default_compartment_id": self.log_analytics.default_compartment_id,
+                "default_compartment_name": self.log_analytics.default_compartment_name,
                 "default_log_group_id": self.log_analytics.default_log_group_id,
             },
             "query": {
@@ -280,6 +284,7 @@ def _parse_config(data: Dict[str, Any]) -> Settings:
             config_path=Path(oci_data.get("config_path", str(settings.oci.config_path))),
             profile=oci_data.get("profile", settings.oci.profile),
             auth_type=oci_data.get("auth_type", settings.oci.auth_type),
+            region=oci_data.get("region", settings.oci.region),
         )
 
     if la_data := data.get("log_analytics"):
@@ -287,6 +292,10 @@ def _parse_config(data: Dict[str, Any]) -> Settings:
             namespace=la_data.get("namespace", settings.log_analytics.namespace),
             default_compartment_id=la_data.get(
                 "default_compartment_id", settings.log_analytics.default_compartment_id
+            ),
+            default_compartment_name=la_data.get(
+                "default_compartment_name",
+                settings.log_analytics.default_compartment_name,
             ),
             default_log_group_id=la_data.get("default_log_group_id"),
         )
@@ -417,6 +426,7 @@ def _apply_env_overrides(settings: Settings) -> Settings:
         "OCI_CONFIG_PATH": ("oci", "config_path"),
         "OCI_CONFIG_PROFILE": ("oci", "profile"),
         "OCI_LA_AUTH_TYPE": ("oci", "auth_type"),
+        "OCI_REGION": ("oci", "region"),
         "OCI_LA_TIMEOUT": ("query", "timeout_seconds"),
         "OCI_LA_LOG_LEVEL": ("logging", "log_level"),
     }

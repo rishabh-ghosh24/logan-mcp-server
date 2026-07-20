@@ -415,6 +415,26 @@ async def test_handle_tool_call_blocks_disallowed_cam_tool():
 
 
 @pytest.mark.asyncio
+async def test_set_compartment_handler_is_defense_in_depth_blocked_for_cam():
+    from oci_logan_mcp.handlers import MCPHandlers
+
+    h = MCPHandlers.__new__(MCPHandlers)
+    h.access_profile = _profile()
+
+    result = await MCPHandlers._set_compartment(
+        h,
+        {
+            "compartment_id": "ocid1.compartment.other",
+            "confirm_non_production": True,
+        },
+    )
+
+    payload = json.loads(result[0]["text"])
+    assert payload["status"] == "access_denied"
+    assert "root-controlled production compartment" in payload["error"]
+
+
+@pytest.mark.asyncio
 async def test_handle_tool_call_explains_explicit_entity_access_denial():
     from oci_logan_mcp.access_control import EntityAccessDenied
     from oci_logan_mcp.handlers import MCPHandlers

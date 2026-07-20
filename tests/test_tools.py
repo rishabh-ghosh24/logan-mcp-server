@@ -91,6 +91,19 @@ def test_run_query_schema_carries_budget_override_fields():
     assert "confirmation_secret" in props
 
 
+def test_production_scope_tools_document_confirmation_and_tenancy_routing():
+    tools = {t["name"]: t for t in get_tools()}
+
+    for name in ("run_query", "visualize", "export_results"):
+        props = tools[name]["inputSchema"]["properties"]
+        assert "confirm_non_production" in props
+        assert "LoggingAnalyticsData" in props["scope"]["description"]
+
+    set_tool = tools["set_compartment"]
+    assert "confirm_non_production" in set_tool["inputSchema"]["properties"]
+    assert "CAM users cannot access" in set_tool["description"]
+
+
 def test_related_dashboards_and_searches_schema():
     tools = {t["name"]: t for t in get_tools()}
     spec = tools["related_dashboards_and_searches"]

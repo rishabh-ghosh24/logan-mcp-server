@@ -72,6 +72,35 @@ On an already bootstrapped server, bootstrap preserves the live root-owned
 policy and configuration. It is an idempotent runtime refresh, not a way to
 replace current CAM assignments.
 
+## Production data defaults
+
+The protected runtime configuration shared by Assurance and CAM connections
+must identify the production scope explicitly:
+
+```yaml
+oci:
+  auth_type: instance_principal
+  region: eu-frankfurt-1
+
+log_analytics:
+  namespace: frdul02gvsni
+  default_compartment_name: LoggingAnalyticsData
+  default_compartment_id: ocid1.compartment.oc1..aaaaaaaaqvparsvna5cozzy65r4xasbecrkdk5mucyhtfu7pktmutd6bwajq
+```
+
+This makes Germany Central (Frankfurt) and `LoggingAnalyticsData` the fresh
+connection default for every user. Requests phrased as "all customers" or
+"the entire tenancy" remain in `LoggingAnalyticsData`, include its
+subcompartments, and return a notice explaining that production data exists
+there only.
+
+Assurance users can use `set_compartment` for a testing session. A different
+compartment is not selected until Logan returns the production-data warning
+and the user explicitly confirms; the override ends when the MCP connection
+restarts. CAM users never receive `set_compartment`, and the server ignores
+caller-supplied CAM scope overrides in favor of the root-controlled production
+compartment and entity allow-list.
+
 ## One-time server bootstrap
 
 Run from the repository root on the compute after replacing the public host and

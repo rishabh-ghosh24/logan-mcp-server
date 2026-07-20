@@ -33,6 +33,7 @@ class TestSettings:
 
         assert settings.oci.profile == "DEFAULT"
         assert settings.oci.auth_type == "config_file"
+        assert settings.oci.region == ""
         assert settings.query.max_results == 1000
         assert settings.cache.enabled is True
 
@@ -45,6 +46,8 @@ class TestSettings:
         assert "log_analytics" in data
         assert "query" in data
         assert data["oci"]["profile"] == "DEFAULT"
+        assert "region" in data["oci"]
+        assert "default_compartment_name" in data["log_analytics"]
 
 
 class TestConfigLoader:
@@ -67,6 +70,23 @@ class TestConfigLoader:
         assert settings.query.max_results == 500
         # Other defaults should be preserved
         assert settings.cache.enabled is True
+
+    def test_parse_production_scope_defaults(self):
+        settings = _parse_config({
+            "oci": {"region": "eu-frankfurt-1"},
+            "log_analytics": {
+                "default_compartment_id": "ocid1.compartment.production",
+                "default_compartment_name": "LoggingAnalyticsData",
+            },
+        })
+
+        assert settings.oci.region == "eu-frankfurt-1"
+        assert settings.log_analytics.default_compartment_name == "LoggingAnalyticsData"
+
+    @patch.dict("os.environ", {"OCI_REGION": "eu-frankfurt-1"})
+    def test_region_env_override(self):
+        settings = _apply_env_overrides(Settings())
+        assert settings.oci.region == "eu-frankfurt-1"
 
     @patch.dict("os.environ", {"OCI_LA_NAMESPACE": "test-namespace"})
     def test_env_override(self):
