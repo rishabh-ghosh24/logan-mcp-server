@@ -14,6 +14,18 @@ Describe 'ConvertTo-TomlString' {
     }
 }
 
+Describe 'ConvertTo-OpenSshQuotedPath' {
+    It 'quotes and normalizes a Windows profile path containing spaces' {
+        ConvertTo-OpenSshQuotedPath 'C:\Users\Iustin Dorila\.logan-mcp\known_hosts' |
+            Should -Be '"C:/Users/Iustin Dorila/.logan-mcp/known_hosts"'
+    }
+
+    It 'rejects characters that cannot be safely embedded in an OpenSSH option' {
+        { ConvertTo-OpenSshQuotedPath "C:\Users\bad`nname\known_hosts" } | Should -Throw
+        { ConvertTo-OpenSshQuotedPath 'C:\Users\bad"name\known_hosts' } | Should -Throw
+    }
+}
+
 Describe 'Logan TOML table safety' {
     It 'accepts supported fixture <Name>' -ForEach @(
         @{ Name = 'empty'; Content = '' }
@@ -103,7 +115,7 @@ Describe 'Set-LoganCodexConfig' {
         $content | Should -Match 'BatchMode=yes'
         $content | Should -Match 'IdentitiesOnly=yes'
         $content | Should -Match 'StrictHostKeyChecking=yes'
-        $content | Should -Match 'UserKnownHostsFile='
+        $content | Should -Match 'UserKnownHostsFile=\\".*Profile With Spaces.*known_hosts\\"'
         $content | Should -Match 'ServerAliveInterval=60'
         $content | Should -Match 'ServerAliveCountMax=3'
         $content | Should -Match '"-p", "2222", "cam@cam\.example\.test"'

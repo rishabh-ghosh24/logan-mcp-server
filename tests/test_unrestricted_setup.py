@@ -27,6 +27,8 @@ def test_windows_installer_uses_stable_production_launcher_and_name():
     assert 'command = "ssh.exe"' in source
     assert 'StrictHostKeyChecking=yes' in source
     assert 'UserKnownHostsFile=' in source
+    assert "ConvertTo-OpenSshQuotedPath $KnownHostsPath" in source
+    assert 'return \'"\' + $Path.Replace(\'\\\', \'/\') + \'"\'' in source
     assert 'StrictHostKeyChecking=no' not in source
     assert "logan-mcp|assurance-logan" in source
     assert "New-PrivateFileSecurity" in source
@@ -47,6 +49,36 @@ def test_windows_cam_installer_uses_a_real_atomic_backup_path():
     assert '$backupPath = "$ConfigPath.bak.$backupTimestamp"' in source
     assert "[IO.File]::Replace($candidatePath, $ConfigPath, $backupPath)" in source
     assert "[IO.File]::Replace($candidatePath, $ConfigPath, [string]$null)" not in source
+    assert "ConvertTo-OpenSshQuotedPath $KnownHostsPath" in source
+
+
+def test_windows_admin_actions_quote_paths_in_their_ssh_config():
+    for name in ("2-Provision-CAM.ps1", "3-Revoke-CAM.ps1"):
+        source = (
+            ROOT / "cam-setup" / "handover" / "windows" / name
+        ).read_text(encoding="utf-8")
+        assert "$knownHostsPath.Replace('\\', '/')" in source
+        assert 'UserKnownHostsFile "$knownHostsForSsh"' in source
+
+
+def test_openssh_accepts_the_quoted_known_hosts_option_with_spaces(tmp_path):
+    ssh = shutil.which("ssh")
+    if not ssh:
+        pytest.skip("OpenSSH client is unavailable")
+    known_hosts = tmp_path / "Profile With Spaces" / "known_hosts"
+    known_hosts.parent.mkdir()
+    known_hosts.write_text("", encoding="utf-8")
+    option = f'UserKnownHostsFile="{known_hosts.as_posix()}"'
+
+    result = subprocess.run(
+        [ssh, "-G", "-o", option, "127.0.0.1"],
+        capture_output=True,
+        text=True,
+    )
+
+    assert result.returncode == 0, result.stderr
+    expected = f"userknownhostsfile {known_hosts.as_posix()}"
+    assert expected in result.stdout
 
 
 def test_macos_installer_is_executable_posix_shell_with_pinned_host():

@@ -12,6 +12,15 @@ function ConvertTo-TomlString {
     return '"' + $Value.Replace('\', '\\').Replace('"', '\"') + '"'
 }
 
+function ConvertTo-OpenSshQuotedPath {
+    param([Parameter(Mandatory = $true)][string]$Path)
+
+    if ($Path -match "[`r`n`\"]") {
+        throw "OpenSSH path contains an unsupported character: $Path"
+    }
+    return '"' + $Path.Replace('\', '/') + '"'
+}
+
 function ConvertFrom-TomlTableHeader {
     param([Parameter(Mandatory = $true)][string]$Line)
 
@@ -169,7 +178,7 @@ function New-LoganCodexTable {
         '-o', 'BatchMode=yes',
         '-o', 'IdentitiesOnly=yes',
         '-o', 'StrictHostKeyChecking=yes',
-        '-o', ('UserKnownHostsFile={0}' -f $KnownHostsPath),
+        '-o', ('UserKnownHostsFile={0}' -f (ConvertTo-OpenSshQuotedPath $KnownHostsPath)),
         '-o', 'ServerAliveInterval=60',
         '-o', 'ServerAliveCountMax=3',
         '-p', ([string]$script:CamPort),

@@ -31,6 +31,15 @@ function ConvertTo-TomlString {
     return '"' + $Value.Replace('\', '\\').Replace('"', '\"') + '"'
 }
 
+function ConvertTo-OpenSshQuotedPath {
+    param([Parameter(Mandatory = $true)][string]$Path)
+
+    if ($Path -match "[`r`n`\"]") {
+        throw "OpenSSH path contains an unsupported character: $Path"
+    }
+    return '"' + $Path.Replace('\', '/') + '"'
+}
+
 function Write-Utf8NoBom {
     param(
         [string]$Path,
@@ -155,7 +164,7 @@ function Write-CodexConfig {
         "-o",
         "StrictHostKeyChecking=yes",
         "-o",
-        "UserKnownHostsFile=$KnownHostsPath",
+        "UserKnownHostsFile=$(ConvertTo-OpenSshQuotedPath $KnownHostsPath)",
         "-o",
         "ServerAliveInterval=60",
         "-o",
@@ -211,7 +220,7 @@ function Test-LoganSshConnection {
         "-o",
         "StrictHostKeyChecking=yes",
         "-o",
-        "UserKnownHostsFile=$KnownHostsPath",
+        "UserKnownHostsFile=$(ConvertTo-OpenSshQuotedPath $KnownHostsPath)",
         "-o",
         "ServerAliveInterval=60",
         "-o",
