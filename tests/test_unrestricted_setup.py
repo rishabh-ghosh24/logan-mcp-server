@@ -29,6 +29,8 @@ def test_windows_installer_uses_stable_production_launcher_and_name():
     assert 'UserKnownHostsFile=' in source
     assert "ConvertTo-OpenSshQuotedPath $KnownHostsPath" in source
     assert 'return \'"\' + $Path.Replace(\'\\\', \'/\') + \'"\'' in source
+    assert '$Path.Contains(\'"\')' in source
+    assert '-match "[`r`n`\\"]"' not in source
     assert 'StrictHostKeyChecking=no' not in source
     assert "logan-mcp|assurance-logan" in source
     assert "New-PrivateFileSecurity" in source
@@ -50,6 +52,8 @@ def test_windows_cam_installer_uses_a_real_atomic_backup_path():
     assert "[IO.File]::Replace($candidatePath, $ConfigPath, $backupPath)" in source
     assert "[IO.File]::Replace($candidatePath, $ConfigPath, [string]$null)" not in source
     assert "ConvertTo-OpenSshQuotedPath $KnownHostsPath" in source
+    assert '$Path.Contains(\'"\')' in source
+    assert '-match "[`r`n`\\"]"' not in source
 
 
 def test_windows_admin_actions_quote_paths_in_their_ssh_config():

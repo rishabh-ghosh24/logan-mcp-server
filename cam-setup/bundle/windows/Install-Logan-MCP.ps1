@@ -15,7 +15,7 @@ function ConvertTo-TomlString {
 function ConvertTo-OpenSshQuotedPath {
     param([Parameter(Mandatory = $true)][string]$Path)
 
-    if ($Path -match "[`r`n`\"]") {
+    if ($Path.Contains('"') -or $Path.Contains("`r") -or $Path.Contains("`n")) {
         throw "OpenSSH path contains an unsupported character: $Path"
     }
     return '"' + $Path.Replace('\', '/') + '"'
