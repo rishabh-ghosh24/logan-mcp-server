@@ -158,6 +158,15 @@ class TestNotificationsConfig:
         assert s.report_delivery.artifact_dir == Path("/tmp/reports-env")
         assert s.report_delivery.max_email_body_chars == 4096
 
+    @pytest.mark.parametrize(
+        "value,expected",
+        [("true", True), ("1", True), ("false", False), ("0", False)],
+    )
+    def test_env_override_query_logging(self, monkeypatch, value, expected):
+        monkeypatch.setenv("OCI_LA_QUERY_LOGGING", value)
+        s = _apply_env_overrides(Settings())
+        assert s.logging.query_logging is expected
+
     def test_to_dict_includes_notifications(self):
         s = Settings()
         s.notifications.slack.webhook_url = "https://test"
