@@ -470,3 +470,29 @@ async def test_initialize_core_passes_uuid_session_id_to_audit_logger():
     assert re.fullmatch(r"[0-9a-f]{32}", sid), (
         f"Expected 32-char hex session_id, got: {sid!r}"
     )
+
+
+def test_server_registers_mcp_handlers_with_installed_mcp():
+    """Build the real server (no patching) so an incompatible mcp release
+    fails here instead of at production startup."""
+    from mcp import types
+
+    srv = OCILogAnalyticsMCPServer()
+
+    assert types.ListToolsRequest in srv.server.request_handlers
+    assert types.CallToolRequest in srv.server.request_handlers
+
+
+def test_pyproject_pins_mcp_below_2():
+    """mcp 2.x removed the low-level Server decorator API this server uses."""
+    import tomllib
+    from pathlib import Path
+
+    from packaging.requirements import Requirement
+
+    pyproject = Path(__file__).resolve().parents[1] / "pyproject.toml"
+    deps = tomllib.loads(pyproject.read_text())["project"]["dependencies"]
+    mcp_req = next(Requirement(d) for d in deps if Requirement(d).name == "mcp")
+
+    assert mcp_req.specifier.contains("1.27.0")
+    assert not mcp_req.specifier.contains("2.0.0")
