@@ -97,6 +97,25 @@ command = "ssh"
 args = ["-i", "~/.ssh/your-key", "-o", "StrictHostKeyChecking=no", "-o", "ServerAliveInterval=60", "-o", "ServerAliveCountMax=3", "opc@your-vm-ip", "cd /path/to/logan-mcp-server && source venv/bin/activate && oci-logan-mcp --user firstname.lastname"]
 ```
 
+#### Remote clients over HTTPS
+
+Install the optional transport dependencies to expose a fixed-scope,
+authenticated Streamable HTTP endpoint:
+
+```bash
+pip install -e '.[https]'
+```
+
+The `oci-logan-mcp-http` command is a separate, bounded read-only entry point.
+It exposes six tools, accepts no caller-selected compartment or namespace,
+caps query time and rows, and is designed to run on loopback behind trusted
+TLS. The full stdio command and SSH configuration remain available.
+
+See [Deploy the read-only HTTPS MCP
+server](docs/https-mcp-server.md) for instance-principal IAM, token creation,
+systemd, Caddy, external validation, Fusion AI Agent Studio configuration,
+credential rotation, and rollback.
+
 #### Codex App
 
 For Windows teammates using Codex App, use the one-time installer in
@@ -149,6 +168,10 @@ Click **Save**, then start a new Codex session to connect.
 > `plink.exe` fallback in the [Windows setup guide](windows-setup/windows-setup.html).
 
 ## What You Can Do
+
+The table below describes the full stdio server. The optional HTTPS endpoint
+intentionally exposes only the six read-only tools listed in its deployment
+guide.
 
 | Capability | Tools | Examples |
 |---|---|---|

@@ -1,6 +1,6 @@
 [project]
 name = "oci-logan-mcp"
-version = "1.2.0"
+version = "1.3.0"
 description = "MCP Server for natural language interaction with OCI Log Analytics"
 readme = "README.md"
 license = {text = "MIT"}
@@ -48,9 +48,15 @@ dev = [
     "ruff>=0.1.0",
     "mypy>=1.0.0",
 ]
+https = [
+    "mcp>=1.26.0,<2.0.0",
+    "starlette>=0.40.0,<2.0.0",
+    "uvicorn>=0.30.0,<1.0.0",
+]
 
 [project.scripts]
 oci-logan-mcp = "oci_logan_mcp.__main__:main"
+oci-logan-mcp-http = "oci_logan_mcp.http_server:main"
 
 [build-system]
 requires = ["hatchling"]
@@ -58,6 +64,3 @@ build-backend = "hatchling.build"
 
 [tool.hatch.build.targets.wheel]
 packages = ["src/oci_logan_mcp"]
-
-[tool.hatch.build.targets.wheel.force-include]
-"src/oci_logan_mcp/data" = "oci_logan_mcp/data"

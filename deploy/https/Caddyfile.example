@@ -1,0 +1,21 @@
+{
+	admin off
+	auto_https disable_redirects
+	servers {
+		protocols h1 h2
+	}
+}
+
+# Replace this hostname before installing the file.
+logan-mcp.example.com {
+	tls {
+		issuer acme {
+			disable_http_challenge
+		}
+	}
+	reverse_proxy 127.0.0.1:8765 {
+		transport http {
+			keepalive off
+		}
+	}
+}

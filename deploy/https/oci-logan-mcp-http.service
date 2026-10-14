@@ -1,0 +1,35 @@
+[Unit]
+Description=Bounded read-only OCI Log Analytics MCP over HTTP
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=simple
+User=opc
+Group=opc
+WorkingDirectory=/home/opc/logan-mcp-server
+Environment=PYTHONDONTWRITEBYTECODE=1
+EnvironmentFile=/etc/oci-logan-mcp-http/service.env
+ExecStart=/usr/bin/env /home/opc/logan-mcp-server/venv/bin/oci-logan-mcp-http --host 127.0.0.1 --port 8765
+Restart=on-failure
+RestartSec=5
+UMask=0077
+NoNewPrivileges=true
+PrivateDevices=true
+PrivateTmp=true
+ProtectClock=true
+ProtectControlGroups=true
+ProtectHome=read-only
+ProtectHostname=true
+ProtectKernelLogs=true
+ProtectKernelModules=true
+ProtectKernelTunables=true
+ProtectSystem=strict
+ReadWritePaths=-/home/opc/.oci-logan-mcp
+RestrictAddressFamilies=AF_UNIX AF_INET AF_INET6
+RestrictSUIDSGID=true
+StandardOutput=journal
+StandardError=journal
+
+[Install]
+WantedBy=multi-user.target

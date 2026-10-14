@@ -428,6 +428,9 @@ def _apply_env_overrides(settings: Settings) -> Settings:
         settings.notifications.slack.webhook_url = v
     if v := os.environ.get("TELEGRAM_BOT_TOKEN"):
         settings.notifications.telegram.bot_token = v
+
+    if v := os.environ.get("OCI_LA_QUERY_LOGGING"):
+        settings.logging.query_logging = v.lower() in {"1", "true", "yes", "on"}
     if v := os.environ.get("TELEGRAM_CHAT_ID"):
         settings.notifications.telegram.default_chat_id = v
     if v := os.environ.get("OCI_LOGAN_ONS_TOPIC_OCID"):
