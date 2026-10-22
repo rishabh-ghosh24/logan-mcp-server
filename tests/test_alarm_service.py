@@ -31,6 +31,17 @@ def make_svc(client=None):
 
 class TestCreateAlert:
     @pytest.mark.asyncio
+    async def test_backing_saved_search_carries_the_query(self):
+        client = make_client()
+        result = await make_svc(client).create_alert(
+            display_name="query test", query="* | stats count",
+            destination_topic_id="ocid1.topic.1", compartment_id="ocid1.compartment.test",
+        )
+        details = client.create_management_saved_search.call_args.args[0]
+        assert details.data_config == [{"query": "* | stats count"}]
+        assert result["backing_saved_search_id"] == "ocid1.mss.1"
+
+    @pytest.mark.asyncio
     async def test_creates_all_4_resources(self):
         client = make_client()
         svc = make_svc(client)

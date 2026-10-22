@@ -78,7 +78,7 @@ class AlarmService:
                 provider_version="3.0.0",
                 metadata_version="2.0",
                 nls={},
-                data_config=[],
+                data_config=[{"query": query}],
                 screen_image=" ",
                 widget_template="visualizations/chartWidgetTemplate.html",
                 widget_vm="jet-modules/dashboards/widgets/lxSavedSearchWidget",
