@@ -13,17 +13,22 @@ concurrency:
 
 jobs:
   pytest:
-    runs-on: ubuntu-latest
+    runs-on: ${{ matrix.os }}
     timeout-minutes: 10
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [ubuntu-latest, macos-latest]
+        python-version: ["3.11", "3.12", "3.13", "3.14"]
 
     steps:
       - name: Checkout
         uses: actions/checkout@v4
 
-      - name: Set up Python 3.11
+      - name: Set up Python
         uses: actions/setup-python@v5
         with:
-          python-version: "3.11"
+          python-version: ${{ matrix.python-version }}
           cache: pip
 
       - name: Install project + dev dependencies
@@ -32,4 +37,37 @@ jobs:
           pip install -e ".[dev]"
 
       - name: Run tests
-        run: pytest --tb=short -q
+        run: |
+          python - <<'PY'
+          import os
+          import subprocess
+          import sys
+          import tempfile
+          from pathlib import Path
+
+          with tempfile.TemporaryDirectory(prefix="logan-tests-") as scratch:
+              environment = os.environ.copy()
+              environment["HOME"] = scratch
+              environment["MPLCONFIGDIR"] = str(Path(scratch) / "matplotlib")
+              subprocess.run(
+                  [sys.executable, "-m", "pytest", "--tb=short", "-q", "-p", "no:cacheprovider"],
+                  env=environment, check=True,
+              )
+          PY
+
+      - name: Build and inspect wheel
+        run: |
+          pip wheel --no-deps -w dist .
+          python - <<'PY'
+          from pathlib import Path
+          import zipfile
+
+          [wheel] = list(Path("dist").glob("oci_logan_mcp-*.whl"))
+          with zipfile.ZipFile(wheel) as archive:
+              names = archive.namelist()
+              assert len(names) == len(set(names))
+              for name in ("starter_queries.yaml", "builtin_queries.yaml"):
+                  assert archive.read(f"oci_logan_mcp/data/{name}").strip()
+              assert archive.read("oci_logan_mcp/__main__.py").strip()
+              print(f"Verified {wheel.name}: {len(names)} unique files, both query catalogs included")
+          PY
