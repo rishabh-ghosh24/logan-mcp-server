@@ -21,6 +21,155 @@ def _make_query(name="q1", query="'Log Source' = 'Linux' | stats count by Severi
     }
 
 
+def test_sanitize_for_sharing_cleans_metadata_and_validates_fields():
+    from oci_logan_mcp.promote import SHARED_SCHEMA_FIELDS
+
+    row = _make_query(name="host_192.0.2.9")
+    row.update(description="contact bob@example.com at 192.0.2.9", tags=["host:192.0.2.9", "ok", "password=x"],
+               private_note="do not share", category="ops <script>", intent_key="x y", query_shape="count_by_log_source",
+               success_count="8", failure_count="bad", entry_id="invalid")
+    result = sanitize_for_sharing(row)
+    assert result["name"] == "host_<ip_address>"
+    assert result["description"] == "contact <email> at <ip_address>"
+    assert result["tags"] == ["host:<ip_address>", "ok"]
+    assert result["category"] == "general" and result["query_shape"] == "count_by_log_source"
+    assert result["success_count"] == 8 and result["failure_count"] == 0
+    assert "entry_id" not in result and "intent_key" not in result
+    assert set(result) <= set(SHARED_SCHEMA_FIELDS) | {"source", "promoted_at"}
+    assert row["name"] == "host_192.0.2.9" and row["private_note"] == "do not share"
+
+
+@pytest.mark.parametrize("bad_field", ["name", "query"])
+def test_shared_key_rejects_uncleanable_identity(bad_field):
+    from oci_logan_mcp.promote import shared_key
+
+    row = _make_query()
+    assert shared_key(row) == ("q1", row["query"])
+    assert sanitize_for_sharing(row)["name"] == "q1"
+    row[bad_field] = "password=x"
+    assert shared_key(row) is None and sanitize_for_sharing(row) is None
+
+
+@pytest.mark.parametrize("address", ["192.0.2.9", "2001:db8::1"])
+def test_shared_key_uses_sanitized_name_and_query(address):
+    from oci_logan_mcp.promote import shared_key
+
+    row = _make_query(name=f"Host_{address}", query=" 'IP'  =  '2001:db8::1' |  stats count ")
+    assert shared_key(row) == ("host_<ip_address>", "'IP' = '<ip_address>' | stats count")
+    assert shared_key(sanitize_for_sharing(row)) == shared_key(row)
+
+
+def _shared_rows(base_dir):
+    return atomic_yaml_read(base_dir / "shared" / "promoted_queries.yaml")["queries"]
+
+
+def test_shared_lifecycle_withdraws_rejected_replaced_pending_and_deleted_rows(tmp_path):
+    store = UserStore(tmp_path, user_id="alice")
+    raw = "'IP' = '192.0.2.9' | stats count"
+    store.save_query(name="host_192.0.2.9", query=raw, description="saved", interest_score=5)
+    store.record_success(raw)
+    promote_all(tmp_path)
+    [shared] = _shared_rows(tmp_path)
+    assert shared["name"] == "host_<ip_address>" and shared["success_count"] == 1
+    for _ in range(5):
+        store.record_failure(raw)
+    promote_all(tmp_path)
+    assert _shared_rows(tmp_path) == []
+    replacement = "'IP' = '198.51.100.7' | stats count"
+    store.save_query(name="host_192.0.2.9", query=replacement, description="replacement", interest_score=5)
+    store.record_success(replacement)
+    promote_all(tmp_path)
+    assert _shared_rows(tmp_path)[0]["success_count"] == 1
+    newer = "'IP' = '198.51.100.7' | stats count by Severity"
+    store.save_query(name="host_192.0.2.9", query=newer, description="newer", interest_score=5)
+    promote_all(tmp_path)
+    assert _shared_rows(tmp_path) == []
+    assert store.list_queries()[0]["promotion_status"] == "pending"
+    store.record_success(newer)
+    promote_all(tmp_path)
+    assert _shared_rows(tmp_path)[0]["query"].endswith("count by Severity")
+    store.delete_query("host_192.0.2.9")
+    promote_all(tmp_path)
+    assert _shared_rows(tmp_path) == []
+
+
+@pytest.mark.parametrize("corrupt", ["queries: [", "", "queries: null", "queries: [{}]", "queries: [1]"])
+def test_shared_scan_error_preserves_previous_row_and_reports_user(tmp_path, corrupt):
+    store = UserStore(tmp_path, user_id="alice")
+    row = _make_query()
+    atomic_yaml_write(store._queries_path, {"queries": [row]})
+    promote_all(tmp_path)
+    before = _shared_rows(tmp_path)
+    store._queries_path.write_text(corrupt)
+    result = promote_all(tmp_path)
+    assert _shared_rows(tmp_path) == before
+    assert "alice" in result["scan_errors"]
+    assert result["withdrawal_skipped"] == "incomplete_scan"
+    assert store._queries_path.read_text() == corrupt
+
+
+def test_corrupt_shared_catalog_is_preserved_instead_of_rebuilt_silently(tmp_path):
+    store = UserStore(tmp_path, user_id="alice")
+    atomic_yaml_write(store._queries_path, {"queries": [_make_query()]})
+    shared = tmp_path / "shared" / "promoted_queries.yaml"
+    shared.write_text("queries: [")
+    with pytest.raises(yaml.YAMLError):
+        promote_all(tmp_path)
+    assert shared.read_text() == "queries: ["
+
+
+def test_shared_scan_rechecks_mtime_under_shared_lock(tmp_path, monkeypatch):
+    from contextlib import contextmanager
+    import oci_logan_mcp.promote as module
+
+    store = UserStore(tmp_path, user_id="alice")
+    row = _make_query()
+    atomic_yaml_write(store._queries_path, {"queries": [row]})
+    promote_all(tmp_path)
+    before = _shared_rows(tmp_path)
+    atomic_yaml_write(store._queries_path, {"queries": []})
+    real_lock = module.locked_file
+
+    @contextmanager
+    def changing_lock(path, lock):
+        with real_lock(path, lock):
+            if path.name == "catalog.lock":
+                atomic_yaml_write(store._queries_path, {"queries": [], "changed": True})
+            yield
+
+    monkeypatch.setattr(module, "locked_file", changing_lock)
+    result = module.promote_all(tmp_path)
+    assert _shared_rows(tmp_path) == before
+    assert "alice" in result["scan_errors"] and result["withdrawal_skipped"] == "incomplete_scan"
+
+
+def test_shared_existing_rows_are_resanitized_even_with_incomplete_scan(tmp_path):
+    user = tmp_path / "users" / "broken"
+    user.mkdir(parents=True)
+    (user / "learned_queries.yaml").write_text("queries: [")
+    row = _make_query()
+    row.update(description="mail bob@example.com", private_note="hidden", user_count=2)
+    atomic_yaml_write(tmp_path / "shared" / "promoted_queries.yaml", {"queries": [row]})
+    result = promote_all(tmp_path)
+    [clean] = _shared_rows(tmp_path)
+    assert clean["description"] == "mail <email>" and "private_note" not in clean
+    assert clean["user_count"] == 2 and result["withdrawal_skipped"] == "incomplete_scan"
+
+
+def test_shared_positive_replacement_withdraws_despite_other_user_scan_error(tmp_path):
+    store = UserStore(tmp_path, user_id="alice")
+    row = _make_query()
+    atomic_yaml_write(store._queries_path, {"queries": [row]})
+    promote_all(tmp_path)
+    assert len(_shared_rows(tmp_path)) == 1
+    store.save_query(name=row["name"], query="* | stats count by Entity", description="replacement", interest_score=5)
+    broken = tmp_path / "users" / "bob"
+    broken.mkdir()
+    (broken / "learned_queries.yaml").write_text("queries: [")
+    result = promote_all(tmp_path)
+    assert _shared_rows(tmp_path) == [] and "bob" in result["scan_errors"]
+
+
 @pytest.mark.parametrize("preexisting", [False, True])
 def test_promote_marks_winners_beyond_actual_shared_cap_as_over_cap(tmp_path, preexisting):
     from oci_logan_mcp.promote import MAX_PROMOTED, OVER_CAP_STATUS
@@ -35,6 +184,7 @@ def test_promote_marks_winners_beyond_actual_shared_cap_as_over_cap(tmp_path, pr
         old = [_make_query(name=f"old{i}", query=f"'Log Source' = 'Old{i}' | stats count",
                            interest_score=10) for i in range(MAX_PROMOTED)]
         atomic_yaml_write(tmp_path / "shared" / "promoted_queries.yaml", {"queries": old})
+        atomic_yaml_write(user_dir / "learned_queries.yaml", {"version": 1, "queries": old + entries})
     result = promote_all(tmp_path)
     shared = atomic_yaml_read(tmp_path / "shared" / "promoted_queries.yaml")["queries"]
     after = atomic_yaml_read(user_dir / "learned_queries.yaml")["queries"]

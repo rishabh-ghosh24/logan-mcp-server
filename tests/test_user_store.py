@@ -1,5 +1,25 @@
 # tests/test_user_store.py
 import pytest
+
+
+def test_replacing_query_text_resets_history_and_promotion_fields(tmp_path):
+    from oci_logan_mcp.user_store import UserStore
+    from oci_logan_mcp.file_lock import atomic_yaml_read, atomic_yaml_write
+
+    store = UserStore(base_dir=tmp_path, user_id="u")
+    old = "a | stats count"
+    initial = store.save_query(name="n", query=old, description="old", interest_score=5)
+    store.record_success(old)
+    store.record_failure(old)
+    data = atomic_yaml_read(store._queries_path)
+    data["queries"][0].update(promotion_status="promoted", promotion_reason="good", promoted_at="old")
+    atomic_yaml_write(store._queries_path, data)
+    store.save_query(name="n", query="b | stats count", description="new", interest_score=2)
+    [entry] = store.list_queries()
+    assert (entry["success_count"], entry["failure_count"], entry["use_count"], entry["interest_score"]) == (0, 0, 1, 2)
+    assert entry["entry_id"] == initial["entry_id"] and entry["query"] == "b | stats count"
+    assert not {"promotion_status", "promotion_reason", "promoted_at"} & entry.keys()
+
 from pathlib import Path
 from oci_logan_mcp.user_store import UserStore
 

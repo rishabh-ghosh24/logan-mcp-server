@@ -2,6 +2,20 @@
 import pytest
 from oci_logan_mcp.sanitize import looks_sensitive, sanitize_query_text, sanitize_pattern
 
+
+@pytest.mark.parametrize("address", ["2001:db8::1234", "2001:0db8:0000:0000:0000:0000:0000:1234", "::1", "::", "::ffff:192.0.2.9"])
+def test_ipv6_is_redacted_and_timestamps_are_not(address):
+    assert sanitize_query_text(f"'Source IP' = '{address}' | stats count") == "'Source IP' = '<ip_address>' | stats count"
+    assert sanitize_query_text("'Time' > '12:30:45' | stats count") == "'Time' > '12:30:45' | stats count"
+
+
+@pytest.mark.parametrize("literal", ["'a  b'", "'O''Brien  Inc'", r'"say \"a  b\" now"', "'line\n\ttwo'"])
+def test_quote_aware_normalization_preserves_literal_bytes(literal):
+    from oci_logan_mcp.sanitize import normalize_query_text
+
+    assert normalize_query_text(f"  'Message'  =  {literal}  |  stats   count  ") == f"'Message' = {literal} | stats count"
+    assert normalize_query_text("'Message' = 'a  b'") != normalize_query_text("'Message' = 'a b'")
+
 class TestLooksSensitive:
     def test_detects_ocid(self):
         assert looks_sensitive("ocid1.compartment.oc1..aaaaaaa123")

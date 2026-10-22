@@ -3,10 +3,15 @@
 from __future__ import annotations
 
 import re
+from ipaddress import IPv6Address
 from typing import Optional
 
 OCID_RE = re.compile(r"ocid1\.[A-Za-z0-9_.-]+")
-IPV4_RE = re.compile(r"\b(?:\d{1,3}\.){3}\d{1,3}\b")
+IPV4_RE = re.compile(r"(?<![\d.])(?:\d{1,3}\.){3}\d{1,3}(?![\d.])")
+IPV6_RE = re.compile(
+    r"(?<![0-9a-f:.])(?=[0-9a-f:.]*::|(?:[0-9a-f]{1,4}:){7})"
+    r"[0-9a-f:]+(?:\.[0-9]{1,3}){0,3}(?![0-9a-f:.])", re.IGNORECASE,
+)
 EMAIL_RE = re.compile(r"\b[A-Za-z0-9._%+-]+@[A-Za-z0-9.-]+\.[A-Za-z]{2,}\b")
 SECRETISH_RE = re.compile(
     r"(?:api[_-]?key|secret|password|token|bearer|authorization)", re.IGNORECASE,
@@ -22,6 +27,7 @@ JWT_RE = re.compile(
 _SENSITIVE_PATTERNS = [
     OCID_RE,
     IPV4_RE,
+    IPV6_RE,
     EMAIL_RE,
     SECRETISH_RE,
     UUID_RE,
@@ -40,6 +46,7 @@ def sanitize_query_text(query_text: str) -> Optional[str]:
     if not query_text:
         return None
     cleaned = OCID_RE.sub("<resource_ocid>", query_text)
+    cleaned = IPV6_RE.sub(_redact_ipv6, cleaned)
     cleaned = IPV4_RE.sub("<ip_address>", cleaned)
     cleaned = EMAIL_RE.sub("<email>", cleaned)
     cleaned = UUID_RE.sub("<uuid>", cleaned)
@@ -52,13 +59,19 @@ def sanitize_query_text(query_text: str) -> Optional[str]:
     return cleaned
 
 
+def _redact_ipv6(match: re.Match) -> str:
+    candidate = match.group(0)
+    try:
+        IPv6Address(candidate)
+    except ValueError:
+        return candidate
+    return "<ip_address>"
+
+
 def normalize_query_text(query: str) -> str:
-    """Normalize query text for cross-user aggregation:
-    - Strip leading/trailing whitespace
-    - Collapse internal whitespace runs to single spaces
-    - Preserve case (query syntax can be case-significant for strings)
-    """
-    return re.sub(r"\s+", " ", query.strip())
+    """Collapse whitespace outside quotes, preserving literal bytes and case."""
+    quoted_or_space = r"'(?:''|\\.|[^'\\])*'|\"(?:\"\"|\\.|[^\"\\])*\"|\s+"
+    return re.sub(quoted_or_space, lambda m: " " if m.group(0).isspace() else m.group(0), query).strip()
 
 
 def sanitize_pattern(text: str) -> Optional[str]:

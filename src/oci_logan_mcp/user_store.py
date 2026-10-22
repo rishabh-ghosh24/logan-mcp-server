@@ -44,7 +44,7 @@ def _apply_entry_id_backfill(data: Dict[str, Any]) -> bool:
     return modified
 
 
-def ensure_entry_ids(queries_path: Path, lock_path: Path) -> Dict[str, Any]:
+def ensure_entry_ids(queries_path: Path, lock_path: Path, *, strict: bool = False) -> Dict[str, Any]:
     """Load a learned_queries.yaml, backfilling entry_id for any legacy rows.
 
     Backfill is idempotent and persisted under the user's queries.lock using the
@@ -55,12 +55,25 @@ def ensure_entry_ids(queries_path: Path, lock_path: Path) -> Dict[str, Any]:
     Shared between UserStore._load and promote.promote_all's phase-1 scan so
     pre-1.2.0 files get IDs on their first encounter, regardless of entry point.
     """
-    data = atomic_yaml_read(queries_path, default={"version": 1, "queries": []})
+    def read_store():
+        data = atomic_yaml_read(queries_path, default={"version": 1, "queries": []}, strict=strict)
+        if strict:
+            if not isinstance(data, dict) or not isinstance(data.get("queries"), list):
+                raise ValueError("Expected a query store with a queries list")
+            for row in data["queries"]:
+                if (not isinstance(row, dict)
+                        or any(not isinstance(row.get(field), str) or not row[field].strip()
+                               for field in ("name", "query"))
+                        or (row.get("entry_id") and not isinstance(row["entry_id"], str))):
+                    raise ValueError("Expected named query rows with string identities")
+        return data
+
+    data = read_store()
     if not _needs_entry_id_backfill(data):
         return data
     thread_lock = threading.RLock()
     with locked_file(lock_path, thread_lock):
-        data = atomic_yaml_read(queries_path, default={"version": 1, "queries": []})
+        data = read_store()
         if _apply_entry_id_backfill(data):
             atomic_yaml_write(queries_path, data)
     return data
@@ -150,6 +163,7 @@ class UserStore:
             # Personal ↔ personal: update in place by name (bypass collision check)
             for q in queries:
                 if q["name"] == effective_name:
+                    replaced = q["query"] != query
                     q["query"] = query
                     q["description"] = description
                     q["category"] = category
@@ -160,6 +174,10 @@ class UserStore:
                     q["last_used"] = now
                     q["use_count"] = q.get("use_count", 0) + 1
                     q["interest_score"] = max(q.get("interest_score", 0), interest_score)
+                    if replaced:
+                        q.update(success_count=0, failure_count=0, use_count=1, interest_score=interest_score)
+                        for key in ("promotion_status", "promotion_reason", "promoted_at"):
+                            q.pop(key, None)
                     if intent_key is not None:
                         q["intent_key"] = intent_key
                     if query_shape is not None:

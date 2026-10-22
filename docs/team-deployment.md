@@ -167,6 +167,6 @@ oci-logan-mcp --promote-and-exit --base-dir /home/opc/.oci-logan-mcp
 
 Queries with no recorded executions remain pending. The shared catalog holds at most 100 entries; qualifying entries outside the final catalog are marked `pending: over_cap`. Shared examples in `get_query_examples` show their user and success counts.
 
-Promotion sanitizes query text. Review names, descriptions and tags before sharing them across users; further shared-catalog privacy fixes remain in the publication plan. Recorded success means the execution succeeded, not that the query's interpretation has been independently checked.
+Promotion sanitizes names, queries, descriptions and tags and shares only validated metadata. It withdraws rejected or replaced patterns; removal based on absence requires a complete scan of the personal stores. Corrupt or changed stores are reported in `scan_errors` and prevent that absence-based removal. Sanitization is pattern based, so review content before sharing it. Recorded success means the execution succeeded, not that the query's interpretation has been independently checked.
 
 Use the [scheduling guide](cron-scheduling.md) for cron, systemd and launchd examples. Scheduling is an administrator choice; installing the package does not start a promotion job.
