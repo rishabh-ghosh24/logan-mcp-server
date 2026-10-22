@@ -27,3 +27,20 @@ def test_packaged_query_passes_offline_syntax_rules(entry):
     validator = QueryValidator(MagicMock())
     assert validator._validate_syntax(query) == []
     assert validator._validate_syntax(query + " | timestats count span=1h")
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("name", ["filter_by_severity", "error_by_host"])
+async def test_host_templates_accept_a_discovered_grouping_field(name):
+    class TenantSchema:
+        async def get_all_field_names(self):
+            return ["Severity", "Entity", "Log Source"]
+
+    entry = next(entry for entry in _packaged("builtin_queries.yaml") if entry["name"] == name)
+    query = entry["query"].replace("{field}", "Entity").replace("{level}", "ERROR")
+    validator = QueryValidator(TenantSchema())
+    result = await validator.validate(query)
+    assert result.valid, result.errors
+    assert set(validator._extract_field_references(query)) == {"Severity", "Entity"}
+    unavailable = await validator.validate(query.replace("'Entity'", "'Unavailable Host Field'"))
+    assert not unavailable.valid and unavailable.errors

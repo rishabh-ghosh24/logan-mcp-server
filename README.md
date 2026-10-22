@@ -22,7 +22,7 @@ Alternatively, with [uv installed](https://docs.astral.sh/uv/guides/tools/), run
 uvx --from git+https://github.com/rishabh-ghosh24/logan-mcp-server oci-logan-mcp --setup
 ```
 
-The Git command uses the repository's default branch. These 1.3.0 instructions take effect when the publication fixes reach that branch.
+The Git command uses the repository's default branch.
 
 ### 2. Configure
 
@@ -589,6 +589,8 @@ The former `OCI_LA_CONFIRMATION_SECRET` variable is no longer used.
 
 ### History and audit records
 
+Operational logs redact confirmation secrets on root handlers present at server startup. Embedding applications that add handlers later must apply `install_secret_redaction` to those handlers.
+
 Private query history is stored at `~/.oci-logan-mcp/users/<username>/history/queries.log`, with POSIX mode `0600` and rotation. It does not propagate through the operational logger. `logging.query_logging: false` disables file history; the recent-query resource remains in memory for the session.
 
 Audit records are stored separately at `~/.oci-logan-mcp/logs/audit.log`. New records contain `args_redacted`, not a duplicate raw `args` field. The local single-user default retains redacted argument text so investigation playbooks and transcripts remain useful.
@@ -664,6 +666,19 @@ python run_tests.py
 - Show execution/user counts on shared examples.
 - Exercise real MCP stdio and configure an eight-job CI matrix with wheel builds.
 - Move internal installer/documents out of tracked publication files and add public setup, deployment and security guidance.
+
+- Report blocked, unknown and failed tool calls as MCP errors.
+- Limit batches to ten queries and reserve budget for each live item.
+- Bind confirmations to the effective scope and wait for active operations before changing scope.
+- Sanitize shared metadata, redact IPv6 addresses and withdraw rejected or replaced patterns; remove orphaned patterns only after complete scans.
+- Preserve whitespace inside quoted query text and keep learning outcomes separate for different scopes.
+- Record execution outcomes for batch, visualization and export queries.
+- Reject unsafe user identifiers and migrate legacy queries only to the OS owner's private store, once.
+- Redact confirmation secrets on logging handlers, including child logs and handlers attached before startup.
+- Fix starter queries and diagnose common Log Analytics syntax errors before execution.
+- Use discovered grouping fields in host templates instead of assuming Host Name exists in every tenancy.
+- Replace the broad substring starter with keyword matching; counts follow keyword semantics.
+- Clarify core tool descriptions and record per-call MCP client claims in audit events.
 
 
 ### 1.2.0 (2026-04-17)

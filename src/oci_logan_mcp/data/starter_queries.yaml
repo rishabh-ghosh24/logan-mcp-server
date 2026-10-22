@@ -53,8 +53,8 @@ queries:
   # --- errors ---
   - name: error_like_sources_by_log_source
     query: >-
-      (Severity in ('ERROR', 'CRITICAL', 'FATAL') or 'Original Log Content' like '%error%' or 'Original Log Content' like '%fail%' or 'Original Log Content' like '%fatal%' or 'Original Log Content' like '%critical%' or 'Original Log Content' like '%exception%') and 'Original Log Content' not like '%NOERROR%' | stats count by 'Log Source' | sort -count
-    description: Count error-like activity per log source using case-insensitive stored message search
+      (error or fail or fatal or critical or exception) | stats count by 'Log Source' | sort -count
+    description: Count logs matching error keywords by source; keyword matching can differ from substring matching
     category: errors
 
   - name: Errors by source

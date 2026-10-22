@@ -446,6 +446,8 @@ class OCILogAnalyticsMCPServer:
 
 def main() -> None:
     """Entry point for the MCP server."""
+    for handler in logging.getLogger().handlers:
+        install_secret_redaction(handler)
     try:
         server = OCILogAnalyticsMCPServer()
         asyncio.run(server.run())

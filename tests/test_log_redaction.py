@@ -34,3 +34,32 @@ def test_child_logger_records_and_format_args_are_redacted(secret):
     output = buffer.getvalue()
     assert "MARKER_HEAD" not in output and "MARKER_TAIL" not in output and "BARE_MARKER" not in output
     assert output.count("<REDACTED>") == 6 and "alert_id=x" in output and '"id": 1' in output
+
+
+def test_main_redacts_root_handlers_added_after_import(monkeypatch):
+    import oci_logan_mcp.server as server_module
+
+    buffer = io.StringIO()
+    late_handler = logging.StreamHandler(buffer)
+    root = logging.getLogger()
+    old_handlers, old_level = root.handlers[:], root.level
+
+    class LoggingServer:
+        async def run(self):
+            logging.getLogger("mcp.server.lowlevel.server").warning(
+                "late-handler args=%s safe_id=release_check",
+                {"confirmation_secret": "LATE_HANDLER_SECRET_MARKER"},
+            )
+
+    monkeypatch.setattr(server_module, "OCILogAnalyticsMCPServer", LoggingServer)
+    root.handlers = [late_handler]
+    root.setLevel(logging.DEBUG)
+    try:
+        server_module.main()
+    finally:
+        root.handlers, root.level = old_handlers, old_level
+        late_handler.close()
+    output = buffer.getvalue()
+    assert "safe_id=release_check" in output
+    assert "LATE_HANDLER_SECRET_MARKER" not in output
+    assert output.count("<REDACTED>") == 1

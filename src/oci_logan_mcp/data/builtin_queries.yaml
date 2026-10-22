@@ -2,7 +2,8 @@
 #
 # These are generic, battle-tested query patterns validated against
 # real OCI Log Analytics environments. They ship with the server
-# so any LLM/IDE gets working examples out-of-the-box.
+# so any LLM/IDE gets working examples out-of-the-box. Discover field names
+# with list_fields before substituting {field}; names vary by tenancy/source.
 
 version: 1
 
@@ -25,12 +26,12 @@ queries:
     query: "'{keyword}' | fields 'Log Source', 'Entity', 'Message', 'Time'"
 
   - name: filter_by_severity
-    description: Filter logs by severity level
-    query: "'Severity' = '{level}' | stats count by 'Host Name'"
+    description: Filter logs by severity; set {field} to a grouping field discovered with list_fields
+    query: "'Severity' = '{level}' | stats count by '{field}'"
 
   - name: error_by_host
-    description: Count errors by host
-    query: "'Severity' = 'Error' | stats count by 'Host Name' | sort -count"
+    description: Count errors by a discovered host field; set {field} from list_fields (Entity groups monitored entities)
+    query: "'Severity' = 'Error' | stats count by '{field}' | sort -count"
 
   - name: recent_logs
     description: Get most recent logs
