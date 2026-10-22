@@ -3,9 +3,9 @@
 from __future__ import annotations
 
 import logging
+import getpass
 import os
 import re
-import shutil
 import threading
 import uuid
 from copy import deepcopy
@@ -82,13 +82,16 @@ def ensure_entry_ids(queries_path: Path, lock_path: Path, *, strict: bool = Fals
 class UserStore:
     """Manages per-user learned queries with shared overlay."""
 
-    _VALID_USER_RE = re.compile(r"^[a-zA-Z0-9_.-]+$")
+    _VALID_USER_RE = re.compile(r"^(?!\.)[A-Za-z0-9_.-]+$")
 
     def __init__(self, base_dir: Path, user_id: Optional[str] = None) -> None:
         self.base_dir = base_dir
         raw_id = user_id or os.environ.get("LOGAN_USER") or os.environ.get("USER", "default")
-        if not self._VALID_USER_RE.match(raw_id):
-            raise ValueError(f"Invalid user_id '{raw_id}': must be alphanumeric, _, ., or -")
+        if not self._VALID_USER_RE.fullmatch(raw_id) or ".." in raw_id:
+            raise ValueError(
+                f"Invalid user_id '{raw_id}': letters, digits, '_', '.', '-' only; "
+                "must not start with '.' or contain '..'"
+            )
         self.user_id = raw_id
         self._user_dir = base_dir / "users" / self.user_id
         self._user_dir.mkdir(parents=True, exist_ok=True)
@@ -106,12 +109,24 @@ class UserStore:
         return locked_file(self._lock_path, self._thread_lock)
 
     def _migrate_legacy(self, base_dir: Path) -> None:
-        """One-time migration: copy legacy context/learned_queries.yaml to user dir."""
+        """Move legacy queries to their OS owner's personal store once."""
         legacy = base_dir / "context" / "learned_queries.yaml"
         target = self._queries_path
-        if legacy.exists() and not target.exists():
-            shutil.copy2(legacy, target)
-            logger.info(f"Migrated legacy learned queries to user store for '{self.user_id}'")
+        if not legacy.exists():
+            return
+        if self.user_id != getpass.getuser():
+            logger.info("Legacy queries left for their OS owner; user %s is not the owner", self.user_id)
+            return
+        with locked_file(legacy.parent / "migration.lock", threading.RLock()):
+            archived = legacy.with_suffix(".yaml.migrated")
+            if not legacy.exists() or target.exists() or archived.exists():
+                logger.info("Legacy migration skipped; personal store or archive already exists for %s", self.user_id)
+                return
+            data = atomic_yaml_read(legacy, strict=True)
+            atomic_yaml_write(target, data)
+            legacy.rename(archived)
+            os.chmod(archived, 0o600)
+            logger.info("Migrated legacy queries to personal store for OS owner %s", self.user_id)
 
     def save_query(
         self,

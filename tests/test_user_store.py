@@ -20,6 +20,35 @@ def test_replacing_query_text_resets_history_and_promotion_fields(tmp_path):
     assert entry["entry_id"] == initial["entry_id"] and entry["query"] == "b | stats count"
     assert not {"promotion_status", "promotion_reason", "promoted_at"} & entry.keys()
 
+
+@pytest.mark.parametrize("bad", ["..", "../x", ".hidden", "a/b", "a..b", "valid\n"])
+def test_rejects_unsafe_user_ids(tmp_path, bad):
+    from oci_logan_mcp.user_store import UserStore
+
+    with pytest.raises(ValueError, match="Invalid user_id"):
+        UserStore(base_dir=tmp_path, user_id=bad)
+
+
+def test_legacy_migration_goes_to_os_owner_only_and_once(tmp_path, monkeypatch):
+    from oci_logan_mcp.user_store import UserStore
+    import stat
+
+    monkeypatch.setattr("getpass.getuser", lambda: "opc")
+    legacy = tmp_path / "context" / "learned_queries.yaml"
+    legacy.parent.mkdir()
+    text = "version: 1\nqueries:\n- name: old\n  query: '* | stats count'\n  description: d\n"
+    legacy.write_text(text)
+    legacy.chmod(0o644)
+    assert UserStore(tmp_path, user_id="first.last").list_queries() == []
+    assert legacy.read_text() == text
+    owner = UserStore(tmp_path, user_id="opc")
+    assert owner.list_queries()[0]["name"] == "old"
+    assert stat.S_IMODE(owner._queries_path.stat().st_mode) == 0o600
+    archived = legacy.with_suffix(".yaml.migrated")
+    assert not legacy.exists() and archived.read_text() == text
+    assert stat.S_IMODE(archived.stat().st_mode) == 0o600
+    assert UserStore(tmp_path, user_id="another").list_queries() == []
+    assert UserStore(tmp_path, user_id="opc").list_queries()[0]["name"] == "old"
 from pathlib import Path
 from oci_logan_mcp.user_store import UserStore
 
@@ -182,7 +211,8 @@ class TestMergedQueries:
         assert q1["query"] == "my version"
 
 class TestLegacyMigration:
-    def test_migrates_legacy_queries_on_first_init(self, base_dir):
+    def test_migrates_legacy_queries_on_first_init(self, base_dir, monkeypatch):
+        monkeypatch.setattr("getpass.getuser", lambda: "alice")
         # Create legacy file
         legacy_dir = base_dir / "context"
         legacy_dir.mkdir(parents=True)
