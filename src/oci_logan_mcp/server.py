@@ -87,7 +87,11 @@ ENABLE_STARTUP_SCHEMA_REFRESH = os.getenv(
 
 
 def build_tool_list() -> list[Tool]:
-    """Describe all tools using the same mutation policy enforced by handlers."""
+    """Describe tools using the handlers' mutation policy.
+
+    OCI calls stay within the authenticated tenancy; only outbound delivery is
+    open-world, and read-only tools may write local reports, exports or transcripts.
+    """
     tools = []
     for definition in get_tools():
         name = definition["name"]
@@ -254,9 +258,10 @@ class OCILogAnalyticsMCPServer:
         remembered = self.preference_store.get(COMPARTMENT_PREFERENCE_KEY)
         if self.oci_client is not None and remembered:
             compartment = remembered["resolved_value"]
-            self.oci_client.compartment_id = compartment
-            self.settings.log_analytics.default_compartment_id = compartment
-            logger.info("Applied the user's remembered compartment: %s", compartment)
+            if compartment:
+                self.oci_client.compartment_id = compartment
+                self.settings.log_analytics.default_compartment_id = compartment
+                logger.info("Applied the user's remembered compartment: %s", compartment)
         logger.info(f"User identity: {self.user_store.user_id}")
 
         # Initialize per-user secret store

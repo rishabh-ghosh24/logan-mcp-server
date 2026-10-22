@@ -139,9 +139,12 @@ class AuditLogger:
                 }
             entry["result_summary"] = result_summary
         if error or error_type:
-            entry["error"] = error if self._store_arguments else {
-                "error_type": error_type or "unknown", **_fingerprint(error),
-            }
+            if not self._store_arguments:
+                entry["error"] = {
+                    "error_type": error_type or "unknown", **_fingerprint(error),
+                }
+            elif error:
+                entry["error"] = error
         if not self._store_arguments:
             entry["text_retained"] = False
 

@@ -11,6 +11,15 @@ import pytest
 from oci_logan_mcp.audit import AuditLogger
 
 
+def test_retained_audit_omits_empty_error_but_writes_the_event(tmp_path):
+    audit = AuditLogger(tmp_path, session_id="empty-error", store_arguments=True)
+    audit.log(user="alice", tool="run_query", args={}, outcome="error",
+              error="", error_type="ValueError")
+    [entry] = [json.loads(line) for line in audit._log_path.read_text().splitlines()]
+    assert entry["outcome"] == "error" and entry["tool"] == "run_query"
+    assert "error" not in entry
+
+
 @pytest.fixture()
 def log_dir(tmp_path: Path) -> Path:
     return tmp_path / "audit"

@@ -1,6 +1,7 @@
 """Verify distributable artifacts and the version advertised to MCP clients."""
 
 from importlib.metadata import version
+from importlib.util import find_spec
 from pathlib import Path
 import subprocess
 import sys
@@ -13,6 +14,9 @@ REPO = Path(__file__).resolve().parents[1]
 
 def test_wheel_builds_with_query_catalogs(tmp_path):
     """A duplicate package-data rule or missing catalog breaks real installs."""
+    assert find_spec("hatchling") is not None, (
+        'Wheel verification requires the build backend; run: pip install -e ".[dev]"'
+    )
     built = subprocess.run(
         [sys.executable, "-m", "pip", "wheel", "--no-deps", "--no-build-isolation",
          "--disable-pip-version-check", "--wheel-dir", str(tmp_path), str(REPO)],

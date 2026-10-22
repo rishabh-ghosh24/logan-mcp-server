@@ -111,7 +111,7 @@ def server():
 
 
 @pytest.mark.asyncio
-@pytest.mark.parametrize("remembered", [None, "ocid1.comp.remembered"])
+@pytest.mark.parametrize("remembered", [None, "", "ocid1.comp.remembered"])
 async def test_initialize_core_uses_personal_compartment_or_config_default(server, tmp_path, remembered):
     from oci_logan_mcp.config import Settings
     from oci_logan_mcp.preferences import PreferenceStore
