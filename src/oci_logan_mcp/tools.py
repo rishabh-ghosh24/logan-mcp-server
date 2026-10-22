@@ -2,6 +2,17 @@
 
 from typing import List, Dict, Any
 
+from .time_parser import TIME_RANGES
+
+TIME_RANGE_VALUES = list(TIME_RANGES)
+
+
+def tool_title(name: str) -> str:
+    """Format a tool name for display while preserving common acronyms."""
+    acronyms = {"id", "oci", "vcn", "pdf", "csv", "json"}
+    return " ".join(word.upper() if word in acronyms else word.capitalize()
+                    for word in name.split("_"))
+
 
 def get_tools() -> List[Dict[str, Any]]:
     """Get all MCP tool definitions.
@@ -193,13 +204,7 @@ def get_tools() -> List[Dict[str, Any]]:
                     },
                     "verification_time_range": {
                         "type": "string",
-                        "enum": [
-                            "last_15_min",
-                            "last_1_hour",
-                            "last_24_hours",
-                            "last_7_days",
-                            "last_30_days",
-                        ],
+                        "enum": TIME_RANGE_VALUES,
                         "description": "Time range used for verification queries. Default: last_30_days.",
                     },
                     "field_check_limit": {
@@ -266,7 +271,7 @@ def get_tools() -> List[Dict[str, Any]]:
                     "time_range": {
                         "type": "string",
                         "description": "Relative time range: last_15_min, last_1_hour, last_24_hours, last_7_days, last_30_days",
-                        "enum": ["last_15_min", "last_1_hour", "last_24_hours", "last_7_days", "last_30_days"],
+                        "enum": TIME_RANGE_VALUES,
                     },
                     "time_start": {
                         "type": "string",
@@ -478,13 +483,7 @@ def get_tools() -> List[Dict[str, Any]]:
                 "properties": {
                     "time_range": {
                         "type": "string",
-                        "enum": [
-                            "last_15_min", "last_30_min",
-                            "last_1_hour", "last_3_hours", "last_6_hours",
-                            "last_12_hours", "last_24_hours",
-                            "last_2_days", "last_7_days", "last_14_days",
-                            "last_30_days",
-                        ],
+                        "enum": TIME_RANGE_VALUES,
                         "description": (
                             "Time window to scan for parser failures. "
                             "Default: 'last_24_hours'."
@@ -547,13 +546,7 @@ def get_tools() -> List[Dict[str, Any]]:
                     },
                     "time_range": {
                         "type": "string",
-                        "enum": [
-                            "last_15_min", "last_30_min",
-                            "last_1_hour", "last_3_hours", "last_6_hours",
-                            "last_12_hours", "last_24_hours",
-                            "last_2_days", "last_7_days", "last_14_days",
-                            "last_30_days",
-                        ],
+                        "enum": TIME_RANGE_VALUES,
                         "description": (
                             "Investigation window. Default: 'last_1_hour'. "
                             "A2 compares this window to the prior "
@@ -618,13 +611,7 @@ def get_tools() -> List[Dict[str, Any]]:
                     },
                     "time_range": {
                         "type": "string",
-                        "enum": [
-                            "last_15_min", "last_30_min",
-                            "last_1_hour", "last_3_hours", "last_6_hours",
-                            "last_12_hours", "last_24_hours",
-                            "last_2_days", "last_7_days", "last_14_days",
-                            "last_30_days",
-                        ],
+                        "enum": TIME_RANGE_VALUES,
                         "description": "Investigation window. Default: 'last_1_hour'.",
                     },
                     "top_k": {
@@ -1079,7 +1066,7 @@ def get_tools() -> List[Dict[str, Any]]:
                     "time_range": {
                         "type": "string",
                         "description": "Relative time range",
-                        "enum": ["last_15_min", "last_1_hour", "last_24_hours", "last_7_days", "last_30_days"],
+                        "enum": TIME_RANGE_VALUES,
                     },
                     "time_start": {
                         "type": "string",
@@ -1125,7 +1112,7 @@ def get_tools() -> List[Dict[str, Any]]:
                     "time_range": {
                         "type": "string",
                         "description": "Relative time range",
-                        "enum": ["last_15_min", "last_1_hour", "last_24_hours", "last_7_days", "last_30_days"],
+                        "enum": TIME_RANGE_VALUES,
                     },
                     "time_start": {
                         "type": "string",
@@ -1275,7 +1262,7 @@ def get_tools() -> List[Dict[str, Any]]:
                 "properties": {
                     "time_range": {
                         "type": "string",
-                        "enum": ["last_1_hour", "last_24_hours", "last_7_days"],
+                        "enum": TIME_RANGE_VALUES,
                         "description": "Time range to check for data. Default: last_24_hours",
                     },
                     "scope": {
@@ -1682,7 +1669,7 @@ def get_tools() -> List[Dict[str, Any]]:
                     "query": {"type": "string", "description": "The Log Analytics query."},
                     "time_range": {
                         "type": "string",
-                        "enum": ["last_15_min", "last_1_hour", "last_24_hours", "last_7_days", "last_30_days"],
+                        "enum": TIME_RANGE_VALUES,
                     },
                     "time_start": {"type": "string"},
                     "time_end": {"type": "string"},

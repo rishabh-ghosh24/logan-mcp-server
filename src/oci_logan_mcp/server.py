@@ -31,7 +31,8 @@ from .user_store import UserStore
 from .preferences import PreferenceStore
 from .secret_store import SecretStore
 from .audit import AuditLogger
-from .tools import get_tools
+from .tools import get_tools, tool_title
+from .read_only_guard import MUTATING_TOOLS, OUTBOUND_TOOLS
 from .resources import get_resources
 from .handlers import MCPHandlers
 from ._version import __version__
@@ -84,6 +85,30 @@ ENABLE_STARTUP_SCHEMA_REFRESH = os.getenv(
 ).lower() in {"1", "true", "yes", "on"}
 
 
+def build_tool_list() -> list[Tool]:
+    """Describe all tools using the same mutation policy enforced by handlers."""
+    tools = []
+    for definition in get_tools():
+        name = definition["name"]
+        title = tool_title(name)
+        kwargs = {
+            "name": name,
+            "title": title,
+            "description": definition["description"],
+            "inputSchema": definition["inputSchema"],
+        }
+        if _HAS_ANNOTATIONS:
+            kwargs["annotations"] = ToolAnnotations(
+                title=title,
+                readOnlyHint=name not in MUTATING_TOOLS,
+                destructiveHint=bool(definition.get("destructive")),
+                idempotentHint=name not in MUTATING_TOOLS,
+                openWorldHint=name in OUTBOUND_TOOLS,
+            )
+        tools.append(Tool(**kwargs))
+    return tools
+
+
 class OCILogAnalyticsMCPServer:
     """Main MCP Server for OCI Log Analytics.
 
@@ -114,21 +139,7 @@ class OCILogAnalyticsMCPServer:
         @self.server.list_tools()
         async def list_tools() -> list[Tool]:
             """Return list of available tools."""
-            tool_defs = get_tools()
-            tools = []
-            for t in tool_defs:
-                kwargs = {
-                    "name": t["name"],
-                    "description": t["description"],
-                    "inputSchema": t["inputSchema"],
-                }
-                if _HAS_ANNOTATIONS and t.get("destructive"):
-                    kwargs["annotations"] = ToolAnnotations(
-                        destructiveHint=True,
-                        readOnlyHint=False,
-                    )
-                tools.append(Tool(**kwargs))
-            return tools
+            return build_tool_list()
 
         @self.server.list_resources()
         async def list_resources() -> list[Resource]:

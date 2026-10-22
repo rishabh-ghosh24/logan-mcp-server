@@ -15,6 +15,36 @@ from unittest.mock import MagicMock, AsyncMock, patch
 from oci_logan_mcp.server import OCILogAnalyticsMCPServer
 
 
+@pytest.mark.asyncio
+async def test_registered_tool_list_has_titles_and_accurate_annotations():
+    from mcp import types
+    from oci_logan_mcp.read_only_guard import MUTATING_TOOLS
+    from oci_logan_mcp.tools import get_tools
+
+    srv = OCILogAnalyticsMCPServer()
+    response = await srv.server.request_handlers[types.ListToolsRequest](
+        types.ListToolsRequest(method="tools/list")
+    )
+    tools = response.root.tools
+    assert len(tools) == 64
+    expected = {tool["name"]: tool for tool in get_tools()}
+    assert {tool.name for tool in tools} == set(expected)
+    titles = {tool.name: tool.title for tool in tools}
+    assert titles["trace_request_id"] == "Trace Request ID"
+    assert titles["list_log_sources"] == "List Log Sources"
+    for tool in tools:
+        annotations = tool.annotations
+        assert tool.title and annotations is not None, tool.name
+        assert annotations.title == tool.title
+        assert annotations.readOnlyHint is (tool.name not in MUTATING_TOOLS)
+        assert annotations.idempotentHint is (tool.name not in MUTATING_TOOLS)
+        assert annotations.destructiveHint is bool(expected[tool.name].get("destructive"))
+        assert annotations.openWorldHint is (
+            tool.name in {"send_to_slack", "send_to_telegram", "deliver_report"}
+        )
+        assert tool.inputSchema == expected[tool.name]["inputSchema"]
+
+
 @pytest.fixture
 def server():
     """Create a fresh server instance with mocked handlers setup."""
