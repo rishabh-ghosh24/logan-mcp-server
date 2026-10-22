@@ -37,7 +37,7 @@ class TestAuditLogger:
         assert len(lines) == 2
         for line in lines:
             entry = json.loads(line)
-            for key in ("timestamp", "user", "pid", "tool", "args", "outcome"):
+            for key in ("timestamp", "user", "pid", "tool", "args_redacted", "outcome"):
                 assert key in entry, f"Missing key: {key}"
 
     def test_log_includes_enriched_mcp_audit_fields(
@@ -116,10 +116,33 @@ class TestAuditLogger:
             outcome="success",
         )
         entry = json.loads((log_dir / "audit.log").read_text().strip())
-        assert "confirmation_token" not in entry["args"]
-        assert "confirmation_secret" not in entry["args"]
-        assert "confirmation_secret_confirm" not in entry["args"]
-        assert entry["args"]["id"] == "1"
+        assert "confirmation_token" not in entry["args_redacted"]
+        assert "confirmation_secret" not in entry["args_redacted"]
+        assert "confirmation_secret_confirm" not in entry["args_redacted"]
+        assert entry["args_redacted"]["id"] == "1"
+
+    def test_entry_has_no_raw_args(self, logger, log_dir):
+        logger.log(user="alice", tool="run_query",
+                   args={"query": "user = 'alice@example.com'", "id": "1"}, outcome="ok")
+        raw = (log_dir / "audit.log").read_text()
+        entry = json.loads(raw)
+        assert "args" not in entry
+        assert entry["args_redacted"]["id"] == "1"
+        assert "<email>" in entry["args_redacted"]["query"]
+        assert "alice@example.com" not in raw
+
+    def test_sample_digest_survives_argument_redaction(self, logger, log_dir):
+        import hashlib
+
+        digest = hashlib.sha256(b"canonical sample").hexdigest()
+        logger.log(user="alice", tool="create_log_source_from_sample", args={
+            "sample_sha256": digest, "sample_logs": "<redacted>",
+            "compartment_id": "ocid1.compartment.oc1..abc123",
+        }, outcome="invoked")
+        entry = json.loads((log_dir / "audit.log").read_text())
+        assert entry["args_redacted"]["sample_sha256"] == digest
+        assert entry["args_redacted"]["sample_logs"] == "<redacted>"
+        assert entry["args_redacted"]["compartment_id"] == "<resource_ocid>"
 
     def test_timestamp_is_utc(self, logger: AuditLogger, log_dir: Path) -> None:
         logger.log(user="alice", tool="t", args={}, outcome="ok")

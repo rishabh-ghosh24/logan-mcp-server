@@ -66,7 +66,7 @@ class PlaybookRecorder:
             steps.append(
                 {
                     "tool": entry.get("tool", ""),
-                    "args": entry.get("args", {}),
+                    "args": entry.get("args_redacted", entry.get("args", {})),
                     "ts": _iso(ts),
                     "outcome": entry.get("outcome", ""),
                 }

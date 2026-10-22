@@ -1189,7 +1189,7 @@ class TestConfirmationIntegration:
             if entry["tool"] == "create_log_source_from_sample"
             and entry["outcome"] == "invoked"
         ][0]
-        args = invoked["args"]
+        args = invoked["args_redacted"]
         assert args["sample_logs"] == "<redacted>"
         assert args["sample_log_count"] == 1
         assert "sample_sha256" in args
@@ -1213,7 +1213,7 @@ class TestConfirmationIntegration:
             if entry["tool"] == "create_log_source_from_sample"
             and entry["outcome"] == "invoked"
         ][0]
-        audit_args = invoked["args"]
+        audit_args = invoked["args_redacted"]
         expected_payload = (
             'Source IP,User-Agent\n'
             '192.0.2.10,"Mozilla, Test"\n'
@@ -1882,7 +1882,7 @@ async def test_invoked_event_strips_confirmation_secret(handlers, tmp_path):
     lines = log_file.read_text().strip().splitlines()
     invoked_entries = [json.loads(ln) for ln in lines if json.loads(ln)["outcome"] == "invoked"]
     assert invoked_entries, "No invoked entry found"
-    args = invoked_entries[0]["args"]
+    args = invoked_entries[0]["args_redacted"]
     assert "confirmation_secret" not in args
     assert args.get("some_arg") == "ok"
 

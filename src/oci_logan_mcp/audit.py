@@ -5,6 +5,7 @@ from __future__ import annotations
 import json
 import logging
 import os
+import re
 import threading
 import uuid
 from datetime import datetime, timezone
@@ -65,6 +66,10 @@ class AuditLogger:
     ) -> None:
         """Append one audit entry as a JSON line."""
         clean_args = {k: v for k, v in args.items() if k not in _STRIP_KEYS}
+        redacted_args = redact_dict(clean_args)
+        sample_digest = clean_args.get("sample_sha256")
+        if isinstance(sample_digest, str) and re.fullmatch(r"[0-9a-fA-F]{64}", sample_digest):
+            redacted_args["sample_sha256"] = sample_digest
         timestamp = datetime.now(timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ")
         if blocked is None:
             blocked = outcome in {
@@ -81,7 +86,6 @@ class AuditLogger:
             "user": user,
             "pid": os.getpid(),
             "tool": tool,
-            "args": clean_args,
             "outcome": outcome,
             # Enriched MCP audit fields used by Argus POC audit review.
             "ts": timestamp,
@@ -96,7 +100,7 @@ class AuditLogger:
                 "source_ip_truncated": None,
             },
             "event_type": event_type,
-            "args_redacted": redact_dict(clean_args),
+            "args_redacted": redacted_args,
             "blocked": blocked,
             "block_reason": block_reason,
             "audit_strictness": audit_strictness or "best_effort",
