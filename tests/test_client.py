@@ -1,6 +1,9 @@
 """Exhaustive tests for OCI Log Analytics client — especially pagination."""
 
 import json
+import asyncio
+import threading
+import time
 from io import BytesIO
 from pathlib import Path
 from types import SimpleNamespace
@@ -10,6 +13,125 @@ import pytest
 
 from oci_logan_mcp.client import OCILogAnalyticsClient
 from oci_logan_mcp.config import Settings
+
+
+def _query_page(value, more=False):
+    return SimpleNamespace(
+        data=SimpleNamespace(columns=[], items=[{"count": value}],
+                             total_count=1, is_partial_result=False),
+        has_next_page=more, next_page="second" if more else None,
+    )
+
+
+@pytest.mark.asyncio
+async def test_query_runs_all_sdk_pages_off_the_event_loop(client):
+    event_loop_thread = threading.get_ident()
+    called_threads = []
+
+    def query(**kwargs):
+        called_threads.append(threading.get_ident())
+        return _query_page(2 if kwargs.get("page") else 1, more=not kwargs.get("page"))
+
+    client._la_client.query = query
+    result = await client.query("* | stats count", "2026-01-01T00:00:00Z",
+                                "2026-01-01T01:00:00Z")
+    assert result["rows"] == [[1], [2]]
+    assert len(called_threads) == 2
+    assert all(thread != event_loop_thread for thread in called_threads)
+
+
+@pytest.mark.asyncio
+async def test_query_times_out_against_a_real_blocking_sdk_call(client):
+    from oci_logan_mcp.client import QueryTimeoutError
+
+    entered, release, finished = threading.Event(), threading.Event(), threading.Event()
+    client.settings.query.timeout_seconds = 0.05
+
+    def query(**kwargs):
+        entered.set()
+        release.wait(2)
+        finished.set()
+        return _query_page(42)
+
+    client._la_client.query = query
+    try:
+        with pytest.raises(QueryTimeoutError, match="query.timeout_seconds"):
+            await client.query("* | stats count", "2026-01-01T00:00:00Z",
+                               "2026-01-01T01:00:00Z")
+        assert entered.is_set()
+        assert not finished.is_set(), "The caller must return before the SDK call finishes"
+    finally:
+        release.set()
+        await asyncio.to_thread(finished.wait, 2)
+
+
+@pytest.mark.asyncio
+async def test_query_deadline_covers_all_pages(client):
+    from oci_logan_mcp.client import QueryTimeoutError
+
+    client.settings.query.timeout_seconds = 0.07
+    pages = []
+
+    def query(**kwargs):
+        pages.append(kwargs.get("page"))
+        time.sleep(0.045)
+        return _query_page(1, more=True)
+
+    client._la_client.query = query
+    with pytest.raises(QueryTimeoutError):
+        await client.query("* | stats count", "2026-01-01T00:00:00Z",
+                           "2026-01-01T01:00:00Z", max_results=10)
+    assert pages == [None, "second"]
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("wait_at", ["acquire", "backoff"])
+async def test_query_deadline_bounds_rate_limit_waits(client, wait_at):
+    import oci
+    from oci_logan_mcp.client import QueryTimeoutError
+
+    client.settings.query.timeout_seconds = 0.05
+    entered = asyncio.Event()
+
+    async def wait_forever():
+        entered.set()
+        await asyncio.Event().wait()
+
+    if wait_at == "acquire":
+        client._rate_limiter.acquire = wait_forever
+    else:
+        client._la_client.query = MagicMock(side_effect=oci.exceptions.ServiceError(
+            status=429, code="TooManyRequests", headers={}, message="retry"
+        ))
+        client._rate_limiter.handle_rate_limit = wait_forever
+    with pytest.raises(QueryTimeoutError):
+        await client.query("* | stats count", "2026-01-01T00:00:00Z",
+                           "2026-01-01T01:00:00Z")
+    assert entered.is_set()
+
+
+@pytest.mark.asyncio
+async def test_query_retry_keeps_the_original_deadline(client):
+    import oci
+    from oci_logan_mcp.client import QueryTimeoutError
+
+    client.settings.query.timeout_seconds = 0.07
+    calls = []
+
+    def query(**kwargs):
+        calls.append(kwargs)
+        time.sleep(0.045)
+        if len(calls) == 1:
+            raise oci.exceptions.ServiceError(
+                status=429, code="TooManyRequests", headers={}, message="retry"
+            )
+        return _query_page(42)
+
+    client._la_client.query = query
+    with pytest.raises(QueryTimeoutError):
+        await client.query("* | stats count", "2026-01-01T00:00:00Z",
+                           "2026-01-01T01:00:00Z")
+    assert len(calls) == 2
 
 
 # ---------------------------------------------------------------------------

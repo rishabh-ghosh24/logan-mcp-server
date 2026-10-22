@@ -9,6 +9,7 @@ from typing import Any, Sequence
 
 from mcp.server import Server
 from mcp.server.stdio import stdio_server
+from mcp.server.lowlevel.helper_types import ReadResourceContents
 from mcp.types import (
     Tool,
     Resource,
@@ -130,6 +131,7 @@ class OCILogAnalyticsMCPServer:
         self.user_store = None
         self.preference_store = None
         self.handlers = None
+        self._init_error: str | None = None
 
         self._setup_handlers()
 
@@ -161,7 +163,7 @@ class OCILogAnalyticsMCPServer:
         ) -> Sequence[TextContent | ImageContent]:
             """Handle tool calls."""
             if self.handlers is None:
-                return [TextContent(type="text", text="Server not initialized")]
+                return [TextContent(type="text", text=json.dumps(self._not_initialized_payload(), indent=2))]
 
             arguments = arguments or {}
             results = await self.handlers.handle_tool_call(name, arguments)
@@ -178,19 +180,32 @@ class OCILogAnalyticsMCPServer:
             ]
 
         @self.server.read_resource()
-        async def read_resource(uri: str) -> str:
+        async def read_resource(uri: str) -> list[ReadResourceContents]:
             """Handle resource reads."""
             if self.handlers is None:
-                return json.dumps({"error": "Server not initialized"})
+                return [ReadResourceContents(content=json.dumps(self._not_initialized_payload()))]
 
             try:
-                content = await self.handlers.handle_resource_read(uri)
-                if isinstance(content, str):
-                    return content
-                return json.dumps(content, indent=2, default=str)
+                content = await self.handlers.handle_resource_read(str(uri))
+                if not isinstance(content, str):
+                    content = json.dumps(content, indent=2, default=str)
+                return [ReadResourceContents(content=content)]
             except Exception as e:
                 logger.exception(f"Error reading resource {uri}")
-                return json.dumps({"error": str(e)})
+                return [ReadResourceContents(content=json.dumps({"error": str(e)}))]
+
+    def _not_initialized_payload(self) -> dict:
+        """Explain failed initialization to an MCP client."""
+        return {
+            "error": "server_not_initialized",
+            "detail": self._init_error or "unknown",
+            "how_to_fix": [
+                "Check OCI_LA_AUTH_TYPE: config_file (laptop) or instance_principal (OCI VM)",
+                "For config_file, confirm ~/.oci/config has the profile named by OCI_CONFIG_PROFILE (default DEFAULT) and the key file it points to exists",
+                "Run 'oci-logan-mcp --setup' to rewrite ~/.oci-logan-mcp/config.yaml",
+                "Restart the MCP server, then call test_connection",
+            ],
+        }
 
     async def initialize_core(self) -> None:
         """Initialize core server components without schema refresh.
@@ -220,6 +235,7 @@ class OCILogAnalyticsMCPServer:
                 f"Connected to OCI Log Analytics (namespace: {self.oci_client.namespace})"
             )
         except Exception as e:
+            self._init_error = f"{type(e).__name__}: {e}"
             logger.error(f"Failed to initialize OCI client: {e}")
             logger.warning("Server will start but OCI operations will fail")
             self.oci_client = None

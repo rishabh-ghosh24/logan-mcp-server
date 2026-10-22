@@ -17,6 +17,10 @@ from .config import Settings
 logger = logging.getLogger(__name__)
 
 
+class QueryTimeoutError(Exception):
+    """The query exceeded its whole-operation deadline."""
+
+
 def _get_items(response_data):
     """Extract items from paginated response data.
 
@@ -207,7 +211,33 @@ class OCILogAnalyticsClient:
         compartment_id: str,
         include_subcompartments: bool,
     ) -> Dict[str, Any]:
-        """Execute a query against a single compartment."""
+        """Bound all pages, rate-limit waits and retries by one deadline."""
+        timeout = self.settings.query.timeout_seconds
+        timer = asyncio.timeout(timeout)
+        try:
+            async with timer:
+                return await self._execute_query_pages(
+                    query_string, time_start, time_end, max_results,
+                    compartment_id, include_subcompartments,
+                )
+        except TimeoutError as error:
+            if not timer.expired():
+                raise
+            raise QueryTimeoutError(
+                f"Query exceeded {timeout}s (query.timeout_seconds); "
+                "narrow the time range or add a 'Log Source' filter"
+            ) from error
+
+    async def _execute_query_pages(
+        self,
+        query_string: str,
+        time_start: str,
+        time_end: str,
+        max_results: Optional[int],
+        compartment_id: str,
+        include_subcompartments: bool,
+    ) -> Dict[str, Any]:
+        """Fetch query pages within the caller's deadline."""
         await self._rate_limiter.acquire()
 
         max_results = max_results or self.settings.query.max_results
@@ -245,7 +275,8 @@ class OCILogAnalyticsClient:
         page_limit = 10000 if is_cluster else max_results
 
         try:
-            response = self._la_client.query(
+            response = await asyncio.to_thread(
+                self._la_client.query,
                 namespace_name=self._namespace,
                 query_details=query_details,
                 limit=page_limit,
@@ -259,7 +290,8 @@ class OCILogAnalyticsClient:
             row_cap = page_limit if is_cluster else max_results
             while response.has_next_page and len(result["rows"]) < row_cap:
                 await self._rate_limiter.acquire()
-                response = self._la_client.query(
+                response = await asyncio.to_thread(
+                    self._la_client.query,
                     namespace_name=self._namespace,
                     query_details=query_details,
                     limit=page_limit,
@@ -278,7 +310,7 @@ class OCILogAnalyticsClient:
         except oci.exceptions.ServiceError as e:
             if e.status == 429:
                 await self._rate_limiter.handle_rate_limit()
-                return await self._execute_single_query(
+                return await self._execute_query_pages(
                     query_string, time_start, time_end, max_results,
                     compartment_id, include_subcompartments
                 )

@@ -9,10 +9,67 @@ Verifies that:
 """
 
 import asyncio
+import json
 import pytest
 from unittest.mock import MagicMock, AsyncMock, patch
 
 from oci_logan_mcp.server import OCILogAnalyticsMCPServer
+
+
+@pytest.mark.asyncio
+async def test_init_failure_is_explained_to_the_client():
+    from mcp import types
+    from oci_logan_mcp.config import Settings
+
+    srv = OCILogAnalyticsMCPServer()
+    secret = MagicMock()
+    secret.has_secret.return_value = True
+    secret.is_valid.return_value = True
+    with patch('oci_logan_mcp.server.config_exists', return_value=True), \
+         patch('oci_logan_mcp.server.load_config', return_value=Settings()), \
+         patch('oci_logan_mcp.server.CacheManager'), \
+         patch('oci_logan_mcp.server.QueryLogger'), \
+         patch('oci_logan_mcp.server.OCILogAnalyticsClient', side_effect=RuntimeError("no profile DEFAULT")), \
+         patch('oci_logan_mcp.server.ContextManager'), \
+         patch('oci_logan_mcp.server.SecretStore', return_value=secret), \
+         patch('oci_logan_mcp.server.AuditLogger'):
+        await srv.initialize_core()
+
+    response = await srv.server.request_handlers[types.CallToolRequest](
+        types.CallToolRequest(method="tools/call", params=types.CallToolRequestParams(
+            name="test_connection", arguments={}
+        ))
+    )
+    payload = json.loads(response.root.content[0].text)
+    assert payload["error"] == "server_not_initialized"
+    assert payload["detail"] == "RuntimeError: no profile DEFAULT"
+    assert len(payload["how_to_fix"]) == 4
+    assert any("--setup" in step for step in payload["how_to_fix"])
+    resource = await srv.server.request_handlers[types.ReadResourceRequest](
+        types.ReadResourceRequest(method="resources/read", params=types.ReadResourceRequestParams(
+            uri="loganalytics://syntax-guide"
+        ))
+    )
+    assert json.loads(resource.root.contents[0].text) == payload
+
+
+@pytest.mark.asyncio
+async def test_read_resource_handler_receives_a_plain_string_uri():
+    from mcp import types
+
+    srv = OCILogAnalyticsMCPServer()
+
+    async def read(uri):
+        return {"loganalytics://syntax-guide": "guide text"}[uri]
+
+    srv.handlers = MagicMock()
+    srv.handlers.handle_resource_read = read
+    response = await srv.server.request_handlers[types.ReadResourceRequest](
+        types.ReadResourceRequest(method="resources/read", params=types.ReadResourceRequestParams(
+            uri="loganalytics://syntax-guide"
+        ))
+    )
+    assert response.root.contents[0].text == "guide text"
 
 
 @pytest.mark.asyncio

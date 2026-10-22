@@ -4,7 +4,7 @@ import asyncio
 from typing import Optional, List, Dict, Any
 from datetime import datetime
 
-from .client import OCILogAnalyticsClient
+from .client import OCILogAnalyticsClient, QueryTimeoutError
 from .cache import CacheManager
 from .query_logger import QueryLogger
 from .time_parser import parse_time_range
@@ -192,9 +192,9 @@ class QueryEngine:
 
         except Exception as e:
             execution_time = (datetime.now() - start_time).total_seconds()
-            # Query failed — roll back the reservation so a failed OCI call
-            # doesn't consume the caller's budget.
-            if budget_reserved and self.budget_tracker is not None:
+            # Timed-out SDK work can still run, so keep its reservation.
+            if (budget_reserved and self.budget_tracker is not None
+                    and not isinstance(e, QueryTimeoutError)):
                 self.budget_tracker.release(bytes=reserved_bytes, cost_usd=reserved_cost)
             self.logger.log_query(
                 query=query,
