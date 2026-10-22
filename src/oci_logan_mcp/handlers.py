@@ -1101,9 +1101,23 @@ class MCPHandlers:
         # Auto-save interesting queries from batch results
         if not self.settings.read_only:
             for q_spec, r in zip(args["queries"], results):
-                if isinstance(r, dict) and "error" not in r:
-                    self.auto_saver.process_successful_query(q_spec["query"], r)
+                success = bool(r.get("success"))
+                if success:
+                    self.auto_saver.process_successful_query(q_spec["query"], r["result"])
+                self._record_query_outcome(q_spec["query"], success)
         return [{"type": "text", "text": json.dumps(results, indent=2, default=str)}]
+
+    def _record_query_outcome(self, query: str, success: bool) -> None:
+        """Keep personal learning separate from successful tool delivery."""
+        if self.settings.read_only:
+            return
+        try:
+            if success:
+                self.user_store.record_success(query)
+            else:
+                self.user_store.record_failure(query)
+        except Exception:
+            pass
 
     async def _diff_time_windows(self, args: Dict) -> List[Dict]:
         """Run diff_time_windows. Catches budget breaches and returns them as a
@@ -2085,14 +2099,18 @@ class MCPHandlers:
         """Generate visualization."""
         compartment_id, include_subs = self._resolve_scope(args)
 
-        query_result = await self.query_engine.execute(
-            query=args["query"],
-            time_range=args.get("time_range", "last_1_hour"),
-            time_start=args.get("time_start"),
-            time_end=args.get("time_end"),
-            include_subcompartments=include_subs,
-            compartment_id=compartment_id,
-        )
+        try:
+            query_result = await self.query_engine.execute(
+                query=args["query"],
+                time_range=args.get("time_range", "last_1_hour"),
+                time_start=args.get("time_start"),
+                time_end=args.get("time_end"),
+                include_subcompartments=include_subs,
+                compartment_id=compartment_id,
+            )
+        except Exception:
+            self._record_query_outcome(args["query"], False)
+            raise
 
         data = query_result.get("data", {})
         row_count = len(data.get("rows", []))
@@ -2102,6 +2120,7 @@ class MCPHandlers:
         # Auto-save interesting queries
         if not self.settings.read_only:
             self.auto_saver.process_successful_query(args["query"], query_result)
+        self._record_query_outcome(args["query"], True)
 
         chart_type = ChartType(args["chart_type"])
         viz_result = self.visualization.generate(
@@ -2127,18 +2146,23 @@ class MCPHandlers:
         """Export query results."""
         compartment_id, include_subs = self._resolve_scope(args)
 
-        result = await self.query_engine.execute(
-            query=args["query"],
-            time_range=args.get("time_range", "last_1_hour"),
-            time_start=args.get("time_start"),
-            time_end=args.get("time_end"),
-            include_subcompartments=include_subs,
-            compartment_id=compartment_id,
-        )
+        try:
+            result = await self.query_engine.execute(
+                query=args["query"],
+                time_range=args.get("time_range", "last_1_hour"),
+                time_start=args.get("time_start"),
+                time_end=args.get("time_end"),
+                include_subcompartments=include_subs,
+                compartment_id=compartment_id,
+            )
+        except Exception:
+            self._record_query_outcome(args["query"], False)
+            raise
 
         # Auto-save interesting queries
         if not self.settings.read_only:
             self.auto_saver.process_successful_query(args["query"], result)
+        self._record_query_outcome(args["query"], True)
 
         exported = self.export_service.export(
             data=result["data"], format=args["format"]

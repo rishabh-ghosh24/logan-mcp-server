@@ -31,6 +31,22 @@ def auto_saver(mock_context_manager, mock_user_store):
 DUMMY_RESULT = {"data": {"rows": [[1]], "columns": [{"name": "count"}]}}
 
 
+def test_semantic_canonicalization_keeps_distinct_scopes(auto_saver, mock_user_store):
+    base = ("(Severity in ('ERROR', 'CRITICAL', 'FATAL') or 'Original Log Content' like '%error%' "
+            "or 'Original Log Content' like '%fail%' or 'Original Log Content' like '%fatal%' "
+            "or 'Original Log Content' like '%critical%' or 'Original Log Content' like '%exception%') "
+            "and 'Log Group' = '{group}' | stats count by 'Log Source' | sort -count | head 10")
+    production, development = base.format(group="Production"), base.format(group="Development")
+    auto_saver.process_successful_query(production, DUMMY_RESULT)
+    auto_saver.process_successful_query(development, DUMMY_RESULT)
+    auto_saver.process_successful_query(development, DUMMY_RESULT)
+    entries = {entry["query"]: entry for entry in mock_user_store.list_queries()}
+    assert set(entries) == {production, development}
+    assert entries[production]["entry_id"] != entries[development]["entry_id"]
+    assert (entries[production]["use_count"], entries[development]["use_count"]) == (1, 2)
+    assert {entry["name"] for entry in entries.values()} == {"error_like_sources_by_log_source", "error_like_sources_by_log_source_v2"}
+
+
 class TestVariantCaps:
     SHAPE = "'Log Source' = 'VCN Flow Logs' | stats count by 'Action' | sort -count | head 10"
     BASE = "top_10_vcn_flow_logs_count_by_action"

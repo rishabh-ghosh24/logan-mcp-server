@@ -13,6 +13,7 @@ from typing import Any, Dict, Optional, Tuple
 
 from .context_manager import ContextManager
 from .user_store import UserStore, query_origin
+from .sanitize import normalize_query_text
 
 logger = logging.getLogger(__name__)
 MAX_VARIANTS_PER_SHAPE = 3
@@ -292,9 +293,13 @@ class QueryAutoSaver:
             )
 
         canonical_name = semantic["name"]
-        if any(entry["name"] == canonical_name and query_origin(entry) == "manual"
+        matching_names = {entry["name"] for entry in matches}
+        if any(entry["name"] == canonical_name and entry["name"] not in matching_names
                for entry in self.user_store.list_queries()):
-            canonical_name = self._unique_name(canonical_name)
+            canonical_name = next((
+                entry["name"] for entry in matches
+                if re.fullmatch(rf"{re.escape(canonical_name)}(?:_v\d+)?", entry["name"])
+            ), None) or self._unique_name(canonical_name)
         saved = self.user_store.save_query(
             name=canonical_name,
             query=query.strip(),
@@ -318,22 +323,9 @@ class QueryAutoSaver:
         query: str,
         semantic: Dict[str, str],
     ) -> list[Dict[str, Any]]:
-        clean_query = query.strip()
-        matches: list[Dict[str, Any]] = []
-        for existing in self.user_store.list_queries():
-            existing_query = str(existing.get("query", "")).strip()
-            same_query = existing_query == clean_query
-            same_semantic = (
-                existing.get("intent_key") == semantic["intent_key"]
-                and existing.get("query_shape") == semantic["query_shape"]
-            )
-            legacy_error_name = (
-                re.fullmatch(r"count_by_log_source(?:_v\d+)?", str(existing.get("name", ""))) is not None
-                and self._is_error_like_sources_query(existing_query)
-            )
-            if same_query or same_semantic or legacy_error_name:
-                matches.append(existing)
-        return matches
+        clean_query = normalize_query_text(query)
+        return [entry for entry in self.user_store.list_queries()
+                if normalize_query_text(str(entry.get("query", ""))) == clean_query]
 
     def _extract_source(self, query: str) -> Optional[str]:
         """Extract Log Source name if explicitly filtered."""

@@ -364,6 +364,51 @@ async def test_shared_query_examples_expose_user_and_success_counts(handlers, mo
 
 
 @pytest.mark.asyncio
+@pytest.mark.parametrize("read_only", [False, True])
+async def test_batch_outcomes_update_real_learning_counters(handlers, mock_user_store, read_only):
+    query = "'Log Source' = 'S' | stats count by Severity | sort -count | head 10"
+    if read_only:
+        mock_user_store.save_query("saved", query, "mine")
+    handlers.settings.read_only = read_only
+    outcomes = [
+        {"success": True, "result": {"data": {"rows": [["ERROR", 1]], "columns": [{"name": "Severity"}, {"name": "count"}]}}},
+        {"success": False, "error": "boom", "error_type": "ValueError"},
+    ]
+    handlers.query_engine.execute_batch = AsyncMock(return_value=outcomes)
+    [response] = await handlers._run_batch_queries({"queries": [{"query": query}, {"query": query}]})
+    assert json.loads(response["text"]) == outcomes
+    [entry] = mock_user_store.list_queries()
+    assert (entry["success_count"], entry["failure_count"]) == ((0, 0) if read_only else (1, 1))
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("tool", ["visualize", "export_results"])
+@pytest.mark.parametrize("failed", [False, True])
+@pytest.mark.parametrize("read_only", [False, True])
+async def test_visualize_and_export_record_query_outcomes(handlers, mock_user_store, tool, failed, read_only):
+    query = "'Log Source' = 'S' | stats count by Severity"
+    mock_user_store.save_query("saved", query, "mine")
+    handlers.settings.read_only = read_only
+    handlers.query_engine.execute = AsyncMock(
+        side_effect=ValueError("OCI unavailable") if failed else None,
+        return_value={"data": {"rows": [["ERROR", 2]], "columns": [{"name": "Severity"}, {"name": "count"}]}},
+    )
+    args = {"query": query, "chart_type": "bar", "format": "csv"}
+    if failed:
+        with pytest.raises(ValueError, match="OCI unavailable"):
+            await getattr(handlers, "_" + tool)(args)
+    else:
+        result = await getattr(handlers, "_" + tool)(args)
+        if tool == "visualize":
+            assert result[0]["type"] == "image" and len(result[0]["data"]) > 100
+        else:
+            assert "ERROR" in result[0]["text"] and "Severity" in result[0]["text"]
+    [entry] = mock_user_store.list_queries()
+    expected = (0, 0) if read_only else ((0, 1) if failed else (1, 0))
+    assert (entry["success_count"], entry["failure_count"]) == expected
+
+
+@pytest.mark.asyncio
 async def test_explicit_save_of_auto_query_preserves_identity_under_variant_pressure(handlers, mock_user_store):
     query = "'Log Source' = 'OKE Control Plane Logs' | stats count by Severity | sort -count | head 10"
     result = {"data": {"rows": [[1]], "columns": []}}
