@@ -328,6 +328,29 @@ class TestBackgroundSchemaRefresh:
     """Tests for _refresh_schema_background() — background task after transport is live."""
 
     @pytest.mark.asyncio
+    async def test_background_refresh_uses_scope_guard(self, server):
+        from types import SimpleNamespace
+        from oci_logan_mcp.handlers import ScopeGuard
+
+        guard = ScopeGuard()
+        started = asyncio.Event()
+
+        async def refresh(*args):
+            started.set()
+            return {"sources": 1}
+
+        server.handlers = SimpleNamespace(scope_guard=guard)
+        server.context_manager = SimpleNamespace(refresh_schema=refresh)
+        server.oci_client, server.settings = object(), object()
+        async with asyncio.timeout(2):
+            async with guard.exclusive():
+                task = asyncio.create_task(server._refresh_schema_background())
+                await asyncio.sleep(0.02)
+                blocked = not started.is_set() and not task.done()
+            await task
+            assert blocked and started.is_set()
+
+    @pytest.mark.asyncio
     async def test_background_refresh_calls_refresh_schema(self, server):
         """Background task should call context_manager.refresh_schema()."""
         server.context_manager = MagicMock()

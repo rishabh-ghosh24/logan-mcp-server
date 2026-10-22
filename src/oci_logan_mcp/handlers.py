@@ -1,6 +1,8 @@
 """MCP request handlers for tool and resource operations."""
 
 import hashlib
+import asyncio
+from contextlib import asynccontextmanager
 import json
 import logging
 import secrets
@@ -73,6 +75,46 @@ REQUIRED_AUDIT_TOOLS = frozenset({
     "export_transcript",
     "investigate_and_generate_report",
 })
+SCOPE_SETTERS = frozenset({"set_namespace", "set_compartment", "update_tenancy_context"})
+
+
+class ScopeGuard:
+    """Keep scope stable during reads and give waiting scope changes priority."""
+
+    def __init__(self):
+        self._condition = asyncio.Condition()
+        self._readers = 0
+        self._writer = False
+        self._waiting_writers = 0
+
+    @asynccontextmanager
+    async def shared(self):
+        async with self._condition:
+            await self._condition.wait_for(lambda: not self._writer and not self._waiting_writers)
+            self._readers += 1
+        try:
+            yield
+        finally:
+            async with self._condition:
+                self._readers -= 1
+                self._condition.notify_all()
+
+    @asynccontextmanager
+    async def exclusive(self):
+        async with self._condition:
+            self._waiting_writers += 1
+            try:
+                await self._condition.wait_for(lambda: not self._writer and not self._readers)
+                self._writer = True
+            finally:
+                self._waiting_writers -= 1
+                self._condition.notify_all()
+        try:
+            yield
+        finally:
+            async with self._condition:
+                self._writer = False
+                self._condition.notify_all()
 
 
 class MCPHandlers:
@@ -92,6 +134,7 @@ class MCPHandlers:
     ):
         """Initialize MCP handlers."""
         self.settings = settings
+        self.scope_guard = ScopeGuard()
         self.oci_client = oci_client
         self.cache = cache
         self.query_logger = query_logger
@@ -204,88 +247,97 @@ class MCPHandlers:
     async def handle_tool_call(
         self, name: str, arguments: Dict[str, Any]
     ) -> List[Dict[str, Any]]:
-        """Route tool calls to appropriate handlers."""
-        handlers = {
-            # Schema exploration
-            "list_log_sources": self._list_log_sources,
-            "list_fields": self._list_fields,
-            "list_entities": self._list_entities,
-            "list_parsers": self._list_parsers,
-            "list_labels": self._list_labels,
-            "list_saved_searches": self._list_saved_searches,
-            "list_log_groups": self._list_log_groups,
-            # Query execution
-            "validate_query": self._validate_query,
-            "run_query": self._run_query,
-            "run_saved_search": self._run_saved_search,
-            "run_batch_queries": self._run_batch_queries,
-            "diff_time_windows": self._diff_time_windows,
-            "pivot_on_entity": self._pivot_on_entity,
-            "ingestion_health": self._ingestion_health,
-            "parser_failure_triage": self._parser_failure_triage,
-            "investigate_incident": self._investigate_incident,
-            "investigate_and_generate_report": self._investigate_and_generate_report,
-            "generate_incident_report": self._generate_incident_report,
-            "get_report_delivery_options": self._get_report_delivery_options,
-            "prepare_report_delivery": self._prepare_report_delivery,
-            "list_notification_topics": self._list_notification_topics,
-            "get_incident_report": self._get_incident_report,
-            "list_incident_reports": self._list_incident_reports,
-            "deliver_report": self._deliver_report,
-            "why_did_this_fire": self._why_did_this_fire,
-            "find_rare_events": self._find_rare_events,
-            "create_log_source_from_sample": self._create_log_source_from_sample,
-            "trace_request_id": self._trace_request_id,
-            "related_dashboards_and_searches": self._related_dashboards_and_searches,
-            # Visualization
-            "visualize": self._visualize,
-            # Export
-            "export_results": self._export_results,
-            # Configuration
-            "set_compartment": self._set_compartment,
-            "set_namespace": self._set_namespace,
-            "get_current_context": self._get_current_context,
-            "list_compartments": self._list_compartments,
-            # Helper tools
-            "test_connection": self._test_connection,
-            "find_compartment": self._find_compartment,
-            "get_query_examples": self._get_query_examples,
-            "get_log_summary": self._get_log_summary,
-            "setup_confirmation_secret": self._setup_confirmation_secret,
-            # Memory & context
-            "save_learned_query": self._save_learned_query,
-            "update_tenancy_context": self._update_tenancy_context,
-            # Preferences
-            "get_preferences": self._get_preferences,
-            "remember_preference": self._remember_preference,
-            # Alerts
-            "create_alert": self._create_alert,
-            "list_alerts": self._list_alerts,
-            "update_alert": self._update_alert,
-            "delete_alert": self._delete_alert,
-            # Saved search CRUD
-            "create_saved_search": self._create_saved_search,
-            "update_saved_search": self._update_saved_search,
-            "delete_saved_search": self._delete_saved_search,
-            # Dashboards
-            "create_dashboard": self._create_dashboard,
-            "list_dashboards": self._list_dashboards,
-            "add_dashboard_tile": self._add_dashboard_tile,
-            "delete_dashboard": self._delete_dashboard,
-            # Notifications
-            "send_to_slack": self._send_to_slack,
-            "send_to_telegram": self._send_to_telegram,
-            # Estimation + Budget
-            "explain_query": self._explain_query,
-            "get_session_budget": self._get_session_budget,
-            # Transcript export
-            "export_transcript": self._export_transcript,
-            # Investigation playbooks
-            "record_investigation": self._record_investigation,
-            "list_playbooks": self._list_playbooks,
-            "get_playbook": self._get_playbook,
-            "delete_playbook": self._delete_playbook,
-        }
+        """Choose one scope-lock mode for the complete tool operation."""
+        lock = self.scope_guard.exclusive if name in SCOPE_SETTERS else self.scope_guard.shared
+        async with lock():
+            handlers = {
+                # Schema exploration
+                "list_log_sources": self._list_log_sources,
+                "list_fields": self._list_fields,
+                "list_entities": self._list_entities,
+                "list_parsers": self._list_parsers,
+                "list_labels": self._list_labels,
+                "list_saved_searches": self._list_saved_searches,
+                "list_log_groups": self._list_log_groups,
+                # Query execution
+                "validate_query": self._validate_query,
+                "run_query": self._run_query,
+                "run_saved_search": self._run_saved_search,
+                "run_batch_queries": self._run_batch_queries,
+                "diff_time_windows": self._diff_time_windows,
+                "pivot_on_entity": self._pivot_on_entity,
+                "ingestion_health": self._ingestion_health,
+                "parser_failure_triage": self._parser_failure_triage,
+                "investigate_incident": self._investigate_incident,
+                "investigate_and_generate_report": self._investigate_and_generate_report,
+                "generate_incident_report": self._generate_incident_report,
+                "get_report_delivery_options": self._get_report_delivery_options,
+                "prepare_report_delivery": self._prepare_report_delivery,
+                "list_notification_topics": self._list_notification_topics,
+                "get_incident_report": self._get_incident_report,
+                "list_incident_reports": self._list_incident_reports,
+                "deliver_report": self._deliver_report,
+                "why_did_this_fire": self._why_did_this_fire,
+                "find_rare_events": self._find_rare_events,
+                "create_log_source_from_sample": self._create_log_source_from_sample,
+                "trace_request_id": self._trace_request_id,
+                "related_dashboards_and_searches": self._related_dashboards_and_searches,
+                # Visualization
+                "visualize": self._visualize,
+                # Export
+                "export_results": self._export_results,
+                # Configuration
+                "set_compartment": self._set_compartment,
+                "set_namespace": self._set_namespace,
+                "get_current_context": self._get_current_context,
+                "list_compartments": self._list_compartments,
+                # Helper tools
+                "test_connection": self._test_connection,
+                "find_compartment": self._find_compartment,
+                "get_query_examples": self._get_query_examples,
+                "get_log_summary": self._get_log_summary,
+                "setup_confirmation_secret": self._setup_confirmation_secret,
+                # Memory & context
+                "save_learned_query": self._save_learned_query,
+                "update_tenancy_context": self._update_tenancy_context,
+                # Preferences
+                "get_preferences": self._get_preferences,
+                "remember_preference": self._remember_preference,
+                # Alerts
+                "create_alert": self._create_alert,
+                "list_alerts": self._list_alerts,
+                "update_alert": self._update_alert,
+                "delete_alert": self._delete_alert,
+                # Saved search CRUD
+                "create_saved_search": self._create_saved_search,
+                "update_saved_search": self._update_saved_search,
+                "delete_saved_search": self._delete_saved_search,
+                # Dashboards
+                "create_dashboard": self._create_dashboard,
+                "list_dashboards": self._list_dashboards,
+                "add_dashboard_tile": self._add_dashboard_tile,
+                "delete_dashboard": self._delete_dashboard,
+                # Notifications
+                "send_to_slack": self._send_to_slack,
+                "send_to_telegram": self._send_to_telegram,
+                # Estimation + Budget
+                "explain_query": self._explain_query,
+                "get_session_budget": self._get_session_budget,
+                # Transcript export
+                "export_transcript": self._export_transcript,
+                # Investigation playbooks
+                "record_investigation": self._record_investigation,
+                "list_playbooks": self._list_playbooks,
+                "get_playbook": self._get_playbook,
+                "delete_playbook": self._delete_playbook,
+            }
+            return await self._handle_tool_call_locked(name, arguments, handlers)
+
+    async def _handle_tool_call_locked(
+        self, name: str, arguments: Dict[str, Any], handlers: Dict
+    ) -> List[Dict[str, Any]]:
+        """Route a tool call while its effective scope is stable."""
+        effective_scope = self._effective_scope(arguments)
 
         user_id = self.user_store.user_id
         trace_id = f"trace_{secrets.token_hex(16)}"
@@ -379,8 +431,8 @@ class MCPHandlers:
                             time_range=arguments.get("time_range"),
                             time_start=arguments.get("time_start"),
                             time_end=arguments.get("time_end"),
-                            compartment_id=arguments.get("compartment_id"),
-                            include_subcompartments=arguments.get("include_subcompartments", True),
+                            compartment_id=effective_scope["compartment_id"],
+                            include_subcompartments=effective_scope["include_subcompartments"],
                         )
                         summary_extras = {
                             "estimated_bytes": est.estimated_bytes,
@@ -410,12 +462,12 @@ class MCPHandlers:
                 ) and audit_strictness == "required":
                     return self._audit_blocked_response(name, audit_strictness)
                 confirmation = self.confirmation_manager.request_confirmation(
-                    name, arguments, summary_extras=summary_extras,
+                    name, arguments, summary_extras=summary_extras, scope=effective_scope,
                 )
                 return [{"type": "text", "text": json.dumps(confirmation, indent=2)}]
 
             if not self.confirmation_manager.validate_confirmation(
-                token, secret, name, arguments
+                token, secret, name, arguments, scope=effective_scope,
             ):
                 self._write_audit_event(
                     user=user_id,
@@ -450,6 +502,11 @@ class MCPHandlers:
             # Strip confirmation params before passing to handler while preserving
             # non-secret payloads that may be redacted in audit entries.
             arguments = self._strip_confirmation_args(arguments)
+            arguments = {
+                **arguments,
+                "compartment_id": effective_scope["compartment_id"],
+                "include_subcompartments": effective_scope["include_subcompartments"],
+            }
 
         start = time.perf_counter()
         try:
@@ -709,6 +766,11 @@ class MCPHandlers:
 
     async def handle_resource_read(self, uri: str) -> Any:
         """Handle resource read requests."""
+        async with self.scope_guard.shared():
+            return await self._handle_resource_read_locked(uri)
+
+    async def _handle_resource_read_locked(self, uri: str) -> Any:
+        """Read a resource while its namespace and compartment remain stable."""
         if uri == "loganalytics://schema":
             return await self.schema_manager.get_full_schema()
         elif uri == "loganalytics://query-templates":
@@ -807,6 +869,14 @@ class MCPHandlers:
             "suggested_fix": result.suggested_fix,
         }
         return [{"type": "text", "text": json.dumps(result_dict, indent=2)}]
+
+    def _effective_scope(self, arguments: Dict) -> Dict:
+        compartment, include_subs = self._resolve_scope(arguments)
+        return {
+            "compartment_id": compartment or self.oci_client.compartment_id,
+            "include_subcompartments": include_subs,
+            "namespace": self.oci_client.namespace,
+        }
 
     def _resolve_scope(self, args: Dict) -> tuple:
         """Resolve scope parameter to compartment_id and include_subcompartments."""

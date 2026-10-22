@@ -1,6 +1,7 @@
 """Tests for MCP request handlers — routing, visualization, scope resolution."""
 
 import hashlib
+import asyncio
 import json
 import pytest
 from pathlib import Path
@@ -176,6 +177,146 @@ def test_structured_error_response_is_flagged_as_error(handlers):
     [result] = handlers._error_response("bad_input", "bad value")
     assert result["is_error"] is True
     assert json.loads(result["text"])["error_code"] == "bad_input"
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("setter,args", [
+    ("set_compartment", {"compartment_id": "other"}),
+    ("set_namespace", {"namespace": "other"}),
+])
+async def test_confirmation_scope_rejects_token_after_setter(handlers, setter, args):
+    handlers.secret_store.set_secret("correct-secret")
+    handlers.alarm_service.delete_alert = AsyncMock(return_value={"deleted": True})
+    original = {"alert_id": "alarm"}
+    first = await handlers.handle_tool_call("delete_alert", original)
+    token = json.loads(first[0]["text"])["confirmation_token"]
+    await handlers.handle_tool_call(setter, args)
+    second = await handlers.handle_tool_call("delete_alert", {
+        **original, "confirmation_token": token, "confirmation_secret": "correct-secret",
+    })
+    assert json.loads(second[0]["text"])["status"] == "confirmation_failed"
+    assert handlers.alarm_service.delete_alert.await_count == 0
+
+
+@pytest.mark.asyncio
+async def test_confirmation_tenancy_scope_is_shown_and_used(handlers):
+    handlers.secret_store.set_secret("correct-secret")
+    seen = []
+
+    async def create(**kwargs):
+        seen.append(kwargs)
+        return {"id": "new-search", "compartment_id": kwargs["compartment_id"]}
+
+    handlers.saved_search.create_search = create
+    args = {"display_name": "search", "query": "* | stats count", "scope": "tenancy"}
+    [first] = await handlers.handle_tool_call("create_saved_search", args)
+    payload = json.loads(first["text"])
+    assert "Scope: compartment=ocid1.tenancy.test, namespace=testns" in payload["summary"]
+    [second] = await handlers.handle_tool_call("create_saved_search", {
+        **args, "confirmation_token": payload["confirmation_token"], "confirmation_secret": "correct-secret",
+    })
+    assert json.loads(second["text"]) == {"id": "new-search", "compartment_id": "ocid1.tenancy.test"}
+    assert seen[0]["compartment_id"] == "ocid1.tenancy.test"
+    assert "compartment_id" not in args
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("resource", [False, True])
+async def test_scope_setter_waits_for_running_tool_or_resource(handlers, mock_oci_client, resource):
+    started, release = asyncio.Event(), asyncio.Event()
+    seen = []
+
+    async def slow(**kwargs):
+        started.set()
+        await release.wait()
+        seen.append(mock_oci_client.namespace)
+        return {"fields": []} if resource else []
+
+    handlers.schema_manager.get_full_schema = slow
+    handlers.schema_manager.get_log_sources = slow
+    async with asyncio.timeout(2):
+        op = asyncio.create_task(handlers.handle_resource_read("loganalytics://schema") if resource
+                                 else handlers.handle_tool_call("list_log_sources", {}))
+        await started.wait()
+        change = asyncio.create_task(handlers.handle_tool_call("set_namespace", {"namespace": "other"}))
+        try:
+            await asyncio.sleep(0.05)
+            blocked = not change.done() and mock_oci_client.namespace == "testns"
+        finally:
+            release.set()
+            await asyncio.gather(op, change)
+        assert blocked and seen == ["testns"]
+        assert mock_oci_client.namespace == "other"
+
+
+@pytest.mark.asyncio
+async def test_scope_cancelled_waiting_writer_leaves_guard_usable(handlers, mock_oci_client):
+    started, release = asyncio.Event(), asyncio.Event()
+
+    async def slow(**kwargs):
+        started.set()
+        await release.wait()
+        return []
+
+    handlers.schema_manager.get_log_sources = slow
+    async with asyncio.timeout(2):
+        op = asyncio.create_task(handlers.handle_tool_call("list_log_sources", {}))
+        await started.wait()
+        change = asyncio.create_task(handlers.handle_tool_call("set_namespace", {"namespace": "other"}))
+        try:
+            await asyncio.sleep(0.02)
+            change.cancel()
+            with pytest.raises(asyncio.CancelledError):
+                await change
+        finally:
+            release.set()
+            await asyncio.gather(op, change, return_exceptions=True)
+        assert mock_oci_client.namespace == "testns"
+        await handlers.handle_tool_call("set_namespace", {"namespace": "third"})
+        assert mock_oci_client.namespace == "third"
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("cancel_reader", [False, True])
+async def test_scope_guard_prefers_waiting_writer_and_cleans_cancelled_reader(cancel_reader):
+    from oci_logan_mcp.handlers import ScopeGuard
+
+    guard = ScopeGuard()
+    writer_entered, writer_release = asyncio.Event(), asyncio.Event()
+    order = []
+
+    async def writer():
+        async with guard.exclusive():
+            order.append("writer")
+            writer_entered.set()
+            await writer_release.wait()
+
+    async def reader():
+        async with guard.shared():
+            order.append("reader")
+
+    async with asyncio.timeout(2):
+        async with guard.shared():
+            waiting_writer = asyncio.create_task(writer())
+            await asyncio.sleep(0)
+            waiting_reader = asyncio.create_task(reader())
+            await asyncio.sleep(0.01)
+            assert order == []
+            if cancel_reader:
+                waiting_reader.cancel()
+                with pytest.raises(asyncio.CancelledError):
+                    await waiting_reader
+        await writer_entered.wait()
+        try:
+            assert order == ["writer"]
+            assert cancel_reader or not waiting_reader.done()
+        finally:
+            writer_release.set()
+        await asyncio.gather(waiting_writer, waiting_reader, return_exceptions=True)
+        assert order == (["writer"] if cancel_reader else ["writer", "reader"])
+        async with guard.exclusive():
+            order.append("later")
+        assert order[-1] == "later"
 
 
 @pytest.mark.asyncio

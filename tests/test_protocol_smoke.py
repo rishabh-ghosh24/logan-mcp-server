@@ -7,6 +7,7 @@ import os
 from pathlib import Path
 import shlex
 import sys
+import time
 
 import pytest
 import matplotlib
@@ -120,3 +121,33 @@ async def test_fake_oci_barrier_waits_for_release_and_echoes_namespace(tmp_path)
             (barrier / "release").touch()
         result = await pending
         assert json.loads(result.content[0].text)["data"]["rows"] == [[42, "smoke"]]
+
+
+@pytest.mark.asyncio
+async def test_scope_change_waits_for_in_flight_query(tmp_path):
+    async with _session(tmp_path, fake_oci=True) as session:
+        await session.initialize()
+        completed = {}
+
+        async def call(key, tool, args):
+            result = await session.call_tool(tool, args)
+            completed[key] = time.monotonic()
+            return result
+
+        query = asyncio.create_task(call("query", "run_query", {"query": "* | stats count | slow"}))
+        barrier = tmp_path / "barrier"
+        try:
+            async with asyncio.timeout(5):
+                while not (barrier / "started").exists():
+                    await asyncio.sleep(0.02)
+            change = asyncio.create_task(call("change", "set_namespace", {"namespace": "other"}))
+            await asyncio.sleep(0.3)
+            assert not query.done() and not change.done()
+        finally:
+            (barrier / "release").touch()
+        result, changed = await asyncio.gather(query, change)
+        assert not result.isError and not changed.isError
+        assert json.loads(result.content[0].text)["data"]["rows"] == [[42, "smoke"]]
+        assert completed["query"] <= completed["change"]
+        after = await session.call_tool("run_query", {"query": "* | stats count"})
+        assert json.loads(after.content[0].text)["data"]["rows"] == [[42, "other"]]

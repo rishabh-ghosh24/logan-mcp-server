@@ -36,7 +36,7 @@ from .audit import AuditLogger
 from .tools import get_tools, tool_title
 from .read_only_guard import MUTATING_TOOLS, OUTBOUND_TOOLS
 from .resources import get_resources
-from .handlers import MCPHandlers, COMPARTMENT_PREFERENCE_KEY
+from .handlers import MCPHandlers, COMPARTMENT_PREFERENCE_KEY, ScopeGuard
 from ._version import __version__
 
 SERVER_INSTRUCTIONS = (
@@ -356,12 +356,14 @@ class OCILogAnalyticsMCPServer:
         fetch schema on demand via SchemaManager.
         """
         try:
-            counts = await asyncio.wait_for(
-                self.context_manager.refresh_schema(
-                    self.oci_client, self.settings
-                ),
-                timeout=SCHEMA_REFRESH_TIMEOUT,
-            )
+            guard = self.handlers.scope_guard if self.handlers is not None else ScopeGuard()
+            async with guard.shared():
+                counts = await asyncio.wait_for(
+                    self.context_manager.refresh_schema(
+                        self.oci_client, self.settings
+                    ),
+                    timeout=SCHEMA_REFRESH_TIMEOUT,
+                )
             logger.info(f"Background schema refresh complete: {counts}")
         except asyncio.TimeoutError:
             logger.warning(
