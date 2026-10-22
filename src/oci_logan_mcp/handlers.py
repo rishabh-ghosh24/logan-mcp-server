@@ -58,6 +58,7 @@ from .report_store import (
     ReportStoreError,
 )
 from .sanitize import sanitize_query_text
+from .promote import SINGLE_USER_MIN_INTEREST
 
 if TYPE_CHECKING:
     from .catalog import CatalogEntry
@@ -2412,6 +2413,8 @@ class MCPHandlers:
             tags=args.get("tags"),
             force=args.get("force", False),
             rename_to=args.get("rename_to"),
+            interest_score=max(self.auto_saver.score_query(args["query"]), SINGLE_USER_MIN_INTEREST),
+            origin="manual",
         )
         if "collision_warning" in saved:
             return [{"type": "text", "text": json.dumps({

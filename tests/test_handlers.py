@@ -134,6 +134,42 @@ def handlers(settings, mock_oci_client, mock_cache, mock_query_logger, mock_cont
 # Catalog Wiring Tests
 # ---------------------------------------------------------------------------
 
+@pytest.mark.asyncio
+@pytest.mark.parametrize("query", [
+    "* | stats count",
+    "'Log Source' = 'OKE Control Plane Logs' | stats count by Severity | sort -count | head 10",
+])
+async def test_save_learned_query_scores_manual_saves(handlers, mock_user_store, query):
+    response = await handlers._save_learned_query({
+        "name": "my_saved_query", "query": query, "description": "my description",
+    })
+    assert json.loads(response[0]["text"])["status"] == "saved"
+    [entry] = mock_user_store.list_queries()
+    assert entry["interest_score"] >= 4
+    assert entry["origin"] == "manual"
+
+
+@pytest.mark.asyncio
+async def test_explicit_save_of_auto_query_preserves_identity_under_variant_pressure(handlers, mock_user_store):
+    query = "'Log Source' = 'OKE Control Plane Logs' | stats count by Severity | sort -count | head 10"
+    result = {"data": {"rows": [[1]], "columns": []}}
+    initial = handlers.auto_saver.process_successful_query(query, result)
+    assert initial is not None
+    await handlers._save_learned_query({"name": "oke_by_severity", "description": "mine", "query": query})
+    [entry] = mock_user_store.list_queries()
+    assert entry["entry_id"] == initial["entry_id"]
+    assert entry["origin"] == "manual" and "auto-saved" not in entry["tags"]
+    assert entry["interest_score"] >= 4
+    handlers.auto_saver.process_successful_query(query, result)
+    for index in range(6):
+        handlers.auto_saver.process_successful_query(query + f" | eval v = {index}", result)
+    entries = mock_user_store.list_queries()
+    [manual] = [item for item in entries if item["name"] == "oke_by_severity"]
+    assert manual["entry_id"] == initial["entry_id"]
+    assert manual["origin"] == "manual" and manual["description"] == "mine"
+    assert manual["query"] == query and manual["use_count"] >= 3
+    assert any(item["name"] != "oke_by_severity" for item in entries)
+
 def test_mcp_handlers_exposes_unified_catalog(handlers):
     """Handler should have a UnifiedCatalog when user_store is provided."""
     from oci_logan_mcp.catalog import UnifiedCatalog

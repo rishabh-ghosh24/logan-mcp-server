@@ -31,6 +31,40 @@ def auto_saver(mock_context_manager, mock_user_store):
 DUMMY_RESULT = {"data": {"rows": [[1]], "columns": [{"name": "count"}]}}
 
 
+def test_semantic_auto_save_preserves_a_manual_entry(auto_saver, mock_user_store):
+    query = (
+        "Severity in ('ERROR', 'CRITICAL', 'FATAL') or "
+        "'Original Log Content' like '%error%' or 'Original Log Content' like '%fail%' or "
+        "'Original Log Content' like '%fatal%' or 'Original Log Content' like '%critical%' or "
+        "'Original Log Content' like '%exception%' | stats count by 'Log Source' | sort -count"
+    )
+    original = mock_user_store.save_query(name="my_error_sources", query=query,
+                                          description="Keep my explanation", category="errors")
+    auto_saver.process_successful_query(query, DUMMY_RESULT)
+    [entry] = mock_user_store.list_queries()
+    for field in ("entry_id", "name", "query", "description", "category"):
+        assert entry[field] == original[field]
+    assert entry["origin"] == "manual" and entry["use_count"] == 2
+
+
+def test_semantic_canonical_name_collision_keeps_both_queries(auto_saver, mock_user_store):
+    query = (
+        "Severity in ('ERROR', 'CRITICAL', 'FATAL') or "
+        "'Original Log Content' like '%error%' or 'Original Log Content' like '%fail%' or "
+        "'Original Log Content' like '%fatal%' or 'Original Log Content' like '%critical%' or "
+        "'Original Log Content' like '%exception%' | stats count by 'Log Source' | sort -count"
+    )
+    auto = mock_user_store.save_query(name="legacy_auto", query=query, description="automatic",
+                                      origin="auto")
+    manual = mock_user_store.save_query(name="error_like_sources_by_log_source",
+                                        query="my different query", description="mine")
+    auto_saver.process_successful_query(query, DUMMY_RESULT)
+    entries = mock_user_store.list_queries()
+    assert {entry["query"] for entry in entries} == {query, "my different query"}
+    assert {entry["entry_id"] for entry in entries} == {auto["entry_id"], manual["entry_id"]}
+    assert next(entry for entry in entries if entry["entry_id"] == manual["entry_id"])["name"] == manual["name"]
+
+
 # ================================================================
 # Interest scoring
 # ================================================================
@@ -208,6 +242,10 @@ class TestNameGeneration:
             category="general",
             tags=["auto-saved"],
         )
+        # This fixture represents a pre-origin YAML file, not a new manual save.
+        data = mock_user_store._load()
+        data["queries"][0].pop("origin", None)
+        mock_user_store._save(data)
 
         saved = auto_saver.process_successful_query(q, DUMMY_RESULT)
 
@@ -237,6 +275,7 @@ class TestNameGeneration:
             tags=["auto-saved"],
         )
         data = mock_user_store._load()
+        data["queries"][0].pop("origin", None)
         data["queries"][0]["use_count"] = 7
         data["queries"][0]["success_count"] = 4
         data["queries"][0]["failure_count"] = 2

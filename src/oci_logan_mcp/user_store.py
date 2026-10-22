@@ -23,6 +23,13 @@ MAX_QUERIES_PER_USER = 200
 SHARED_CATALOG_LOCK_NAME = "catalog.lock"
 
 
+def query_origin(entry: Dict[str, Any]) -> str:
+    """Recognize legacy auto rows while protecting explicit manual saves."""
+    return entry.get("origin") or (
+        "auto" if "auto-saved" in (entry.get("tags") or []) else "manual"
+    )
+
+
 def _needs_entry_id_backfill(data: Dict[str, Any]) -> bool:
     return any(not q.get("entry_id") for q in data.get("queries", []))
 
@@ -101,6 +108,7 @@ class UserStore:
         rename_to: Optional[str] = None,
         intent_key: Optional[str] = None,
         query_shape: Optional[str] = None,
+        origin: str = "manual",
     ) -> Dict[str, Any]:
         """Save or update a learned query.
 
@@ -114,6 +122,17 @@ class UserStore:
             data = self._load()
             queries = data.get("queries", [])
 
+            if origin == "auto":
+                for q in queries:
+                    if query_origin(q) == "manual" and (
+                        q["name"] == effective_name or q["query"].strip() == query.strip()
+                    ):
+                        q["origin"] = "manual"
+                        q["last_used"] = now
+                        q["use_count"] = q.get("use_count", 0) + 1
+                        self._save(data)
+                        return deepcopy(q)
+
             # Personal ↔ personal: update in place by name (bypass collision check)
             for q in queries:
                 if q["name"] == effective_name:
@@ -121,6 +140,9 @@ class UserStore:
                     q["description"] = description
                     q["category"] = category
                     q["tags"] = tags or q.get("tags", [])
+                    q["origin"] = origin
+                    if origin == "manual":
+                        q["tags"] = [tag for tag in q["tags"] if tag != "auto-saved"]
                     q["last_used"] = now
                     q["use_count"] = q.get("use_count", 0) + 1
                     q["interest_score"] = max(q.get("interest_score", 0), interest_score)
@@ -155,6 +177,9 @@ class UserStore:
                     q["description"] = description
                     q["category"] = category
                     q["tags"] = tags or q.get("tags", [])
+                    q["origin"] = origin
+                    if origin == "manual":
+                        q["tags"] = [tag for tag in q["tags"] if tag != "auto-saved"]
                     q["last_used"] = now
                     q["use_count"] = q.get("use_count", 0) + 1
                     q["interest_score"] = max(q.get("interest_score", 0), interest_score)
@@ -188,6 +213,7 @@ class UserStore:
                 "description": description,
                 "category": category,
                 "tags": tags or [],
+                "origin": origin,
                 "created_at": now,
                 "last_used": now,
                 "use_count": 1,

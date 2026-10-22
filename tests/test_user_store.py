@@ -11,6 +11,33 @@ def base_dir(tmp_path):
 def store(base_dir):
     return UserStore(base_dir=base_dir, user_id="alice")
 
+
+@pytest.mark.parametrize("match_by", ["name", "query"])
+def test_auto_save_preserves_manual_identity_and_metadata(store, match_by):
+    original = store.save_query(name="manual", query="original", description="my words",
+                                category="security", tags=["mine"], interest_score=4)
+    result = store.save_query(name="manual" if match_by == "name" else "automatic_name",
+                              query="replacement" if match_by == "name" else "original",
+                              description="automatic words", tags=["auto-saved"], origin="auto")
+    [entry] = store.list_queries()
+    for field in ("entry_id", "name", "query", "description", "category", "tags", "interest_score"):
+        assert entry[field] == original[field]
+    assert entry["origin"] == "manual"
+    assert entry["use_count"] == 2 and result["use_count"] == 2
+
+
+@pytest.mark.parametrize("match_by", ["name", "query"])
+def test_explicit_save_upgrades_an_auto_entry(store, match_by):
+    auto = store.save_query(name="automatic", query="original", description="auto",
+                            tags=["auto-saved", "useful"], origin="auto")
+    saved = store.save_query(name="automatic" if match_by == "name" else "manual_name",
+                             query="replacement" if match_by == "name" else "original",
+                             description="manual words")
+    [entry] = store.list_queries()
+    assert saved["entry_id"] == entry["entry_id"] == auto["entry_id"]
+    assert entry["origin"] == "manual" and "auto-saved" not in entry["tags"]
+    assert entry["description"] == "manual words"
+
 class TestUserStoreInit:
     def test_creates_user_directory(self, store, base_dir):
         assert (base_dir / "users" / "alice").is_dir()

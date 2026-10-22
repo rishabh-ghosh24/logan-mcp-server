@@ -12,7 +12,7 @@ import re
 from typing import Any, Dict, Optional, Tuple
 
 from .context_manager import ContextManager
-from .user_store import UserStore
+from .user_store import UserStore, query_origin
 
 logger = logging.getLogger(__name__)
 
@@ -72,6 +72,10 @@ class QueryAutoSaver:
     # Public API
     # ----------------------------------------------------------------
 
+    def score_query(self, query: str) -> int:
+        """Score a query using the same rules as automatic learning."""
+        return self._compute_interest_score(query)
+
     def process_successful_query(
         self, query: str, result: Dict[str, Any]
     ) -> Optional[Dict[str, Any]]:
@@ -119,6 +123,7 @@ class QueryAutoSaver:
                 interest_score=score,
                 intent_key=intent_key,
                 query_shape=query_shape,
+                origin="auto",
             )
             # If collision with builtin/shared, silently skip
             if "collision_warning" in saved:
@@ -271,7 +276,17 @@ class QueryAutoSaver:
         if not matches:
             return None
 
+        manual = next((entry for entry in matches if query_origin(entry) == "manual"), None)
+        if manual is not None:
+            return self.user_store.save_query(
+                name=manual["name"], query=manual["query"],
+                description=manual["description"], origin="auto",
+            )
+
         canonical_name = semantic["name"]
+        if any(entry["name"] == canonical_name and query_origin(entry) == "manual"
+               for entry in self.user_store.list_queries()):
+            canonical_name = self._unique_name(canonical_name)
         saved = self.user_store.save_query(
             name=canonical_name,
             query=query.strip(),
@@ -282,6 +297,7 @@ class QueryAutoSaver:
             force=True,
             intent_key=semantic["intent_key"],
             query_shape=semantic["query_shape"],
+            origin="auto",
         )
         for existing in matches:
             if existing.get("name") != canonical_name:

@@ -20,6 +20,31 @@ def _make_query(name="q1", query="'Log Source' = 'Linux' | stats count by Severi
         "created_at": "2026-01-01T00:00:00", "last_used": "2026-03-24T00:00:00",
     }
 
+
+@pytest.mark.parametrize("preexisting", [False, True])
+def test_promote_marks_winners_beyond_actual_shared_cap_as_over_cap(tmp_path, preexisting):
+    from oci_logan_mcp.promote import MAX_PROMOTED, OVER_CAP_STATUS
+
+    user_dir = tmp_path / "users" / "alice"
+    user_dir.mkdir(parents=True)
+    count = 5 if preexisting else MAX_PROMOTED + 5
+    entries = [_make_query(name=f"q{i}", query=f"'Log Source' = 'S{i}' | stats count",
+                           interest_score=4, success_count=9, failure_count=1) for i in range(count)]
+    atomic_yaml_write(user_dir / "learned_queries.yaml", {"version": 1, "queries": entries})
+    if preexisting:
+        old = [_make_query(name=f"old{i}", query=f"'Log Source' = 'Old{i}' | stats count",
+                           interest_score=10) for i in range(MAX_PROMOTED)]
+        atomic_yaml_write(tmp_path / "shared" / "promoted_queries.yaml", {"queries": old})
+    result = promote_all(tmp_path)
+    shared = atomic_yaml_read(tmp_path / "shared" / "promoted_queries.yaml")["queries"]
+    after = atomic_yaml_read(user_dir / "learned_queries.yaml")["queries"]
+    shared_names = {item["name"] for item in shared}
+    assert len(shared) == MAX_PROMOTED
+    assert result["scanned_users"] == 1
+    assert sum(item["promotion_status"] == OVER_CAP_STATUS for item in after) == 5
+    assert all((item["promotion_status"] == "promoted") == (item["name"] in shared_names)
+               for item in after)
+
 class TestShouldPromote:
     def test_single_user_high_score_high_success(self):
         q = _make_query(interest_score=4, success_count=8, failure_count=2)

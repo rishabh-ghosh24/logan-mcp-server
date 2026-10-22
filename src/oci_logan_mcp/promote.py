@@ -21,6 +21,7 @@ SINGLE_USER_MIN_SUCCESS_RATE = 0.80
 MULTI_USER_MIN_INTEREST = 3
 MULTI_USER_MIN_SUCCESS_RATE = 0.70
 MAX_PROMOTED = 100
+OVER_CAP_STATUS = "pending: over_cap"
 
 
 def should_promote(query: Dict[str, Any], user_count: int = 1) -> bool:
@@ -228,6 +229,7 @@ def promote_all(base_dir: Path) -> Dict[str, Any]:
         name_groups.setdefault(ck[0], []).append(ck)
 
     promoted: List[Dict[str, Any]] = []
+    winners = []
     for name_lower, keys in name_groups.items():
         if len(keys) == 1:
             winner_key = keys[0]
@@ -252,15 +254,7 @@ def promote_all(base_dir: Path) -> Dict[str, Any]:
 
         winner = promote_candidates[winner_key]
         promoted.append(winner["sanitized"])
-        for uid, entry in winner["bucket"]["entries_by_user"].items():
-            status_updates_by_user.setdefault(uid, {})[entry["entry_id"]] = {
-                "promotion_status": "promoted",
-                "promotion_reason": (
-                    f"Promoted to shared catalog (users={winner['uc']}, "
-                    f"success_rate={winner['success_rate']:.2f})"
-                ),
-                "promoted_at": now,
-            }
+        winners.append(winner)
 
     # Phase 3: write shared file (under shared lock)
     promoted.sort(key=lambda q: q.get("interest_score", 0), reverse=True)
@@ -305,6 +299,30 @@ def promote_all(base_dir: Path) -> Dict[str, Any]:
             "queries": final,
             "promoted_at": now,
         })
+
+    final_keys = {(q["name"].lower(), normalize_query_text(q["query"])) for q in final}
+    for winner in winners:
+        sanitized = winner["sanitized"]
+        key = (sanitized["name"].lower(), normalize_query_text(sanitized["query"]))
+        if key in final_keys:
+            update = {
+                "promotion_status": "promoted",
+                "promotion_reason": (
+                    f"Promoted to shared catalog (users={winner['uc']}, "
+                    f"success_rate={winner['success_rate']:.2f})"
+                ),
+                "promoted_at": now,
+            }
+        else:
+            update = {
+                "promotion_status": OVER_CAP_STATUS,
+                "promotion_reason": (
+                    f"Qualified, but the shared catalog cap of {MAX_PROMOTED} was reached; "
+                    "retried on the next run"
+                ),
+            }
+        for uid, entry in winner["bucket"]["entries_by_user"].items():
+            status_updates_by_user.setdefault(uid, {})[entry["entry_id"]] = update
 
     # Phase 4: per-user status write-back (serial, one lock at a time)
     for user_id, updates in status_updates_by_user.items():
