@@ -35,7 +35,7 @@ from .audit import AuditLogger
 from .tools import get_tools, tool_title
 from .read_only_guard import MUTATING_TOOLS, OUTBOUND_TOOLS
 from .resources import get_resources
-from .handlers import MCPHandlers
+from .handlers import MCPHandlers, COMPARTMENT_PREFERENCE_KEY
 from ._version import __version__
 
 SERVER_INSTRUCTIONS = (
@@ -249,6 +249,12 @@ class OCILogAnalyticsMCPServer:
         self.preference_store = PreferenceStore(
             user_dir=base_dir / "users" / self.user_store.user_id
         )
+        remembered = self.preference_store.get(COMPARTMENT_PREFERENCE_KEY)
+        if self.oci_client is not None and remembered:
+            compartment = remembered["resolved_value"]
+            self.oci_client.compartment_id = compartment
+            self.settings.log_analytics.default_compartment_id = compartment
+            logger.info("Applied the user's remembered compartment: %s", compartment)
         logger.info(f"User identity: {self.user_store.user_id}")
 
         # Initialize per-user secret store

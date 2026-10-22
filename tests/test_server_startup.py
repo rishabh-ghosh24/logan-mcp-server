@@ -110,6 +110,42 @@ def server():
     return srv
 
 
+@pytest.mark.asyncio
+@pytest.mark.parametrize("remembered", [None, "ocid1.comp.remembered"])
+async def test_initialize_core_uses_personal_compartment_or_config_default(server, tmp_path, remembered):
+    from oci_logan_mcp.config import Settings
+    from oci_logan_mcp.preferences import PreferenceStore
+    from oci_logan_mcp.user_store import UserStore
+
+    settings = Settings()
+    settings.log_analytics.default_compartment_id = "configured-default"
+    user_store = UserStore(tmp_path, user_id="startup-user")
+    preferences = PreferenceStore(tmp_path / "users" / "startup-user")
+    if remembered is not None:
+        preferences.remember("default_compartment_id", remembered, 1.0)
+    client = MagicMock(compartment_id="configured-default")
+    secret = MagicMock()
+    secret.has_secret.return_value = True
+    secret.is_valid.return_value = True
+    with patch('oci_logan_mcp.server.config_exists', return_value=True), \
+         patch('oci_logan_mcp.server.load_config', return_value=settings), \
+         patch('oci_logan_mcp.server.CONFIG_PATH', tmp_path / "config.yaml"), \
+         patch('oci_logan_mcp.server.CacheManager'), \
+         patch('oci_logan_mcp.server.QueryLogger'), \
+         patch('oci_logan_mcp.server.OCILogAnalyticsClient', return_value=client), \
+         patch('oci_logan_mcp.server.ContextManager'), \
+         patch('oci_logan_mcp.server.UserStore', return_value=user_store), \
+         patch('oci_logan_mcp.server.PreferenceStore', return_value=preferences), \
+         patch('oci_logan_mcp.server.SecretStore', return_value=secret), \
+         patch('oci_logan_mcp.server.AuditLogger'), \
+         patch('oci_logan_mcp.server.MCPHandlers'):
+        await server.initialize_core()
+    expected = remembered or "configured-default"
+    assert server.oci_client.compartment_id == expected
+    assert server.settings.log_analytics.default_compartment_id == expected
+    assert server.handlers is not None
+
+
 class TestInitializeCore:
     """Tests for initialize_core() — lightweight startup without schema refresh."""
 

@@ -21,7 +21,7 @@ from .context_manager import ContextManager
 from .user_store import UserStore
 from .preferences import PreferenceStore
 from .query_auto_saver import QueryAutoSaver
-from .config import Settings, save_config
+from .config import Settings
 from .resources import get_syntax_guide, get_reference_docs
 from .alarm_service import AlarmService
 from .dashboard_service import DashboardService
@@ -65,6 +65,7 @@ if TYPE_CHECKING:
 logger = logging.getLogger(__name__)
 
 REPORT_EMAIL_TOPIC_PREFERENCE_KEY = "report.email_topic"
+COMPARTMENT_PREFERENCE_KEY = "default_compartment_id"
 REQUIRED_AUDIT_TOOLS = frozenset({
     *MUTATING_TOOLS,
     "export_results",
@@ -2065,20 +2066,19 @@ class MCPHandlers:
         return [{"type": "text", "text": exported}]
 
     async def _set_compartment(self, args: Dict) -> List[Dict]:
-        """Set compartment context and persist to config."""
+        """Set compartment context and remember the user's choice."""
         new_id = args["compartment_id"]
         self.oci_client.compartment_id = new_id
         self.settings.log_analytics.default_compartment_id = new_id
         self.cache.clear()
 
-        try:
-            save_config(self.settings)
-            logger.info(f"Persisted default compartment to config: {new_id}")
-        except Exception as e:
-            logger.warning(f"Failed to persist compartment to config: {e}")
+        detail = "session only; config.yaml unchanged"
+        if self.preference_store is not None:
+            self.preference_store.remember(COMPARTMENT_PREFERENCE_KEY, new_id, confidence=1.0)
+            detail = f"remembered for user {self.user_store.user_id}; config.yaml unchanged"
 
         return [
-            {"type": "text", "text": f"Compartment set to: {new_id}"}
+            {"type": "text", "text": f"Compartment set to: {new_id} ({detail})"}
         ]
 
     async def _set_namespace(self, args: Dict) -> List[Dict]:

@@ -47,6 +47,40 @@ class TestSettings:
         assert data["oci"]["profile"] == "DEFAULT"
 
 
+def test_config_path_environment_round_trip(tmp_path, monkeypatch):
+    from oci_logan_mcp.config import config_exists
+
+    target = tmp_path / "custom" / "config.yaml"
+    default = tmp_path / "default.yaml"
+    monkeypatch.setattr("oci_logan_mcp.config.CONFIG_PATH", default)
+    monkeypatch.setenv("OCI_LA_MCP_CONFIG", str(target))
+    target.parent.mkdir()
+    target.write_text("log_analytics:\n  namespace: from-env-file\n")
+    assert config_exists() is True
+    settings = load_config()
+    assert settings.log_analytics.namespace == "from-env-file"
+    settings.log_analytics.namespace = "saved-to-env-file"
+    save_config(settings)
+    assert load_config(target).log_analytics.namespace == "saved-to-env-file"
+    assert not default.exists()
+
+
+def test_explicit_config_path_takes_precedence_over_environment(tmp_path, monkeypatch):
+    from oci_logan_mcp.config import config_exists
+
+    explicit, environment = tmp_path / "explicit.yaml", tmp_path / "environment.yaml"
+    explicit.write_text("log_analytics:\n  namespace: explicit\n")
+    environment.write_text("log_analytics:\n  namespace: environment\n")
+    monkeypatch.setenv("OCI_LA_MCP_CONFIG", str(environment))
+    assert config_exists(explicit)
+    settings = load_config(explicit)
+    assert settings.log_analytics.namespace == "explicit"
+    settings.log_analytics.namespace = "explicit-saved"
+    save_config(settings, explicit)
+    assert load_config(explicit).log_analytics.namespace == "explicit-saved"
+    assert "environment" in environment.read_text()
+
+
 class TestConfigLoader:
     """Tests for configuration loading."""
 

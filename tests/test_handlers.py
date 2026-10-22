@@ -393,6 +393,26 @@ class TestConfigurationHandlers:
     """Test set_compartment, set_namespace, get_current_context."""
 
     @pytest.mark.asyncio
+    async def test_set_compartment_remembers_per_user_and_leaves_config_alone(
+        self, handlers, mock_preference_store, tmp_path, monkeypatch
+    ):
+        cfg = tmp_path / "config.yaml"
+        original = "log_analytics:\n  default_compartment_id: shared-default\n"
+        cfg.write_text(original)
+        monkeypatch.setattr("oci_logan_mcp.config.CONFIG_PATH", cfg)
+        other_user = PreferenceStore(tmp_path / "users" / "other")
+        other_user.remember("default_compartment_id", "other-compartment", 1.0)
+
+        response = await handlers._set_compartment({"compartment_id": "ocid1.comp.new"})
+
+        assert handlers.oci_client.compartment_id == "ocid1.comp.new"
+        assert cfg.read_text() == original
+        reopened = PreferenceStore(tmp_path / "users" / "testuser")
+        assert reopened.get("default_compartment_id")["resolved_value"] == "ocid1.comp.new"
+        assert other_user.get("default_compartment_id")["resolved_value"] == "other-compartment"
+        assert "remembered" in response[0]["text"]
+
+    @pytest.mark.asyncio
     async def test_set_compartment(self, handlers, mock_oci_client, mock_cache):
         """Should update client compartment and clear cache."""
         result = await handlers._set_compartment({"compartment_id": "ocid1.comp.new"})

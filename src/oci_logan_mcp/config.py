@@ -231,6 +231,15 @@ class Settings:
 # --- Config Loading ---
 
 
+def resolve_config_path(config_path: Optional[Path] = None) -> Path:
+    """Use an explicit path, then the environment override, then the default."""
+    if config_path is not None:
+        return config_path
+    if environment_path := os.environ.get("OCI_LA_MCP_CONFIG"):
+        return Path(environment_path)
+    return CONFIG_PATH
+
+
 def load_config(config_path: Optional[Path] = None) -> Settings:
     """Load configuration from file, with environment variable overrides.
 
@@ -245,11 +254,7 @@ def load_config(config_path: Optional[Path] = None) -> Settings:
     # Migrate legacy config directory if needed
     _migrate_legacy_config_dir()
 
-    # Check for config path override from environment
-    if env_config_path := os.environ.get("OCI_LA_MCP_CONFIG"):
-        config_path = Path(env_config_path)
-    elif config_path is None:
-        config_path = CONFIG_PATH
+    config_path = resolve_config_path(config_path)
 
     # Load from file if exists
     if config_path.exists():
@@ -469,8 +474,7 @@ def _migrate_legacy_config_dir() -> None:
 
 def save_config(settings: Settings, config_path: Optional[Path] = None) -> None:
     """Save settings to configuration file."""
-    if config_path is None:
-        config_path = CONFIG_PATH
+    config_path = resolve_config_path(config_path)
 
     config_path.parent.mkdir(parents=True, exist_ok=True)
 
@@ -481,6 +485,4 @@ def save_config(settings: Settings, config_path: Optional[Path] = None) -> None:
 
 def config_exists(config_path: Optional[Path] = None) -> bool:
     """Check if configuration file exists."""
-    if config_path is None:
-        config_path = CONFIG_PATH
-    return config_path.exists()
+    return resolve_config_path(config_path).exists()
