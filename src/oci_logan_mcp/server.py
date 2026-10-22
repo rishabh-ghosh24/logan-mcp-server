@@ -227,7 +227,6 @@ class OCILogAnalyticsMCPServer:
 
         # Initialize components
         self.cache = CacheManager(self.settings.cache)
-        self.query_logger = QueryLogger(self.settings.logging)
 
         try:
             self.oci_client = OCILogAnalyticsClient(self.settings)
@@ -246,6 +245,9 @@ class OCILogAnalyticsMCPServer:
         # Initialize per-user stores
         base_dir = CONFIG_PATH.parent  # ~/.oci-logan-mcp
         self.user_store = UserStore(base_dir=base_dir)
+        self.query_logger = QueryLogger(
+            self.settings.logging, user_dir=base_dir / "users" / self.user_store.user_id,
+        )
         self.preference_store = PreferenceStore(
             user_dir=base_dir / "users" / self.user_store.user_id
         )
@@ -264,7 +266,10 @@ class OCILogAnalyticsMCPServer:
         # Initialize shared audit logger
         import uuid
         session_id = uuid.uuid4().hex
-        self.audit_logger = AuditLogger(log_dir=base_dir / "logs", session_id=session_id)
+        self.audit_logger = AuditLogger(
+            log_dir=base_dir / "logs", session_id=session_id,
+            store_arguments=self.settings.audit.store_arguments,
+        )
         self._session_id = session_id
 
         # Deprecation warning for old env var

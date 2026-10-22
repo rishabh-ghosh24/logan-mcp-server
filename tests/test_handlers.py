@@ -170,6 +170,29 @@ async def test_explicit_save_of_auto_query_preserves_identity_under_variant_pres
     assert manual["query"] == query and manual["use_count"] >= 3
     assert any(item["name"] != "oke_by_severity" for item in entries)
 
+
+@pytest.mark.asyncio
+async def test_private_audit_records_query_dimensions_and_explicit_exception_type(handlers, tmp_path):
+    handlers.settings.read_only = True
+    audit = AuditLogger(tmp_path / "private-audit", store_arguments=False)
+    handlers.audit_logger = audit
+    result = await handlers.handle_tool_call("run_query", {
+        "query": "'Log Source' = 'Linux' | stats count", "time_range": "last_1_hour",
+    })
+    assert json.loads(result[0]["text"])["data"]["rows"] == [[42]]
+    [executed] = [entry for entry in audit.iter_entries() if entry["outcome"] == "executed"]
+    assert executed["result_summary"]["row_count"] == 1
+    assert executed["result_summary"]["column_count"] == 1
+    assert executed["text_retained"] is False
+
+    handlers.oci_client.list_fields = AsyncMock(side_effect=ValueError("MARKER_FAILURE"))
+    result = await handlers.handle_tool_call("list_fields", {})
+    assert "Error executing list_fields" in result[0]["text"]
+    [failed] = [entry for entry in audit.iter_entries() if entry["outcome"] == "execution_failed"]
+    assert failed["error"]["error_type"] == "ValueError"
+    assert failed["error"]["length"] == len("MARKER_FAILURE")
+    assert "MARKER_FAILURE" not in (tmp_path / "private-audit" / "audit.log").read_text()
+
 def test_mcp_handlers_exposes_unified_catalog(handlers):
     """Handler should have a UnifiedCatalog when user_store is provided."""
     from oci_logan_mcp.catalog import UnifiedCatalog

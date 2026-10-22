@@ -81,6 +81,37 @@ def test_explicit_config_path_takes_precedence_over_environment(tmp_path, monkey
     assert "environment" in environment.read_text()
 
 
+def test_audit_store_arguments_parses_and_round_trips(tmp_path, monkeypatch):
+    path = tmp_path / "audit-config.yaml"
+    path.write_text("audit:\n  store_arguments: false\n")
+    monkeypatch.delenv("OCI_LOGAN_AUDIT_STORE_ARGUMENTS", raising=False)
+    settings = load_config(path)
+    assert settings.audit.store_arguments is False
+    assert settings.to_dict()["audit"] == {"store_arguments": False}
+    save_config(settings, path)
+    assert load_config(path).audit.store_arguments is False
+    assert Settings().audit.store_arguments is True
+
+
+@pytest.mark.parametrize("value, expected", [
+    ("1", True), ("true", True), ("yes", True), ("on", True),
+    ("0", False), ("false", False), ("no", False), ("off", False),
+])
+def test_audit_store_arguments_env_override_changes_value(tmp_path, monkeypatch, value, expected):
+    path = tmp_path / "audit-config.yaml"
+    path.write_text(f"audit:\n  store_arguments: {str(not expected).lower()}\n")
+    monkeypatch.setenv("OCI_LOGAN_AUDIT_STORE_ARGUMENTS", value)
+    assert load_config(path).audit.store_arguments is expected
+
+
+def test_audit_store_arguments_invalid_env_warns_and_keeps_config(tmp_path, monkeypatch, caplog):
+    path = tmp_path / "audit-config.yaml"
+    path.write_text("audit:\n  store_arguments: false\n")
+    monkeypatch.setenv("OCI_LOGAN_AUDIT_STORE_ARGUMENTS", "invalid")
+    assert load_config(path).audit.store_arguments is False
+    assert "OCI_LOGAN_AUDIT_STORE_ARGUMENTS" in caplog.text
+
+
 class TestConfigLoader:
     """Tests for configuration loading."""
 

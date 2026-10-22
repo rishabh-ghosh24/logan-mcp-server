@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import json
+import hashlib
 import logging
 import os
 import re
@@ -25,14 +26,36 @@ _STRIP_KEYS = frozenset({
     "confirmation_secret",
     "confirmation_secret_confirm",
 })
+_TEXT_ARGUMENT_KEYS = frozenset({
+    "query", "queries", "sample_logs", "markdown", "description", "notes", "regex_pattern",
+})
+_SUMMARY_KEYS = frozenset({
+    "success", "status", "execution_ms", "error_type", "row_count", "column_count",
+})
+
+
+def _fingerprint(text: str) -> Dict[str, Any]:
+    return {"sha256": hashlib.sha256(text.encode("utf-8")).hexdigest(), "length": len(text)}
+
+
+def _omit_argument_text(value: Any, text_field: bool = False) -> Any:
+    if isinstance(value, dict):
+        return {key: _omit_argument_text(item, text_field or key.lower() in _TEXT_ARGUMENT_KEYS)
+                for key, item in value.items()}
+    if isinstance(value, (list, tuple)):
+        return [_omit_argument_text(item, text_field) for item in value]
+    if isinstance(value, str) and (text_field or len(value) > 64):
+        return _fingerprint(value)
+    return value
 
 
 class AuditLogger:
     """Append-only JSON-lines audit log with rotation and file locking."""
 
-    def __init__(self, log_dir: Path, session_id: str = "unknown") -> None:
+    def __init__(self, log_dir: Path, session_id: str = "unknown", store_arguments: bool = True) -> None:
         self._log_dir = log_dir
         self._session_id = session_id
+        self._store_arguments = store_arguments
         self._log_dir.mkdir(parents=True, exist_ok=True)
         try:
             os.chmod(self._log_dir, 0o750)
@@ -63,6 +86,7 @@ class AuditLogger:
         event_type: str = "mcp_call",
         actor_source: str = "logan_user",
         client_metadata: Dict[str, Any] | None = None,
+        error_type: str | None = None,
     ) -> None:
         """Append one audit entry as a JSON line."""
         clean_args = {k: v for k, v in args.items() if k not in _STRIP_KEYS}
@@ -70,6 +94,8 @@ class AuditLogger:
         sample_digest = clean_args.get("sample_sha256")
         if isinstance(sample_digest, str) and re.fullmatch(r"[0-9a-fA-F]{64}", sample_digest):
             redacted_args["sample_sha256"] = sample_digest
+        if not self._store_arguments:
+            redacted_args = _omit_argument_text(redacted_args)
         timestamp = datetime.now(timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ")
         if blocked is None:
             blocked = outcome in {
@@ -106,9 +132,18 @@ class AuditLogger:
             "audit_strictness": audit_strictness or "best_effort",
         }
         if result_summary != "":
+            if not self._store_arguments:
+                result_summary = {
+                    key: value for key, value in (result_summary.items() if isinstance(result_summary, dict) else [])
+                    if key in _SUMMARY_KEYS and isinstance(value, (bool, int, float))
+                }
             entry["result_summary"] = result_summary
-        if error:
-            entry["error"] = error
+        if error or error_type:
+            entry["error"] = error if self._store_arguments else {
+                "error_type": error_type or "unknown", **_fingerprint(error),
+            }
+        if not self._store_arguments:
+            entry["text_retained"] = False
 
         line = json.dumps(entry, separators=(",", ":")) + "\n"
 

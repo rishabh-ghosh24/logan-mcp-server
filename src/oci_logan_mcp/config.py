@@ -65,6 +65,13 @@ class LoggingConfig:
 
 
 @dataclass
+class AuditConfig:
+    """Control retention of free text in shared audit records."""
+
+    store_arguments: bool = True
+
+
+@dataclass
 class GuardrailsConfig:
     """Query guardrails configuration."""
 
@@ -146,6 +153,7 @@ class Settings:
     query: QueryConfig = field(default_factory=QueryConfig)
     cache: CacheConfig = field(default_factory=CacheConfig)
     logging: LoggingConfig = field(default_factory=LoggingConfig)
+    audit: AuditConfig = field(default_factory=AuditConfig)
     guardrails: GuardrailsConfig = field(default_factory=GuardrailsConfig)
     notifications: NotificationsConfig = field(default_factory=NotificationsConfig)
     cost: CostConfig = field(default_factory=CostConfig)
@@ -158,6 +166,7 @@ class Settings:
     def to_dict(self) -> dict:
         """Convert settings to dictionary for serialization."""
         return {
+            "audit": {"store_arguments": self.audit.store_arguments},
             "oci": {
                 "config_path": str(self.oci.config_path),
                 "profile": self.oci.profile,
@@ -313,6 +322,11 @@ def _parse_config(data: Dict[str, Any]) -> Settings:
             log_level=logging_data.get("log_level", settings.logging.log_level),
         )
 
+    if audit_data := data.get("audit"):
+        settings.audit = AuditConfig(
+            store_arguments=audit_data.get("store_arguments", settings.audit.store_arguments),
+        )
+
     if guardrails_data := data.get("guardrails"):
         settings.guardrails = GuardrailsConfig(
             max_time_range_days=guardrails_data.get(
@@ -453,6 +467,19 @@ def _apply_env_overrides(settings: Settings) -> Settings:
                 "Unrecognized OCI_LOGAN_MCP_READ_ONLY=%r; expected one of "
                 "1/true/yes/on or 0/false/no/off. Leaving read_only unchanged.",
                 raw,
+            )
+
+    if (raw_audit := os.environ.get("OCI_LOGAN_AUDIT_STORE_ARGUMENTS")) is not None and raw_audit != "":
+        normalized = raw_audit.strip().lower()
+        if normalized in ("1", "true", "yes", "on"):
+            settings.audit.store_arguments = True
+        elif normalized in ("0", "false", "no", "off"):
+            settings.audit.store_arguments = False
+        else:
+            logging.getLogger(__name__).warning(
+                "Unrecognized OCI_LOGAN_AUDIT_STORE_ARGUMENTS=%r; expected one of "
+                "1/true/yes/on or 0/false/no/off. Leaving audit.store_arguments unchanged.",
+                raw_audit,
             )
 
     return settings

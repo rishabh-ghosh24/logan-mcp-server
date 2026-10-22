@@ -46,6 +46,23 @@ def test_recorder_prefers_redacted_arguments_when_both_fields_exist(tmp_path):
     assert store.get(playbook["id"]) == playbook
 
 
+def test_playbook_discloses_omitted_text_and_persists_placeholders(tmp_path):
+    audit = AuditLogger(tmp_path / "audit", session_id="private", store_arguments=False)
+    store = PlaybookStore(tmp_path / "playbooks.sqlite3")
+    recorder = PlaybookRecorder(audit, store, owner="alice")
+    audit.log(user="alice", tool="run_query", args={"query": "MARKER_QUERY"},
+              outcome="executed", result_summary={"preview": "MARKER_RESULT"})
+    playbook = recorder.record(name="private investigation", since="2026-01-01T00:00:00Z",
+                               until="2099-01-01T00:00:00Z")
+    assert len(playbook["steps"]) == 1
+    assert playbook["steps"][0]["args"]["query"]["length"] == len("MARKER_QUERY")
+    assert playbook["text_omitted"] is True
+    assert "not retained" in playbook["warning"]
+    assert "MARKER_" not in json.dumps(playbook)
+    assert store.get(playbook["id"]) == playbook
+    assert store.list()[0]["text_omitted"] is True
+
+
 def test_record_filters_current_session_events_by_window(tmp_path):
     audit, store, recorder = _recorder(tmp_path)
     audit.log(user="testuser", tool="run_query", args={"query": "*"}, outcome="invoked")

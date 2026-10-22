@@ -146,6 +146,42 @@ async def test_initialize_core_uses_personal_compartment_or_config_default(serve
     assert server.handlers is not None
 
 
+@pytest.mark.asyncio
+async def test_initialize_core_wires_private_history_and_audit_retention(server, tmp_path):
+    from datetime import datetime
+    from oci_logan_mcp.config import Settings
+    from oci_logan_mcp.user_store import UserStore
+
+    settings = Settings()
+    settings.audit.store_arguments = False
+    settings.logging.log_path = tmp_path / "unused-shared-history"
+    user = UserStore(tmp_path, user_id="privacy-user")
+    secret = MagicMock()
+    secret.has_secret.return_value = True
+    secret.is_valid.return_value = True
+    with patch('oci_logan_mcp.server.config_exists', return_value=True), \
+         patch('oci_logan_mcp.server.load_config', return_value=settings), \
+         patch('oci_logan_mcp.server.CONFIG_PATH', tmp_path / "config.yaml"), \
+         patch('oci_logan_mcp.server.CacheManager'), \
+         patch('oci_logan_mcp.server.OCILogAnalyticsClient'), \
+         patch('oci_logan_mcp.server.ContextManager'), \
+         patch('oci_logan_mcp.server.UserStore', return_value=user), \
+         patch('oci_logan_mcp.server.SecretStore', return_value=secret), \
+         patch('oci_logan_mcp.server.MCPHandlers'):
+        await server.initialize_core()
+    now = datetime.now()
+    server.query_logger.log_query("MARKER_PRIVATE", now, now, 0.1, 1, True)
+    history = tmp_path / "users" / "privacy-user" / "history" / "queries.log"
+    assert "MARKER_PRIVATE" in history.read_text()
+    assert history.stat().st_mode & 0o777 == 0o600
+    assert not settings.logging.log_path.exists()
+    server.audit_logger.log(user="privacy-user", tool="run_query", args={"query": "MARKER_AUDIT"},
+                            outcome="invoked")
+    raw = (tmp_path / "logs" / "audit.log").read_text()
+    assert json.loads(raw)["text_retained"] is False
+    assert "MARKER_AUDIT" not in raw
+
+
 class TestInitializeCore:
     """Tests for initialize_core() — lightweight startup without schema refresh."""
 

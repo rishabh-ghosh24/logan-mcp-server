@@ -111,6 +111,8 @@ class PlaybookStore:
                     "warning": row["warning"],
                 }
             )
+            if any(step.get("text_retained") is False for step in steps):
+                items[-1]["text_omitted"] = True
         return items
 
     def delete(self, playbook_id: str) -> bool:
@@ -121,7 +123,7 @@ class PlaybookStore:
 
     @staticmethod
     def _row_to_playbook(row: sqlite3.Row) -> Dict[str, Any]:
-        return {
+        playbook = {
             "id": row["id"],
             "name": row["name"],
             "description": row["description"],
@@ -132,3 +134,6 @@ class PlaybookStore:
             "steps": json.loads(row["steps_json"]),
             "warning": row["warning"],
         }
+        if any(step.get("text_retained") is False for step in playbook["steps"]):
+            playbook["text_omitted"] = True
+        return playbook

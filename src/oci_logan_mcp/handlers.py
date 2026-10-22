@@ -483,6 +483,7 @@ class MCPHandlers:
                     "error_type": type(e).__name__,
                 },
                 error=str(e),
+                error_type=type(e).__name__,
             )
             return [{"type": "text", "text": f"Error executing {name}: {str(e)}"}]
 
@@ -513,6 +514,7 @@ class MCPHandlers:
         audit_strictness: str,
         result_summary: Any = "",
         error: str = "",
+        error_type: Optional[str] = None,
         blocked: Optional[bool] = None,
         block_reason: Optional[str] = None,
     ) -> bool:
@@ -533,6 +535,7 @@ class MCPHandlers:
                 outcome=outcome,
                 result_summary=result_summary,
                 error=error,
+                error_type=error_type,
                 trace_id=trace_id,
                 audit_ref=audit_ref,
                 audit_strictness=audit_strictness,
@@ -602,6 +605,12 @@ class MCPHandlers:
             if payload and isinstance(payload[0], dict):
                 summary["first_keys"] = sorted(payload[0].keys())[:10]
         elif isinstance(payload, dict):
+            data = payload.get("data")
+            if isinstance(data, dict):
+                if isinstance(data.get("rows"), list):
+                    summary["row_count"] = len(data["rows"])
+                if isinstance(data.get("columns"), list):
+                    summary["column_count"] = len(data["columns"])
             summary["top_level_keys"] = sorted(payload.keys())[:20]
             for key in (
                 "status",

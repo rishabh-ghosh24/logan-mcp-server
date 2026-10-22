@@ -1,23 +1,26 @@
-"""Query audit logging for debugging and compliance."""
+"""Private query history and in-memory recent queries."""
 
-import json
-import logging
+import os
+import threading
 from datetime import datetime
 from pathlib import Path
 from typing import Optional, List, Dict, Any
-from logging.handlers import RotatingFileHandler
 
 from .config import LoggingConfig
+from .file_lock import locked_file
+
+_HISTORY_MAX_BYTES = 10 * 1024 * 1024
+_HISTORY_BACKUPS = 5
 
 
 class QueryLogger:
-    """Logs queries for audit and debugging purposes.
+    """Keep private query history.
 
     Maintains a log file with query history and provides
     access to recent queries for the MCP resource.
     """
 
-    def __init__(self, config: Optional[LoggingConfig] = None):
+    def __init__(self, config: Optional[LoggingConfig] = None, user_dir: Optional[Path] = None):
         """Initialize query logger."""
         self.config = config or LoggingConfig()
         self._enabled = self.config.query_logging
@@ -25,29 +28,39 @@ class QueryLogger:
         self._max_recent = 100
 
         if self._enabled:
-            self._setup_file_logger()
+            self._setup_history(user_dir)
 
-    def _setup_file_logger(self) -> None:
-        """Set up the rotating file logger."""
-        log_dir = Path(self.config.log_path)
-        log_dir.mkdir(parents=True, exist_ok=True)
+    @staticmethod
+    def _ensure_private_file(path: Path) -> None:
+        descriptor = os.open(path, os.O_CREAT | os.O_APPEND | os.O_WRONLY, 0o600)
+        try:
+            os.fchmod(descriptor, 0o600)
+        finally:
+            os.close(descriptor)
 
-        log_file = log_dir / "queries.log"
+    def _setup_history(self, user_dir: Optional[Path]) -> None:
+        """Use an independent private sink, with no logging propagation."""
+        directory = user_dir / "history" if user_dir is not None else Path(self.config.log_path)
+        directory.mkdir(parents=True, exist_ok=True, mode=0o700)
+        self._history_path = directory / "queries.log"
+        self._lock_path = directory / "history.lock"
+        self._thread_lock = threading.RLock()
+        self._ensure_private_file(self._lock_path)
+        with locked_file(self._lock_path, self._thread_lock):
+            self._ensure_private_file(self._history_path)
 
-        self._file_logger = logging.getLogger("oci_logan_mcp.queries")
-        self._file_logger.setLevel(logging.INFO)
-
-        if not self._file_logger.handlers:
-            handler = RotatingFileHandler(
-                log_file,
-                maxBytes=10 * 1024 * 1024,  # 10MB
-                backupCount=5,
-            )
-            formatter = logging.Formatter(
-                "%(asctime)s | %(message)s", datefmt="%Y-%m-%d %H:%M:%S"
-            )
-            handler.setFormatter(formatter)
-            self._file_logger.addHandler(handler)
+    def _append_history(self, line: str) -> None:
+        with locked_file(self._lock_path, self._thread_lock):
+            if self._history_path.stat().st_size >= _HISTORY_MAX_BYTES:
+                for index in range(_HISTORY_BACKUPS - 1, 0, -1):
+                    source = self._history_path.with_name(f"queries.log.{index}")
+                    if source.exists():
+                        os.replace(source, self._history_path.with_name(f"queries.log.{index + 1}"))
+                os.replace(self._history_path, self._history_path.with_name("queries.log.1"))
+            descriptor = os.open(self._history_path, os.O_CREAT | os.O_APPEND | os.O_WRONLY, 0o600)
+            with os.fdopen(descriptor, "a", encoding="utf-8") as output:
+                os.fchmod(output.fileno(), 0o600)
+                output.write(f"{datetime.now():%Y-%m-%d %H:%M:%S} | {line}\n")
 
     def log_query(
         self,
@@ -87,7 +100,7 @@ class QueryLogger:
 
         if self._enabled:
             log_line = self._format_log_line(entry)
-            self._file_logger.info(log_line)
+            self._append_history(log_line)
 
     def get_recent_queries(self, limit: int = 10) -> List[Dict[str, Any]]:
         """Get recent successful queries."""

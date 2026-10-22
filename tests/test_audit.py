@@ -22,6 +22,38 @@ def logger(log_dir: Path) -> AuditLogger:
 
 
 class TestAuditLogger:
+    def test_store_arguments_false_omits_nested_text_results_and_errors(self, log_dir):
+        import hashlib
+
+        logger = AuditLogger(log_dir, session_id="s", store_arguments=False)
+        query = "* | stats count | MARKER_QUERY"
+        long_text = "MARKER_LONG_" + "x" * 70
+        error = "MARKER_ERROR in request"
+        logger.log(user="u", tool="run_query", args={
+            "query": query, "max_results": 5, "queries": [query],
+            "nested": {"notes": ["MARKER_NOTES"], "description": "MARKER_DESCRIPTION",
+                       "label": long_text},
+        }, outcome="execution_failed", result_summary={
+            "success": False, "execution_ms": 12, "row_count": 2, "column_count": 1,
+            "preview": "MARKER_RESULT", "status": "MARKER_STATUS", "unknown_count": 99,
+        }, error=error, error_type="ValueError")
+        raw = (log_dir / "audit.log").read_text()
+        entry = json.loads(raw)
+        assert entry["tool"] == "run_query" and entry["outcome"] == "execution_failed"
+        assert "MARKER_" not in raw
+        fingerprint = {"sha256": hashlib.sha256(query.encode()).hexdigest(), "length": len(query)}
+        assert entry["args_redacted"]["query"] == fingerprint
+        assert entry["args_redacted"]["queries"] == [fingerprint]
+        assert entry["args_redacted"]["max_results"] == 5
+        assert entry["args_redacted"]["nested"]["notes"][0]["length"] == 12
+        assert entry["args_redacted"]["nested"]["label"]["length"] == len(long_text)
+        assert entry["result_summary"] == {
+            "success": False, "execution_ms": 12, "row_count": 2, "column_count": 1,
+        }
+        assert entry["error"] == {"error_type": "ValueError", "length": len(error),
+                                   "sha256": hashlib.sha256(error.encode()).hexdigest()}
+        assert entry["text_retained"] is False
+
     def test_creates_log_dir(self, log_dir: Path) -> None:
         AuditLogger(log_dir)
         assert log_dir.is_dir()
