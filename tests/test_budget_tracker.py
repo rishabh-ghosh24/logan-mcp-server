@@ -241,7 +241,7 @@ async def test_budget_records_on_successful_live():
 
 
 @pytest.mark.asyncio
-async def test_batch_queries_do_not_consume_budget_in_p0():
+async def test_batch_queries_consume_budget_per_item():
     from unittest.mock import AsyncMock, MagicMock
     from oci_logan_mcp.query_engine import QueryEngine
     from oci_logan_mcp.query_estimator import QueryEstimator
@@ -259,14 +259,14 @@ async def test_batch_queries_do_not_consume_budget_in_p0():
     engine = QueryEngine(oci_client, cache, MagicMock(),
                          estimator=estimator, budget_tracker=tracker)
 
-    await engine.execute_batch([
+    results = await engine.execute_batch([
         {"query": "a", "time_range": "last_1_hour"},
         {"query": "b", "time_range": "last_1_hour"},
     ])
     snap = tracker.snapshot()
-    assert snap.queries == 0, (
-        "P0 spec: run_batch_queries is unbudgeted."
-    )
+    assert [result["success"] for result in results] == [True, True]
+    assert oci_client.query.await_count == 2
+    assert snap.queries == 2, "Each live batch item must reserve query budget"
 
 
 @pytest.mark.asyncio

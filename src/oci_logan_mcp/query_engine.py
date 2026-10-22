@@ -12,6 +12,8 @@ from .next_steps import suggest as _suggest_next_steps
 from .query_estimator import QueryEstimator, QueryEstimate
 from .budget_tracker import BudgetTracker, BudgetExceededError
 
+MAX_BATCH_QUERIES = 10
+
 
 class QueryEngine:
     """Handles query execution and result processing."""
@@ -213,7 +215,9 @@ class QueryEngine:
         include_subcompartments: bool = True,
         compartment_id: Optional[str] = None,
     ) -> List[Dict[str, Any]]:
-        """Execute multiple queries concurrently. Budget is NOT enforced for batch (P0)."""
+        """Execute up to ten queries with an atomic budget reservation per item."""
+        if len(queries) > MAX_BATCH_QUERIES:
+            raise ValueError(f"Batch limited to {MAX_BATCH_QUERIES} queries; got {len(queries)}")
         tasks = [
             self._execute_inner(
                 query=q["query"],
@@ -223,7 +227,7 @@ class QueryEngine:
                 max_results=q.get("max_results"),
                 include_subcompartments=q.get("include_subcompartments", include_subcompartments),
                 compartment_id=q.get("compartment_id", compartment_id),
-                skip_budget=True,
+                skip_budget=False,
             )
             for q in queries
         ]
@@ -233,7 +237,14 @@ class QueryEngine:
         return [
             {"success": True, "result": r}
             if not isinstance(r, Exception)
-            else {"success": False, "error": str(r)}
+            else {
+                "success": False,
+                "error": str(r) + (
+                    " Use run_query with budget_override and confirmation to override this refusal."
+                    if isinstance(r, BudgetExceededError) else ""
+                ),
+                "error_type": type(r).__name__,
+            }
             for r in results
         ]
 

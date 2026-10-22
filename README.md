@@ -525,7 +525,7 @@ The query execution path applies these per-session limits:
 
 Call `get_session_budget` to inspect usage and remaining allowance. Cached query responses do not consume a new query reservation. Several investigation and visualization tools use the same query path.
 
-**Current limitation:** `run_batch_queries` bypasses the budget. Do not treat the session budget as a tenancy spending limit. Batch budgeting is part of the remaining publication fixes.
+`run_batch_queries` accepts at most 10 queries and reserves budget atomically for each live item. Cache hits reuse results without another reservation. A refusal appears in that item's result as `BudgetExceededError`; a batch has no budget override. Use a confirmed `run_query` call to override an individual query. Do not treat the session budget as a tenancy spending limit.
 
 Queries without a `'Log Source'` filter have low-confidence volume estimates and may report zero estimated bytes and cost. Their query-count limit still applies, but the byte and cost limits cannot bound an unknown scan size.
 
