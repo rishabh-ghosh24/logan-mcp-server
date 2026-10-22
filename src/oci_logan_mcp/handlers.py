@@ -2266,12 +2266,15 @@ class MCPHandlers:
         )
         examples: Dict[str, List[Dict[str, Any]]] = {}
         for e in entries:
-            examples.setdefault(e.category, []).append({
+            example = {
                 "name": e.name,
                 "query": e.query,
                 "description": e.description,
                 "source": e.source.value,
-            })
+            }
+            if e.source.value == "shared":
+                example.update(user_count=e.user_count, success_count=e.success_count)
+            examples.setdefault(e.category, []).append(example)
 
         if category == "all":
             result = {

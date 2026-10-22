@@ -150,6 +150,24 @@ async def test_save_learned_query_scores_manual_saves(handlers, mock_user_store,
 
 
 @pytest.mark.asyncio
+async def test_shared_query_examples_expose_user_and_success_counts(handlers, mock_user_store):
+    from oci_logan_mcp.file_lock import atomic_yaml_write
+
+    atomic_yaml_write(mock_user_store.base_dir / "shared" / "promoted_queries.yaml", {"queries": [{
+        "name": "shared_error_count", "query": "'Log Source' = 'Linux' | stats count",
+        "description": "community example", "category": "errors",
+        "user_count": 3, "success_count": 7, "interest_score": 4,
+    }]})
+    response = await handlers._get_query_examples({"category": "errors", "include_personal": False,
+                                                  "include_shared": True, "limit_per_source": 1})
+    examples = json.loads(response[0]["text"])["examples"]
+    [shared] = [entry for entry in examples if entry["source"] == "shared"]
+    assert shared["name"] == "shared_error_count"
+    assert shared["user_count"] == 3
+    assert shared["success_count"] == 7
+
+
+@pytest.mark.asyncio
 async def test_explicit_save_of_auto_query_preserves_identity_under_variant_pressure(handlers, mock_user_store):
     query = "'Log Source' = 'OKE Control Plane Logs' | stats count by Severity | sort -count | head 10"
     result = {"data": {"rows": [[1]], "columns": []}}

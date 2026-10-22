@@ -1,10 +1,12 @@
 # OCI Log Analytics MCP Server
 
-An MCP server that connects AI assistants (Claude, Codex, etc.) to [OCI Log Analytics](https://docs.oracle.com/en-us/iaas/log-analytics/home.htm). Query, visualize, and export log data through natural language.
+Connect an MCP-compatible assistant to [OCI Log Analytics](https://docs.oracle.com/en-us/iaas/log-analytics/home.htm) to investigate logs, build visualizations, manage saved searches and dashboards, and create log-based alerts. The server exposes 64 tools over stdio.
 
 ## Quick Start
 
 ### 1. Install
+
+Use Python 3.11 to 3.14. In the commands below, `python3` must point to a supported version.
 
 ```bash
 git clone https://github.com/rishabh-ghosh24/logan-mcp-server.git
@@ -14,37 +16,59 @@ source venv/bin/activate
 pip install -e .
 ```
 
-### 2. Configure
+Alternatively, with [uv installed](https://docs.astral.sh/uv/guides/tools/), run the setup command from Git:
 
-**Choose your auth method:**
+```bash
+uvx --from git+https://github.com/rishabh-ghosh24/logan-mcp-server oci-logan-mcp --setup
+```
+
+The Git command uses the repository's default branch. These 1.3.0 instructions take effect when the publication fixes reach that branch.
+
+### 2. Configure
 
 | Method | When to use | Setup |
 |---|---|---|
-| `instance_principal` | Running on an OCI VM (recommended) | [Instance principal setup](#instance-principal-setup) |
-| `config_file` | Running on your laptop | Uses `~/.oci/config` — [OCI CLI setup guide](https://docs.oracle.com/en-us/iaas/Content/API/SDKDocs/cliinstall.htm) |
+| `config_file` | Your laptop | Uses `~/.oci/config` from the [OCI CLI setup](https://docs.oracle.com/en-us/iaas/Content/API/SDKDocs/cliinstall.htm) |
+| `instance_principal` | An OCI compute instance | Uses the instance's dynamic group and IAM policies |
+
+For a local installation:
 
 ```bash
-# Set your auth method
-export OCI_LA_AUTH_TYPE=instance_principal   # or config_file
-
-# Run the interactive setup wizard
+export OCI_LA_AUTH_TYPE=config_file
 oci-logan-mcp --setup
 ```
 
-The wizard will prompt for your Log Analytics namespace and default compartment.
-
-Or set environment variables directly:
+The wizard saves your authentication settings, Log Analytics namespace and default compartment. Run setup before connecting a client. After setup, environment variables can override values:
 
 ```bash
 export OCI_LA_NAMESPACE=your-namespace
 export OCI_LA_COMPARTMENT=ocid1.compartment.oc1..xxxxx
+export OCI_CONFIG_PROFILE=DEFAULT
 ```
+
+`OCI_LA_MCP_CONFIG` selects a different configuration file.
+
+#### IAM access
+
+Ask your tenancy administrator to grant access for the features you use. The following broad example preserves the project's existing policy set. Dashboard, alarm, notification and stream grants support those features; they are not a combined administrative requirement for reading logs.
+
+```text
+Allow group <your-group> to use loganalytics-features-family in tenancy
+Allow group <your-group> to use loganalytics-resources-family in tenancy
+Allow group <your-group> to manage management-dashboard-family in tenancy
+Allow group <your-group> to read compartments in tenancy
+Allow group <your-group> to manage alarms in tenancy
+Allow group <your-group> to read metrics in tenancy
+Allow group <your-group> to manage ons-topics in tenancy
+Allow group <your-group> to use streams in tenancy
+```
+
+Use the [Log Analytics policy catalog](https://docs.oracle.com/en-us/iaas/log-analytics/doc/iam-policies-catalog-logging-analytics.html) and [access examples](https://docs.oracle.com/en-us/iaas/log-analytics/doc/enable-access-logging-analytics-its-resources.html) to select narrower grants. Feature-family policies require tenancy scope; resource-family policies can use compartment scope. Alarm and metric permissions are described in the [Monitoring policy reference](https://docs.oracle.com/en-us/iaas/Content/Identity/policyreference/monitoringpolicyreference.htm). Dynamic groups use the same verbs with `Allow dynamic-group <name>`.
 
 ### 3. Connect your AI assistant
 
-> **Important:** Always use the `oci-logan-mcp` entry point, not `python -m oci_logan_mcp`.
+#### Claude Desktop or Claude Code
 
-#### Local (server runs on same machine)
 
 Works with Claude Desktop, Claude Code, or any MCP client:
 
@@ -60,93 +84,27 @@ Works with Claude Desktop, Claude Code, or any MCP client:
 ```
 
 **Where to put this:**
+
 - **Claude Desktop:** `~/Library/Application Support/Claude/claude_desktop_config.json` (macOS) or `%APPDATA%\Claude\claude_desktop_config.json` (Windows)
 - **Claude Code:** `~/.claude.json` or project `.mcp.json`
 
-#### Remote VM via SSH
-
-For running on an OCI VM with instance principal auth. This config goes in your **local** MCP client:
-
-```json
-{
-  "mcpServers": {
-    "oci-log-analytics": {
-      "command": "ssh",
-      "args": [
-        "-i", "~/.ssh/your-key",
-        "-o", "StrictHostKeyChecking=no",
-        "-o", "ServerAliveInterval=60",
-        "-o", "ServerAliveCountMax=3",
-        "opc@your-vm-ip",
-        "cd /path/to/logan-mcp-server && source venv/bin/activate && oci-logan-mcp --user firstname.lastname"
-      ]
-    }
-  }
-}
-```
-
-> **SSH keepalive:** The `ServerAliveInterval=60` and `ServerAliveCountMax=3` options send a keepalive packet every 60 seconds and disconnect after 3 missed responses. Without these, idle SSH connections can be silently dropped by firewalls or NAT gateways, causing the MCP server to disconnect unexpectedly.
-
 #### Codex CLI
 
-Add to `~/.codex/config.toml`:
+Add a local server to `~/.codex/config.toml`:
 
 ```toml
 [mcp_servers.logan-mcp]
-command = "ssh"
-args = ["-i", "~/.ssh/your-key", "-o", "StrictHostKeyChecking=no", "-o", "ServerAliveInterval=60", "-o", "ServerAliveCountMax=3", "opc@your-vm-ip", "cd /path/to/logan-mcp-server && source venv/bin/activate && oci-logan-mcp --user firstname.lastname"]
+command = "/path/to/logan-mcp-server/venv/bin/oci-logan-mcp"
+args = ["--user", "firstname.lastname"]
 ```
 
-#### Codex App
+For the uvx installation, use the absolute path to `uvx` as the client command and these arguments:
 
-For Windows teammates using Codex App, use the one-time installer in
-`windows-setup/` first instead of manually entering SSH arguments. Package these
-files together:
-
-```text
-Double-Click-to-Install.cmd
-logan-mcp.ps1
-logan.key
-windows-setup.html
+```json
+["--from", "git+https://github.com/rishabh-ghosh24/logan-mcp-server", "oci-logan-mcp", "--user", "firstname.lastname"]
 ```
 
-The real `logan.key` is not committed to this repo. Add it locally to the
-`windows-setup/` folder before zipping and sharing the folder with a user.
-
-Double-click `Double-Click-to-Install.cmd`, enter your username in
-`firstname.lastname` format, and let the installer close Codex when prompted.
-The installer creates a Codex MCP server named `logan-mcp`, copies the private
-key to `~/.logan-mcp/`, and backs up `~/.codex/config.toml` before updating it.
-At the end, it can close running Codex processes for you so the new MCP config
-is loaded on the next launch.
-
-Manual Codex App setup is still possible for non-Windows users or advanced
-troubleshooting.
-
-In the Codex app, go to **MCP settings -> Connect to a custom MCP** and fill in:
-
-| Field | Value |
-|---|---|
-| **Name** | `logan-mcp` |
-| **Type** | `STDIO` |
-| **Command to launch** | `ssh` |
-| **Argument 1** | `-i` |
-| **Argument 2** | `/path/to/.ssh/your-key` |
-| **Argument 3** | `-o` |
-| **Argument 4** | `StrictHostKeyChecking=no` |
-| **Argument 5** | `-o` |
-| **Argument 6** | `ServerAliveInterval=60` |
-| **Argument 7** | `-o` |
-| **Argument 8** | `ServerAliveCountMax=3` |
-| **Argument 9** | `opc@your-vm-ip` |
-| **Argument 10** | `cd /home/opc/logan-mcp-server && source venv/bin/activate && oci-logan-mcp --user firstname.lastname` |
-
-Click **Save**, then start a new Codex session to connect.
-
-> **Windows users:** Prefer the one-time installer above. If the generated
-> `ssh` config connects but immediately disconnects, Windows OpenSSH may not be
-> handling stdio correctly in that environment. In that case, use PuTTY's
-> `plink.exe` fallback in the [Windows setup guide](windows-setup/windows-setup.html).
+Start a new MCP session and call `test_connection`, then use `get_log_summary` or `list_log_sources` to discover available data. For SSH connections and shared OCI VMs, see the [team deployment guide](docs/team-deployment.md).
 
 ## What You Can Do
 
@@ -170,7 +128,7 @@ Click **Save**, then start a new Codex session to connect.
 
 ## Investigation Toolkit
 
-### `ingestion_health` — is ingestion even working?
+### `ingestion_health`: is ingestion even working?
 
 Probe log-source freshness in one call. Classifies every source as `healthy`, `stopped`, or `unknown` based on how recently it last emitted a record. Cheapest signal-quality primitive.
 
@@ -186,7 +144,7 @@ Returns `{summary, checked_at, findings: [...]}` where each finding carries `sta
 
 Configurable via `ingestion_health.stoppage_threshold_seconds` (default 600s) and `ingestion_health.freshness_probe_window` (default `last_1_hour`) in `config.yaml`.
 
-### `create_log_source_from_sample` — onboard JSON/NDJSON, CSV, or regex-text logs
+### `create_log_source_from_sample`: onboard JSON/NDJSON, CSV, or regex-text logs
 
 Create a custom Log Analytics parser/source from non-sensitive JSON/NDJSON sample lines, CSV content with a header row, or line-oriented text with an explicit regex pattern and ordered capture-field keys. The tool uploads the same sample workload and verifies that upload batch with a `'Parse Failed'` check plus per-field populated counts. It is guarded because it creates OCI resources and uploads log content.
 
@@ -221,7 +179,7 @@ For regex text, use `format="regex_text"` and provide both `regex_pattern` and `
 
 `acknowledge_data_review` must be true: the caller is responsible for providing logs that are safe to upload and stripped of secrets, tokens, PII, and customer-sensitive values. Existing parser/source names return `CONFLICT` unless `overwrite=true` is explicitly supplied. Verification uses the generated/uploaded `'Upload Name'` so parse-failure checks are scoped to this sample workload, not every record in the tenancy, and uses `last_30_days` by default to avoid false negatives from pasted samples whose event time is older than the upload time.
 
-### `parser_failure_triage` — which parsers are broken?
+### `parser_failure_triage`: which parsers are broken?
 
 Surface the top log sources with parse failures, ranked by volume. Returns up to 20 sources, each with failure count, first/last seen timestamps, and up to 3 sample raw lines that failed to parse. Each source has one parser configured, so this tells you which parser needs fixing before investigating an incident.
 
@@ -235,9 +193,9 @@ Surface the top log sources with parse failures, ranked by volume. Returns up to
 
 Returns `{failures: [...], total_failure_count: N}` where each entry carries `source`, `failure_count`, `first_seen`, `last_seen`, and `sample_raw_lines` (up to 3).
 
-If the session budget is exhausted between the stats and samples queries, the ranked failure list is preserved and the response adds `partial: true, partial_reason: "samples_budget_exceeded"` with empty `sample_raw_lines` on each entry — so you still see which sources are failing even when samples can't be fetched.
+If the session budget is exhausted between the stats and samples queries, the ranked failure list is preserved and the response adds `partial: true, partial_reason: "samples_budget_exceeded"` with empty `sample_raw_lines` on each entry: so you still see which sources are failing even when samples can't be fetched.
 
-### `investigate_incident` — one-call first-cut triage
+### `investigate_incident`: one-call first-cut triage
 
 The flagship. Given a seed Logan query + time range, returns a structured investigation: stopped sources (J1), parser failures (J2), top_k anomalous sources vs. the prior equal-length window (A2), with per-source top error clusters (Logan `cluster`), top entities (host/user/request_id), and a recent-events timeline. Target: ≤20s p95 on dogfood data.
 
@@ -259,20 +217,20 @@ Investigation intent routing:
 - Email delivery is a separate confirmed action: ask whether the user wants OCI Notifications email delivery, resolve/reuse a topic with `prepare_report_delivery`, ask its final confirmation prompt, then call `deliver_report` with the returned `delivery_confirmation_token`.
 
 **P0 limitations** (documented honestly, not magic):
-- Only the seed's pre-pipe search clause is used for drill-down scoping. A seed like `'Event' = 'error' | where Severity = 'critical'` investigates **all** `'Event' = 'error'` rows — the `where` narrowing is dropped for drill-down. Fix: put all scoping in the pre-pipe filter.
-- `top_k` is clamped to `[1, 3]` — matches the ~21-query budget and ≤20s latency guarantee.
+- Only the seed's pre-pipe search clause is used for drill-down scoping. A seed like `'Event' = 'error' | where Severity = 'critical'` investigates **all** `'Event' = 'error'` rows: the `where` narrowing is dropped for drill-down. Fix: put all scoping in the pre-pipe filter.
+- `top_k` is clamped to `[1, 3]`: matches the ~21-query budget and ≤20s latency guarantee.
 - `alarm_ocid` seed and NL-to-query `description` seed are deferred (A6 will own alarm-OCID).
 - J1's freshness is evaluated over its configured `freshness_probe_window`, which may differ from the investigation `time_range`; the report's `ingestion_health.note` explains the difference.
 
-**Partial responses.** A1 never raises `BudgetExceededError` out of its boundary — instead, the report comes back with `partial: true` and specific `partial_reasons`:
-- `"budget_exceeded"` — session budget ran out mid-investigation
-- `"timeline_omitted"` — one or more per-source timeline queries errored
-- `"entity_discovery_partial"` — one or more entity fields weren't valid for a source (`InvalidParameter`)
-- `"source_errors"` — a non-budget, non-field-variance infrastructure failure occurred somewhere in a per-source branch (cluster query 5xx, unexpected ServiceError in entity discovery, transport timeout, or a whole-branch-level exception). Unlike `timeline_omitted`, this also covers failures in the cluster/entity sub-phases even if the rest of the branch completed — the sub-phase's empty result is accompanied by an `errors` entry naming the failure.
+**Partial responses.** A1 never raises `BudgetExceededError` out of its boundary: instead, the report comes back with `partial: true` and specific `partial_reasons`:
+- `"budget_exceeded"`: session budget ran out mid-investigation
+- `"timeline_omitted"`: one or more per-source timeline queries errored
+- `"entity_discovery_partial"`: one or more entity fields weren't valid for a source (`InvalidParameter`)
+- `"source_errors"`: a non-budget, non-field-variance infrastructure failure occurred somewhere in a per-source branch (cluster query 5xx, unexpected ServiceError in entity discovery, transport timeout, or a whole-branch-level exception). Unlike `timeline_omitted`, this also covers failures in the cluster/entity sub-phases even if the rest of the branch completed: the sub-phase's empty result is accompanied by an `errors` entry naming the failure.
 
 Each condition is accompanied by `anomalous_sources[*].errors` entries describing exactly what went wrong per source.
 
-### `investigate_and_generate_report` — investigation plus report
+### `investigate_and_generate_report`: investigation plus report
 
 For investigation-mode requests where the user expects a report, this convenience workflow runs `investigate_incident` first, then feeds that result to `generate_incident_report`:
 
@@ -288,7 +246,7 @@ For investigation-mode requests where the user expects a report, this convenienc
 
 Returns `{status: "report_generated", investigation, report, delivery_options}`. It does not send email. Use the returned `delivery_options` to ask whether the user wants OCI Notifications delivery and whether to reuse a saved topic.
 
-### `why_did_this_fire` — replay a Logan alarm fire window
+### `why_did_this_fire`: replay a Logan alarm fire window
 
 For Logan-managed monitoring alarms only. Given an alarm OCID and the historical `fire_time`, the tool replays the stored Logan query over the computed context window, returns the alarm metadata used for evaluation, and surfaces up to 50 scoped top contributing rows.
 
@@ -308,7 +266,7 @@ P0 constraints:
 - Raw top-row expansion is suppressed when the stored Logan query degrades to an unscoped `*`. In that case the response sets `seed.seed_filter_degraded: true`, returns `top_contributing_rows: []`, and explains the omission via `top_contributing_rows_omitted_reason: "unscoped_seed_filter"`.
 - `dashboard_id` is always `null` in P0; explicit dashboard linkage is deferred.
 
-### `find_rare_events` — surface low-frequency field values
+### `find_rare_events`: surface low-frequency field values
 
 Wrapper around Logan's native `rare` command. Given a source, a field, and a current time window, the tool returns low-frequency values plus one history annotation query for `count_in_history`, `first_seen`, and `last_seen`.
 
@@ -336,7 +294,7 @@ P0 behavior:
 - `history_days` defaults to `30`, with built-in relative windows for `1`, `2`, `7`, `14`, and `30` days and an absolute fallback for other positive values.
 - Live validation is checked with `scripts/validate_rare_query.py`; the parser aligns sparse grouped responses by declared columns before the wrapper consumes them.
 
-### `trace_request_id` — stitch request-id events across sources
+### `trace_request_id`: stitch request-id events across sources
 
 Given a request-id or trace-id value and a time window, the tool probes common id fields (`Request ID`, `Trace ID`, `traceId`, `x-request-id`) and returns one merged, de-duplicated event stream.
 
@@ -353,7 +311,7 @@ Returns `{request_id, events, sources_matched}` where:
 - duplicates across multiple id-field probes are removed
 - `sources_matched` lists the unique sources that contributed events
 
-### `related_dashboards_and_searches` — reuse existing dashboards and queries
+### `related_dashboards_and_searches`: reuse existing dashboards and queries
 
 Given a source, entity, or field, suggest the most relevant existing dashboards, saved searches, and learned queries so an operator can pivot into already-curated views instead of starting from scratch.
 
@@ -372,7 +330,7 @@ P0 behavior:
 - Saved searches are shortlisted from listing metadata, then the top 10 candidates are rescored using fetched query text.
 - Matching uses existing normalization and fuzzy helpers from `fuzzy_match.py`, so field and source naming variations can still surface relevant resources.
 
-### `generate_incident_report` — deterministic incident report
+### `generate_incident_report`: deterministic incident report
 
 Convert an `investigate_incident` response into a deterministic Markdown incident report, with optional HTML rendering:
 
@@ -421,7 +379,7 @@ If the user says yes, use `get_report_delivery_options` or the report's returned
 
 `list_notification_topics` defaults to the current compartment and accessible subcompartments, and can be scoped with `compartment_id`, `include_subcompartments`, and `lifecycle_state`.
 
-### `deliver_report` — PDF + Telegram / ONS / Slack delivery
+### `deliver_report`: PDF + Telegram / ONS / Slack delivery
 
 Deliver generated report Markdown to the channels users already monitor. Telegram is the default IM path and receives the full PDF when `format` is `pdf` or `both`.
 
@@ -509,7 +467,7 @@ End-to-end incident flow:
 {"tool": "deliver_report", "report": {"report_id": "rpt_<id from generate_incident_report>"}, "channels": ["telegram", "email"], "format": "both", "delivery_confirmation_token": "<token from prepare_report_delivery>"}
 ```
 
-### `record_investigation` — save a playbook from the audit trail
+### `record_investigation`: save a playbook from the audit trail
 
 Capture the current server process's audited tool calls into a named playbook:
 
@@ -532,145 +490,31 @@ P0 behavior:
 - The `record_investigation` call itself is omitted from captured steps because it is the capture boundary, not part of the investigation.
 - P0 is record/catalog only. Replay, parameterization, and report generation are deferred.
 
-## Multi-User Learning
+## Learning
 
-The server learns from usage and improves over time. Each user gets isolated storage, and the best queries are promoted to benefit everyone.
+Each user has separate query and preference files under `~/.oci-logan-mcp/users/<username>/`. Select a name with `--user firstname.lastname` or `LOGAN_USER`; the system user is the fallback.
 
-### How it works
+- Successful complex queries are scored and auto-saved. Trivial queries are skipped.
+- Automatic learning keeps at most 3 variants per query shape and 20 automatic entries per log source. It removes entries with the fewest recorded successes, then the lowest usage and oldest use.
+- `save_learned_query` marks an explicit save as manual and gives it a promotion-eligible interest score. Within the relevant learned examples, explicit saves rank ahead of automatic saves in `get_query_examples`.
+- Preferences track field usage, time ranges and disambiguation choices. `set_compartment` remembers your default compartment without rewriting the shared configuration file.
+- Shared examples show `source`, `user_count` and `success_count`. Execution counts describe recorded use, not proof that a query is correct for another environment.
 
-- **Per-user query storage** — Each user's saved queries and preferences are stored separately (`--user` flag or `LOGAN_USER` env var)
-- **Auto-learning** — The server tracks which fields you use with each log source (field affinity), your preferred time ranges, and disambiguation choices
-- **Shared templates** — An admin runs the promotion script to promote high-quality queries to a shared library available to all users
+If a name conflicts with a built-in or shared query, `save_learned_query` returns a `collision_warning`. Use `rename_to` for another name or `force=true` to override the collision.
 
-### User identity
-
-Each MCP connection identifies itself with a username. The server automatically creates a storage directory for new users on first connection — no manual setup needed.
-
-**Use `firstname.lastname` format** to avoid conflicts (e.g., `--user david.smith` not `--user david`).
-
-The username is resolved in this order:
-1. `--user <name>` flag (highest priority)
-2. `LOGAN_USER` environment variable
-3. System `$USER` (default fallback — usually `opc` on shared VMs, so always set `--user` explicitly)
-
-**Example:** In your MCP client SSH config, append `--user firstname.lastname` to the remote command:
-
-```
-cd /path/to/logan-mcp-server && source venv/bin/activate && oci-logan-mcp --user david.smith
-```
-
-For Codex CLI (`~/.codex/config.toml`):
-
-```toml
-[mcp_servers.logan-mcp]
-command = "ssh"
-args = ["-i", "~/.ssh/your-key", "-o", "StrictHostKeyChecking=no", "-o", "ServerAliveInterval=60", "-o", "ServerAliveCountMax=3", "opc@your-vm-ip", "cd /path/to/logan-mcp-server && source venv/bin/activate && oci-logan-mcp --user david.smith"]
-```
-
-Each user's queries and preferences are stored under `~/.oci-logan-mcp/users/<username>/`. When a second user connects with a different name, they get their own isolated storage.
-
-### Promoted query learning
-
-Queries saved via `save_learned_query` (or auto-saved when the server detects a successful complex query) contribute to each user's personal learned catalog. The promotion pipeline evaluates personal queries against quality thresholds and promotes the best ones to a shared catalog visible to all users of the server.
-
-**How promotion works:**
-
-- The shared catalog feeds the `query-templates` MCP resource and the `get_query_examples` onboarding surface (top-N community favorites appear alongside curated starter examples)
-- Promotion is invisible to end users — they just get progressively better LLM suggestions over time as the shared catalog grows
-- Sensitive data (OCIDs, IPs, emails, secrets) is automatically redacted before promotion
-
-**Promotion thresholds:**
-
-| Scenario | interest_score | success_rate |
-|---|---|---|
-| Single-user query | >= 4 | >= 0.8 |
-| Multi-user query (same query saved by multiple users) | >= 3 | >= 0.7 |
-
-**Collision policy:** If a query name matches an existing builtin or community entry, `save_learned_query` returns a `collision_warning`. Supply `force=true` to overwrite or `rename_to` to save under a different name.
-
-### Promoting shared templates
-
-Promotion is a single-writer admin task — not something each user session runs. Run it from one place (cron, manually, etc.) to avoid conflicts.
-
-```bash
-# Run once manually
-oci-logan-mcp --promote-and-exit
-
-# With explicit base directory
-oci-logan-mcp --promote-and-exit --base-dir /home/opc/.oci-logan-mcp
-```
-
-For scheduled automation see [`docs/cron-scheduling.md`](docs/cron-scheduling.md).
-
-## Deploying on an OCI VM
-
-### Fresh VM (Oracle Linux 9)
-
-```bash
-curl -fsSL https://raw.githubusercontent.com/rishabh-ghosh24/logan-mcp-server/main/scripts/oci-initial-setup.sh | bash
-```
-
-This installs Python, OCI CLI, and the MCP server in one step.
-
-### Existing VM (Python 3.10+ available)
-
-```bash
-git clone https://github.com/rishabh-ghosh24/logan-mcp-server.git
-cd logan-mcp-server
-./scripts/setup_oel9.sh   # Installs Python, pip, creates venv, and installs the MCP server
-```
-
-### Instance Principal Setup
-
-Instance principal is the recommended auth method for OCI VMs — no config files to manage.
-
-**Step 1:** Get your compute instance OCID:
-
-```bash
-curl -s -H "Authorization: Bearer Oracle" \
-  http://169.254.169.254/opc/v2/instance/ | jq -r '.id'
-```
-
-**Step 2:** Create a Dynamic Group (e.g., `logan-mcp-dg`) in the OCI Console:
-
-```
-ANY {instance.id = '<your-compute-instance-OCID>'}
-```
-
-**Step 3:** Add IAM policies at the tenancy level:
-
-```
-Allow dynamic-group logan-mcp-dg to use loganalytics-features-family in tenancy
-Allow dynamic-group logan-mcp-dg to use loganalytics-resources-family in tenancy
-Allow dynamic-group logan-mcp-dg to manage management-dashboard-family in tenancy
-Allow dynamic-group logan-mcp-dg to read compartments in tenancy
-Allow dynamic-group logan-mcp-dg to manage alarms in tenancy
-Allow dynamic-group logan-mcp-dg to read metrics in tenancy
-Allow dynamic-group logan-mcp-dg to manage ons-topics in tenancy
-Allow dynamic-group logan-mcp-dg to use streams in tenancy
-```
-
-> **New tenancy?** If Log Analytics is not yet enabled, an administrator must first add this one-time tenancy-level policy:
-> ```
-> Allow service loganalytics to read loganalytics-features-family in tenancy
-> ```
-
-**Step 4:** Configure and run:
-
-```bash
-export OCI_LA_AUTH_TYPE=instance_principal
-oci-logan-mcp --setup
-```
+Shared-template promotion is an administrator-run feature for trusted team deployments. See [promoting shared templates](docs/team-deployment.md#promoting-shared-templates) for thresholds, scheduling and content review.
 
 ## Cost + ETA estimation
 
-Every `run_query` response now carries flat estimate fields at the top level: `estimated_bytes`, `estimated_rows`, `estimated_cost_usd`, `estimated_eta_seconds`, `estimate_confidence`, `estimate_rationale`.
+`run_query` responses carry `estimated_bytes`, `estimated_rows`, `estimated_cost_usd`, `estimated_eta_seconds`, `estimate_confidence` and `estimate_rationale`.
 
-Use `explain_query` to get the full estimate **without** running the query. Cache hits replay the last known estimate for the same query/time range — no additional OCI calls.
+`explain_query` estimates the requested query instead of executing it in full. Estimation can issue count probes against OCI and caches those probes. A cached query response reuses its recorded estimate. Estimates are advisory and do not represent an OCI bill.
+
+A whole-query deadline covers SDK calls, pagination, rate-limit waits and retries. Set `query.timeout_seconds` in the configuration. A timeout releases the caller, but an SDK thread and OCI request may continue until the HTTP call returns. The server does not add an explicit in-flight query cap beyond its existing rate limiting. Timed-out queries retain their budget reservation because work may still be running.
 
 ## Session query budget
 
-Per-session caps prevent runaway agent loops:
+The query execution path applies these per-session limits:
 
 | Limit | Default |
 |---|---|
@@ -678,15 +522,13 @@ Per-session caps prevent runaway agent loops:
 | `max_bytes_per_session` | 10 GiB |
 | `max_cost_usd_per_session` | $5.00 |
 
-Call `get_session_budget` any time to see usage and remaining allowance.
+Call `get_session_budget` to inspect usage and remaining allowance. Cached query responses do not consume a new query reservation. Several investigation and visualization tools use the same query path.
 
-**Scope of enforcement (P0):** budget is enforced on `run_query` only. Cache hits are **free**. `run_batch_queries` is **unbudgeted** in P0 (concurrent execution would race under per-call checks; budgeting for batch is tracked for P1).
+**Current limitation:** `run_batch_queries` bypasses the budget. Do not treat the session budget as a tenancy spending limit. Batch budgeting is part of the remaining publication fixes.
 
-> **P0 limitation — source-less queries:** queries without a `'Log Source'` filter cannot be estimated (no source to probe). They return `estimate_confidence="low"` and `estimated_bytes=0`, so the bytes and cost limits are not checked. The **query-count limit still applies**. Full-scan cost estimation requires an OCI "explain" API that does not yet exist.
+Queries without a `'Log Source'` filter have low-confidence volume estimates and may report zero estimated bytes and cost. Their query-count limit still applies, but the byte and cost limits cannot bound an unknown scan size.
 
-To exceed a budget in a specific call, pass `budget_override=true` to `run_query`. This is a guarded follow-up pattern: the first call returns a confirmation request, and a second call with `confirmation_token` plus `confirmation_secret` executes. Override does not exempt usage recording.
-
-Configure in `~/.oci-logan-mcp/config.yaml`:
+A `run_query` call with `budget_override=true` follows the confirmation flow. An override still records usage.
 
 ```yaml
 budget:
@@ -696,164 +538,137 @@ budget:
   max_cost_usd_per_session: 5.00
 ```
 
-Disable entirely with `budget.enabled: false`.
+Set `budget.enabled: false` to disable these limits.
 
 ## Destructive Operation Safety
 
-### Read-only mode
+All 64 tools remain advertised. Writes are enabled by default, with confirmation required for guarded operations.
 
-Start the server without any ability to mutate OCI resources or external systems:
+### Read-only mode
 
 ```bash
 oci-logan-mcp --read-only
-# or
+# Environment variable alternative:
 OCI_LOGAN_MCP_READ_ONLY=1 oci-logan-mcp
 ```
 
-In read-only mode the following tools return a `read_only_blocked` error instead
-of executing:
+Read-only mode blocks OCI resource changes, outbound delivery, context/preference changes, learned-query saves, confirmation-secret setup, and playbook creation/deletion. Queries, listing, validation, visualization and permitted local exports/reports remain available. Cache, history and audit files can still be written. OCI IAM controls the data the process can access.
 
-- `create_alert`, `update_alert`, `delete_alert`
-- `create_saved_search`, `update_saved_search`, `delete_saved_search`
-- `create_dashboard`, `add_dashboard_tile`, `delete_dashboard`
-- `create_log_source_from_sample`
-- `send_to_slack`, `send_to_telegram`, `deliver_report`
-- `set_compartment`, `set_namespace`, `update_tenancy_context`
-- `save_learned_query`, `remember_preference`, `setup_confirmation_secret`
-- `record_investigation`, `delete_playbook`
+### Guarded operations
 
-All query, validation, listing, visualization, `export_results`, `list_playbooks`,
-and `get_playbook` tools remain available. Use this mode when giving an
-untrusted agent, a newcomer, or an automated process access to the server.
+Guarded tools include alert, saved-search and dashboard creation, updates and deletion; dashboard tile changes; log-source onboarding; and playbook deletion. A budget override also requires confirmation.
 
-Mutating OCI resource operations are protected by **two-factor server-side confirmation**. This prevents any MCP client — Claude, Codex, or others — from accidentally creating, modifying, or destroying resources.
+1. The first call returns an action summary and a single-use confirmation token.
+2. The follow-up supplies that token and the user's confirmation secret.
 
-### Guarded Tools
+This is **two-step server-side confirmation**. It helps a well-behaved client avoid accidental execution. It does not provide an independent approval channel against a compromised client that can submit both values.
 
-| Tool | Action |
-|------|--------|
-| `delete_alert` | Destroys alarm + backing OCI resources |
-| `delete_saved_search` | Destroys saved search |
-| `delete_dashboard` | Destroys dashboard + tile data sources |
-| `update_alert` | Modifies an existing alert |
-| `update_saved_search` | Modifies an existing saved search |
-| `add_dashboard_tile` | Modifies an existing dashboard |
-| `create_alert` | Creates an OCI Monitoring alarm backed by an LA query |
-| `create_saved_search` | Creates an LA saved search |
-| `create_dashboard` | Creates an OCI Management Dashboard |
-| `create_log_source_from_sample` | Creates an LA parser/source, uploads sample logs, and verifies parse failures |
+Tokens validate the tool and submitted arguments. Keep the namespace and compartment stable between preview and execution; binding confirmation to the effective scope and serializing concurrent scope changes remain part of the publication fixes.
 
-Guarded create tools are additive but still create OCI resources or upload log content, so they require explicit confirmation.
-
-### Per-User Confirmation Secrets
-
-Each user has their own confirmation secret. Secrets are:
-
-- **Minimum 8 characters**
-- **Hashed with `hashlib.scrypt`** — the plaintext is never stored
-- **Stored in the user's directory** at `~/.oci-logan-mcp/users/<username>/confirmation_secret.hash`
-
-The server now starts even if a user has no secret yet. Read-only and additive tools work immediately. The first time a user attempts a guarded action, the MCP client can call `setup_confirmation_secret` in-band to create the secret. There is no shared env var — `OCI_LA_CONFIRMATION_SECRET` has been removed.
-
-`setup_confirmation_secret` is for first-time setup only. If a secret is already configured and you need to replace it, use `--reset-secret`.
-
-**Forgotten secret?** Use the `--reset-secret` CLI flag to re-enter a new secret:
-
-```bash
-oci-logan-mcp --user firstname.lastname --reset-secret
-```
-
-**Admin recovery:** If `--reset-secret` is unavailable (e.g., non-interactive session), delete the hash file manually and restart:
-
-```bash
-rm ~/.oci-logan-mcp/users/<username>/confirmation_secret.hash
-```
-
-Then either restart and use `setup_confirmation_secret`, or run `--reset-secret` interactively to create a new one immediately.
-
-### How It Works
-
-1. **First call** — returns a human-readable summary of the action + a single-use confirmation token
-2. **Second call** — requires the token + your secret to execute
-
-The token is bound to the exact tool and resource. A token issued for `delete_alert(id=A)` cannot authorize `delete_alert(id=B)` or any other tool — reusing a token for a different resource is rejected outright.
-
-Optionally configure token expiry in `config.yaml` (default: 300 seconds):
+Token expiry defaults to 300 seconds:
 
 ```yaml
 guardrails:
   token_expiry_seconds: 300
 ```
 
-### Audit Log
+### Per-user confirmation secrets
 
-All guarded tool interactions are logged as JSON-lines to a shared audit log at:
+Secrets require at least eight characters and are stored as salted `hashlib.scrypt` hashes in `~/.oci-logan-mcp/users/<username>/confirmation_secret.hash`.
 
+Startup succeeds without a secret. Unguarded tools remain available; guarded operations require first-time setup through `setup_confirmation_secret`. To replace a forgotten or existing secret, use an interactive terminal:
+
+```bash
+oci-logan-mcp --user firstname.lastname --reset-secret
 ```
-~/.oci-logan-mcp/logs/audit.log
-```
 
-Each entry records:
+The former `OCI_LA_CONFIRMATION_SECRET` variable is no longer used.
 
-- **who** — the username (`--user` flag or `LOGAN_USER`)
-- **what** — tool name and arguments
-- **when** — UTC timestamp
-- **outcome** — `confirmed`, `confirmation_failed`, `token_expired`, `confirmation_unavailable`, etc.
+### History and audit records
 
-This gives administrators a full history of which users attempted or executed destructive operations.
+Private query history is stored at `~/.oci-logan-mcp/users/<username>/history/queries.log`, with mode `0600` and rotation. It does not propagate through the operational logger. `logging.query_logging: false` disables file history; the recent-query resource remains in memory for the session.
 
-Every tool call — including read-only tools — emits an `invoked` entry before any guard runs, giving a complete call-by-call trace.
+Audit records are stored separately at `~/.oci-logan-mcp/logs/audit.log`. New records contain `args_redacted`, not a duplicate raw `args` field. The local single-user default retains redacted argument text so investigation playbooks and transcripts remain useful.
+
+Set `audit.store_arguments: false`, or `OCI_LOGAN_AUDIT_STORE_ARGUMENTS=0`, to replace query/free-text arguments with hashes and lengths, limit result summaries to selected numeric/boolean fields, and fingerprint errors. Such records carry `text_retained: false`. Playbooks recorded from them carry `text_omitted: true` and a warning that omitted arguments require review before replay. This audit setting does not disable private query history.
 
 ### Transcript export
 
-Every tool call is recorded in the audit log with a process-scoped `session_id`. Export the current session's trail as JSONL:
+Use `export_transcript(session_id="current")` to export the current process's audit trail. Output defaults to `~/.oci-logan-mcp/transcripts/`; `transcript_dir` changes the destination.
 
-```
-export_transcript(session_id="current")
-```
+- `include_results=false` omits result summaries.
+- `redact=true` applies additional built-in masking.
+- The export preserves `text_retained` so readers can identify omitted text.
 
-Output file lands under `~/.oci-logan-mcp/transcripts/` by default (override via `transcript_dir` in config).
+A session ID belongs to a server process and can contain multiple investigations. Promotion runs do not currently emit MCP audit events.
 
-Flags:
-- `include_results=false` — omit `result_summary` fields (useful when sharing).
-- `redact=true` — apply built-in PII/secret masking before writing.
+### Failure behavior
 
-> **Note:** `session_id` is process-scoped — one id per server process. Long-lived servers aggregate many logical investigations under one id. Per-investigation session boundaries are a future enhancement.
+Guarded operations fail when the secret is missing, corrupt or wrong, or when a token is expired, reused or does not match the submitted operation. Required audit failures prevent the operation from executing. Read-only calls use best-effort auditing.
 
-> **P0 limitation:** The `--promote-and-exit` path does not emit audit entries; `export_transcript` against a promotion run returns `event_count: 0` by design. Full promotion-run audit coverage is planned for P1.
-
-### Fail-Closed Design
-
-- **No secret set** → guarded tools return `confirmation_unavailable` and point the user to `setup_confirmation_secret`
-- **Invalid/corrupt secret file** → guarded tools return `confirmation_unavailable` with recovery guidance
-- **Wrong secret** → `confirmation_failed`
-- **Token reuse** → rejected (single-use)
-- **Token expired** → rejected
-- **Resource mismatch** (token for A used on B) → rejected
-- **Arguments changed** → rejected
+Report security issues through the process in [SECURITY.md](SECURITY.md).
 
 ## Development
 
-### Running Tests
+Use the `venv/` environment and install the development dependencies:
 
 ```bash
 pip install -e ".[dev]"
+```
 
-# Unit tests
-pytest tests/ -v
+Run the regression suite with a temporary home and Matplotlib cache:
 
-# Integration tests (requires OCI access)
+```bash
+python - <<'PYTEST'
+import os
+from pathlib import Path
+import subprocess
+import sys
+import tempfile
+
+with tempfile.TemporaryDirectory(prefix="logan-tests-") as scratch:
+    environment = os.environ.copy()
+    environment["HOME"] = scratch
+    environment["MPLCONFIGDIR"] = str(Path(scratch) / "matplotlib")
+    subprocess.run(
+        [sys.executable, "-m", "pytest", "-q", "-p", "no:cacheprovider"],
+        env=environment, check=True,
+    )
+PYTEST
+```
+
+The suite builds a real wheel and speaks MCP stdio to subprocesses using a fake OCI backend. CI is configured for Linux and macOS with Python 3.11, 3.12, 3.13 and 3.14. Live OCI integration checks are separate and require configured access:
+
+```bash
 python run_tests.py
 ```
 
 ## Version History
+
+### 1.3.0 (unreleased)
+
+- Fix wheel construction and include both query catalogs.
+- Set the Python minimum to 3.11 and report one package version.
+- Publish server instructions, tool titles and annotations.
+- Expose all supported time presets consistently.
+- Run query SDK calls off the event loop with one whole-query deadline.
+- Restore resource reads and return actionable initialization errors.
+- Remember compartments per user and resolve configuration paths consistently.
+- Score explicit saves, preserve manual origin and rank them ahead of automatic saves.
+- Apply automatic variant/source caps and make promotion status match the shared file.
+- Include the Log Analytics query in an alert's backing saved search.
+- Remove raw audit argument duplication, isolate private history and configure audit text retention.
+- Show execution/user counts on shared examples.
+- Exercise real MCP stdio and configure an eight-job CI matrix with wheel builds.
+- Move internal installer/documents out of tracked publication files and add public setup, deployment and security guidance.
+
 
 ### 1.2.0 (2026-04-17)
 
 #### Internal architecture
 - Unified query catalog across builtin templates, starter examples, personal learned queries, and shared promoted queries. Single `UnifiedCatalog` module with surface-specific precedence rules.
 - Stable `entry_id` (UUID4) on every personal learned query with legacy backfill migration.
-- Cross-user promotion dedup now uses canonical key `(name.lower(), normalized_query_text)` — fixes the multi-user aggregation bug where two users saving the same query were counted separately.
+- Cross-user promotion dedup now uses canonical key `(name.lower(), normalized_query_text)`: fixes the multi-user aggregation bug where two users saving the same query were counted separately.
 - Shared-catalog lock (`shared/catalog.lock`) protects promoted-queries writes from racing with concurrent user saves.
 
 #### User-visible
@@ -862,10 +677,10 @@ python run_tests.py
 - Scheduled promotion guide at `docs/cron-scheduling.md`.
 
 #### Removed
-- `list_learned_queries` MCP tool — learning is now invisible infrastructure.
-- `delete_learned_query` MCP tool — orphaned without list.
-- `ContextManager.{save,list,delete}_learned_query`, `get_all_templates`, and `record_query_usage` — replaced by `UserStore` + `UnifiedCatalog`.
-- `src/oci_logan_mcp/templates/query_templates.yaml` — unwired dead file.
+- `list_learned_queries` MCP tool: learning is now invisible infrastructure.
+- `delete_learned_query` MCP tool: orphaned without list.
+- `ContextManager.{save,list,delete}_learned_query`, `get_all_templates`, and `record_query_usage`: replaced by `UserStore` + `UnifiedCatalog`.
+- `src/oci_logan_mcp/templates/query_templates.yaml`: unwired dead file.
 
 #### Behavior changes
 - `QueryAutoSaver` now requires `user_store` (no fallback to ContextManager).
@@ -876,7 +691,7 @@ python run_tests.py
 | Version | Summary |
 |---|---|
 | **0.5.0** | **Dashboard creation:** Programmatic OCI Management Dashboard creation with proper LA widget wiring, 2-column grid layout, scope filter integration (`parametersMap` with `$(dashboard.params.*)` references), and dashboard delete/update with cleanup. Visualization types: bar, line, pie, table, area, treemap, heatmap, histogram. |
-| **0.4.0** | **Alarms & safety:** OCI-native autonomous alerts from Log Analytics queries (metric extraction + OCI Monitoring alarms + ONS notifications). Two-factor confirmation for destructive operations with per-user hashed secrets, audit logging, and secret redaction in all log output. |
+| **0.4.0** | **Alarms & safety:** OCI-native autonomous alerts from Log Analytics queries (metric extraction + OCI Monitoring alarms + ONS notifications). Two-step confirmation for destructive operations with per-user hashed secrets, audit logging, and query history and audit logging. |
 | **0.3.0** | Multi-user learning: per-user query storage, preference tracking, shared query promotion with sensitive data sanitization, thread-safe file locking. |
 | **0.2.0** | Cluster query accuracy fix, compact cluster output formatting, compartment persistence, startup responsiveness (deferred schema refresh), `--setup` and `--user` CLI flags, Windows setup guide. |
 | **0.1.0** | Initial release: 24 MCP tools, query execution, schema exploration, visualization, export, cross-compartment queries, caching, rate limiting, query auto-save. |

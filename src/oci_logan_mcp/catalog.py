@@ -49,6 +49,7 @@ class CatalogEntry:
     intent_key: Optional[str] = None
     query_shape: Optional[str] = None
     origin: str = "manual"
+    user_count: int = 0
 
 
 class UnifiedCatalog:
@@ -150,6 +151,7 @@ class UnifiedCatalog:
                     intent_key=q.get("intent_key"),
                     query_shape=q.get("query_shape"),
                     origin=query_origin(q),
+                    user_count=q.get("user_count", 0),
                 )
             )
 
