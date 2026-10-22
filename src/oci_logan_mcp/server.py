@@ -4,6 +4,7 @@ import asyncio
 import json
 import logging
 import os
+import re
 import sys
 from typing import Any
 
@@ -52,28 +53,28 @@ SERVER_INSTRUCTIONS = (
 # Configure logging with secret redaction
 class _SecretRedactFilter(logging.Filter):
     """Redact confirmation_secret values from all log output."""
+    _pattern = re.compile(
+        r"([\"']?confirmation_secret(?:_confirm)?[\"']?\s*[:=]\s*)"
+        r"(?:\"(?:\\.|[^\"\\])*\"|'(?:\\.|[^'\\])*'|[^\s,}\)]+)"
+    )
+
     def filter(self, record: logging.LogRecord) -> bool:
-        if hasattr(record, "msg") and isinstance(record.msg, str):
-            import re
-            for key in ("confirmation_secret", "confirmation_secret_confirm"):
-                record.msg = re.sub(
-                    rf'("{key}"\s*:\s*)"[^"]*"',
-                    r'\1"<REDACTED>"',
-                    record.msg,
-                )
-                record.msg = re.sub(
-                    rf"{key}=[^\s,}}]+",
-                    f"{key}=<REDACTED>",
-                    record.msg,
-                )
+        record.msg = self._pattern.sub(r"\1<REDACTED>", record.getMessage())
+        record.args = ()
         return True
+
+
+def install_secret_redaction(handler: logging.Handler) -> None:
+    """Redact after interpolation on each sink, including child logger records."""
+    handler.addFilter(_SecretRedactFilter())
+
 
 logging.basicConfig(
     level=logging.INFO,
     format="%(asctime)s - %(name)s - %(levelname)s - %(message)s",
 )
-# Apply redaction filter to root logger so it covers all libraries (including mcp)
-logging.getLogger().addFilter(_SecretRedactFilter())
+for _handler in logging.getLogger().handlers:
+    install_secret_redaction(_handler)
 logger = logging.getLogger(__name__)
 
 # Timeout for background schema refresh (seconds)
