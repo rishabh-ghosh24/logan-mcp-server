@@ -236,6 +236,41 @@ def test_structured_error_response_is_flagged_as_error(handlers):
 
 
 @pytest.mark.asyncio
+@pytest.mark.parametrize("name,args", [
+    ("run_saved_search", {}), ("trace_request_id", {}), ("find_rare_events", {}),
+    ("parser_failure_triage", {"top_n": "invalid"}),
+])
+async def test_inline_validation_errors_are_mcp_errors(handlers, name, args):
+    [result] = await handlers.handle_tool_call(name, args)
+    assert json.loads(result["text"])["status"] == "error"
+    assert result["is_error"] is True
+
+
+@pytest.mark.asyncio
+async def test_failed_query_validation_is_a_successful_diagnostic_call(handlers):
+    [result] = await handlers.handle_tool_call("validate_query", {"query": "* | timestats count span=1h"})
+    assert json.loads(result["text"])["valid"] is False
+    assert not result.get("is_error")
+
+
+@pytest.mark.asyncio
+async def test_audit_summary_marks_inline_tool_failure_unsuccessful(handlers, mock_audit_logger):
+    [result] = await handlers.handle_tool_call("run_saved_search", {})
+    assert json.loads(result["text"])["error_code"] == "MISSING_ARGUMENT"
+    terminal = list(mock_audit_logger.iter_entries())[-1]
+    assert terminal["outcome"] == "executed"
+    assert terminal["result_summary"]["success"] is False
+
+
+@pytest.mark.asyncio
+async def test_empty_saved_search_is_flagged_as_error(handlers):
+    handlers.saved_search.get_search_by_id = AsyncMock(return_value={"id": "saved", "query": ""})
+    [result] = await handlers.handle_tool_call("run_saved_search", {"id": "saved"})
+    assert result["text"] == "Saved search has no query defined"
+    assert result["is_error"] is True
+
+
+@pytest.mark.asyncio
 @pytest.mark.parametrize("setter,args", [
     ("set_compartment", {"compartment_id": "other"}),
     ("set_namespace", {"namespace": "other"}),

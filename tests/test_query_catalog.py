@@ -13,7 +13,9 @@ SUBSTITUTIONS = {"{field}": "Log Source", "{n}": "5", "{keyword}": "error", "{le
 
 
 def _packaged(name):
-    return yaml.safe_load((files("oci_logan_mcp") / "data" / name).read_text())["queries"]
+    entries = yaml.safe_load((files("oci_logan_mcp") / "data" / name).read_text())["queries"]
+    assert entries, f"{name} must contain executable examples"
+    return entries
 
 
 @pytest.mark.parametrize("entry", _packaged("starter_queries.yaml") + _packaged("builtin_queries.yaml"), ids=lambda entry: entry["name"])
@@ -22,4 +24,6 @@ def test_packaged_query_passes_offline_syntax_rules(entry):
     for placeholder, value in SUBSTITUTIONS.items():
         query = query.replace(placeholder, value)
     assert "''" not in query and "{" not in query
-    assert QueryValidator(MagicMock())._validate_syntax(query) == []
+    validator = QueryValidator(MagicMock())
+    assert validator._validate_syntax(query) == []
+    assert validator._validate_syntax(query + " | timestats count span=1h")

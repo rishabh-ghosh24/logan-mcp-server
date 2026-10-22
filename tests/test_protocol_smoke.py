@@ -107,6 +107,9 @@ async def test_stdio_server_succeeds_against_fake_oci(tmp_path):
         unknown = await session.call_tool("no_such_tool", {})
         assert unknown.isError is True
         assert "Unknown tool" in unknown.content[0].text
+        missing = await session.call_tool("run_saved_search", {})
+        assert missing.isError is True
+        assert json.loads(missing.content[0].text)["error_code"] == "MISSING_ARGUMENT"
 
 
 @pytest.mark.asyncio
@@ -172,14 +175,16 @@ def test_catalog_validation_cli_reports_every_result_and_fails_on_tool_errors(tm
     result = subprocess.run([sys.executable, str(script)], cwd=tmp_path, env=params.env,
                             capture_output=True, text=True, timeout=60)
     assert result.returncode == (0 if fake_oci else 1), result.stdout + result.stderr
+    expected_calls = 0
     for filename in ("starter_queries.yaml", "builtin_queries.yaml"):
         entries = yaml.safe_load((files("oci_logan_mcp") / "data" / filename).read_text())["queries"]
+        expected_calls += len(entries)
         for entry in entries:
             assert f"{'PASS' if fake_oci else 'FAIL'}\t{filename}\t{entry['name']}" in result.stdout
     if fake_oci:
         audit = tmp_path / "home" / ".oci-logan-mcp" / "logs" / "audit.log"
         calls = [json.loads(line) for line in audit.read_text().splitlines()]
         invoked = [call for call in calls if call["tool"] == "run_query" and call["outcome"] == "invoked"]
-        assert len(invoked) == 31
+        assert len(invoked) == expected_calls
         assert all(call["args_redacted"]["time_range"] == "last_15_min" and call["args_redacted"]["max_results"] == 1
                    for call in invoked)

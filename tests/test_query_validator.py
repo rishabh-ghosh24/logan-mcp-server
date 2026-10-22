@@ -42,6 +42,7 @@ class TestQueryValidator:
     ])
     def test_syntax_rules_accept_valid_forms(self, validator, query):
         assert validator._validate_syntax(query) == []
+        assert validator._validate_syntax("* | timestats count span=1h")
 
     def test_suggestions_use_valid_timestats_form(self, validator):
         expected = "* | timestats span = 1hour count"
