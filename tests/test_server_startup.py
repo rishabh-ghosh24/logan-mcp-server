@@ -24,6 +24,28 @@ def test_build_call_tool_result_sets_is_error_and_preserves_content():
     assert ok.isError is False and ok.content[0].text == "ok"
     assert bad.isError is True and bad.content[0].text == "before"
     assert bad.content[1].data == "cG5n" and bad.content[1].mimeType == "image/png"
+
+
+def test_client_metadata_from_context_handles_missing_context_and_client_params():
+    from types import SimpleNamespace
+    from mcp.server.lowlevel.server import request_ctx
+    from mcp.types import InitializeRequestParams, Implementation, ClientCapabilities
+    from oci_logan_mcp.server import client_metadata_from_context
+
+    server = OCILogAnalyticsMCPServer().server
+    expected = {"claimed_client": "unknown", "claimed_version": "unknown", "source_ip_truncated": None}
+    assert client_metadata_from_context(server) == expected
+    params = InitializeRequestParams(protocolVersion="2025-06-18", capabilities=ClientCapabilities(),
+                                     clientInfo=Implementation(name="review-client", version="2.1.0"))
+    for value in (None, params):
+        token = request_ctx.set(SimpleNamespace(session=SimpleNamespace(client_params=value)))
+        try:
+            metadata = client_metadata_from_context(server)
+            assert metadata == (expected if value is None else {
+                "claimed_client": "review-client", "claimed_version": "2.1.0", "source_ip_truncated": None,
+            })
+        finally:
+            request_ctx.reset(token)
 from unittest.mock import MagicMock, AsyncMock, patch
 
 from oci_logan_mcp.server import OCILogAnalyticsMCPServer

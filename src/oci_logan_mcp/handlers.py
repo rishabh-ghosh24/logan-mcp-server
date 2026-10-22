@@ -30,7 +30,7 @@ from .dashboard_service import DashboardService
 from .notification_service import NotificationService
 from .confirmation import ConfirmationManager
 from .secret_store import SecretStore
-from .audit import AuditLogger
+from .audit import AuditLogger, audit_client_context
 from .read_only_guard import MUTATING_TOOLS, ReadOnlyError, raise_if_read_only
 from .diff_tool import DiffTool
 from .pivot_tool import PivotTool
@@ -245,7 +245,7 @@ class MCPHandlers:
         )
 
     async def handle_tool_call(
-        self, name: str, arguments: Dict[str, Any]
+        self, name: str, arguments: Dict[str, Any], *, client_metadata: dict | None = None
     ) -> List[Dict[str, Any]]:
         """Choose one scope-lock mode for the complete tool operation."""
         lock = self.scope_guard.exclusive if name in SCOPE_SETTERS else self.scope_guard.shared
@@ -331,10 +331,11 @@ class MCPHandlers:
                 "get_playbook": self._get_playbook,
                 "delete_playbook": self._delete_playbook,
             }
-            return await self._handle_tool_call_locked(name, arguments, handlers)
+            with audit_client_context(client_metadata):
+                return await self._handle_tool_call_locked(name, arguments, handlers, client_metadata=client_metadata)
 
     async def _handle_tool_call_locked(
-        self, name: str, arguments: Dict[str, Any], handlers: Dict
+        self, name: str, arguments: Dict[str, Any], handlers: Dict, *, client_metadata: dict | None = None
     ) -> List[Dict[str, Any]]:
         """Route a tool call while its effective scope is stable."""
         effective_scope = self._effective_scope(arguments)
@@ -353,6 +354,7 @@ class MCPHandlers:
             trace_id=trace_id,
             audit_ref=audit_ref,
             audit_strictness=audit_strictness,
+            client_metadata=client_metadata,
         ) and audit_strictness == "required":
             return self._audit_blocked_response(name, audit_strictness)
 
@@ -366,6 +368,7 @@ class MCPHandlers:
                 trace_id=trace_id,
                 audit_ref=audit_ref,
                 audit_strictness=audit_strictness,
+                client_metadata=client_metadata,
                 result_summary={"success": False, "error": "Unknown tool"},
                 blocked=True,
                 block_reason="unknown_tool",
@@ -384,6 +387,7 @@ class MCPHandlers:
                 trace_id=trace_id,
                 audit_ref=audit_ref,
                 audit_strictness=audit_strictness,
+                client_metadata=client_metadata,
                 result_summary={"success": False, "error": str(e)},
                 blocked=True,
                 block_reason="read_only",
@@ -410,6 +414,7 @@ class MCPHandlers:
                         trace_id=trace_id,
                         audit_ref=audit_ref,
                         audit_strictness=audit_strictness,
+                        client_metadata=client_metadata,
                         result_summary={"success": False, "status": status},
                         blocked=True,
                         block_reason="confirmation_unavailable",
@@ -458,6 +463,7 @@ class MCPHandlers:
                     trace_id=trace_id,
                     audit_ref=audit_ref,
                     audit_strictness=audit_strictness,
+                    client_metadata=client_metadata,
                     result_summary={"success": True, "status": "confirmation_required"},
                 ) and audit_strictness == "required":
                     return self._audit_blocked_response(name, audit_strictness)
@@ -477,6 +483,7 @@ class MCPHandlers:
                     trace_id=trace_id,
                     audit_ref=audit_ref,
                     audit_strictness=audit_strictness,
+                    client_metadata=client_metadata,
                     result_summary={"success": False, "status": "confirmation_failed"},
                     blocked=True,
                     block_reason="confirmation_failed",
@@ -495,6 +502,7 @@ class MCPHandlers:
                 trace_id=trace_id,
                 audit_ref=audit_ref,
                 audit_strictness=audit_strictness,
+                client_metadata=client_metadata,
                 result_summary={"success": True, "status": "confirmed"},
             ) and audit_strictness == "required":
                 return self._audit_blocked_response(name, audit_strictness)
@@ -520,6 +528,7 @@ class MCPHandlers:
                 trace_id=trace_id,
                 audit_ref=audit_ref,
                 audit_strictness=audit_strictness,
+                client_metadata=client_metadata,
                 result_summary=self._summarize_tool_result(result, elapsed_ms),
             )
             return result
@@ -534,6 +543,7 @@ class MCPHandlers:
                 trace_id=trace_id,
                 audit_ref=audit_ref,
                 audit_strictness=audit_strictness,
+                client_metadata=client_metadata,
                 result_summary={
                     "success": False,
                     "execution_ms": elapsed_ms,
@@ -574,6 +584,7 @@ class MCPHandlers:
         error_type: Optional[str] = None,
         blocked: Optional[bool] = None,
         block_reason: Optional[str] = None,
+        client_metadata: dict | None = None,
     ) -> bool:
         if self.audit_logger is None:
             if audit_strictness == "required":
@@ -598,6 +609,7 @@ class MCPHandlers:
                 audit_strictness=audit_strictness,
                 blocked=blocked,
                 block_reason=block_reason,
+                client_metadata=client_metadata,
             )
             return True
         except Exception as e:

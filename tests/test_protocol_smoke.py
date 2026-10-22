@@ -98,6 +98,12 @@ async def test_stdio_server_succeeds_against_fake_oci(tmp_path):
         })
         assert not response.isError
         assert json.loads(response.content[0].text)["data"]["rows"] == [[42, "smoke"]]
+        audit_path = tmp_path / "home" / ".oci-logan-mcp" / "logs" / "audit.log"
+        events = [json.loads(line) for line in audit_path.read_text().splitlines()]
+        query_events = [event for event in events if event["tool"] == "run_query"]
+        assert len(query_events) == 2
+        assert all(event["client_metadata"]["claimed_client"] == "mcp" for event in query_events)
+        assert all(event["client_metadata"]["claimed_version"] != "unknown" for event in query_events)
         unknown = await session.call_tool("no_such_tool", {})
         assert unknown.isError is True
         assert "Unknown tool" in unknown.content[0].text

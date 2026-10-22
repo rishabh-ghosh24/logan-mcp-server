@@ -116,6 +116,22 @@ def build_tool_list() -> list[Tool]:
     return tools
 
 
+def client_metadata_from_context(server: Server) -> dict:
+    """Read client claims from initialize; these are not authenticated identity."""
+    unknown = {"claimed_client": "unknown", "claimed_version": "unknown", "source_ip_truncated": None}
+    try:
+        params = server.request_context.session.client_params
+    except LookupError:
+        return unknown
+    if params is None:
+        return unknown
+    return {
+        "claimed_client": params.clientInfo.name or "unknown",
+        "claimed_version": params.clientInfo.version or "unknown",
+        "source_ip_truncated": None,
+    }
+
+
 def build_call_tool_result(results: list[dict]) -> CallToolResult:
     """Preserve tool content and expose handler failures to MCP clients."""
     return CallToolResult(
@@ -187,7 +203,9 @@ class OCILogAnalyticsMCPServer:
                 )
 
             arguments = arguments or {}
-            results = await self.handlers.handle_tool_call(name, arguments)
+            results = await self.handlers.handle_tool_call(
+                name, arguments, client_metadata=client_metadata_from_context(self.server),
+            )
 
             return build_call_tool_result(results)
 

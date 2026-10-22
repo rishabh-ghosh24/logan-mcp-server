@@ -159,6 +159,62 @@ async def test_failed_tool_calls_are_flagged_as_errors(handlers, failure):
 
 
 @pytest.mark.asyncio
+@pytest.mark.parametrize("tool,args", [
+    ("get_current_context", {}), ("no_such_tool", {}), ("delete_alert", {"alert_id": "alarm"}),
+])
+async def test_client_metadata_lands_on_all_dispatch_audit_events(handlers, mock_audit_logger, tool, args):
+    claimed = {"claimed_client": "review-client", "claimed_version": "2.1.0", "source_ip_truncated": None}
+    result = await handlers.handle_tool_call(tool, args, client_metadata=claimed)
+    assert result and result[0]["text"]
+    events = list(mock_audit_logger.iter_entries())
+    assert len(events) == 2 and events[0]["outcome"] == "invoked"
+    assert all(event["client_metadata"] == claimed for event in events)
+
+
+@pytest.mark.asyncio
+async def test_client_metadata_is_not_shared_across_overlapping_calls(handlers, mock_audit_logger):
+    started, release = asyncio.Event(), asyncio.Event()
+
+    async def fields(**kwargs):
+        started.set()
+        await release.wait()
+        return []
+
+    handlers.schema_manager.get_fields = fields
+    a = {"claimed_client": "first", "claimed_version": "1", "source_ip_truncated": None}
+    b = {"claimed_client": "second", "claimed_version": "2", "source_ip_truncated": None}
+    async with asyncio.timeout(2):
+        first = asyncio.create_task(handlers.handle_tool_call("list_fields", {}, client_metadata=a))
+        await asyncio.sleep(0)
+        if first.done():
+            await first
+            pytest.fail("The first call must reach the gated field lookup")
+        await started.wait()
+        try:
+            await handlers.handle_tool_call("get_current_context", {}, client_metadata=b)
+        finally:
+            release.set()
+        await first
+    events = list(mock_audit_logger.iter_entries())
+    assert len(events) == 4
+    assert all(event["client_metadata"] == (a if event["tool"] == "list_fields" else b) for event in events)
+
+
+@pytest.mark.asyncio
+async def test_client_metadata_covers_nested_audit_events_and_is_reset(handlers, mock_audit_logger):
+    claimed = {"claimed_client": "review-client", "claimed_version": "2.1.0", "source_ip_truncated": None}
+    [response] = await handlers.handle_tool_call("setup_confirmation_secret", {
+        "confirmation_secret": "temporary-test-secret", "confirmation_secret_confirm": "temporary-test-secret",
+    }, client_metadata=claimed)
+    assert json.loads(response["text"])["status"] == "configured"
+    events = list(mock_audit_logger.iter_entries())
+    assert len(events) == 3 and events[1]["tool"] == "__secret_management"
+    assert all(event["client_metadata"] == claimed for event in events)
+    mock_audit_logger.log(user="system", tool="background", args={}, outcome="executed")
+    assert list(mock_audit_logger.iter_entries())[-1]["client_metadata"]["claimed_client"] == "unknown"
+
+
+@pytest.mark.asyncio
 async def test_confirmation_required_is_not_an_error_but_bad_secret_is(handlers):
     handlers.secret_store.set_secret("correct-secret")
     args = {"alert_id": "ocid1.alarm.oc1..a"}

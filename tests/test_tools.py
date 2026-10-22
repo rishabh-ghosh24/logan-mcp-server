@@ -22,7 +22,9 @@ def test_top_tools_follow_description_convention(name):
 def test_tools_list_payload_stays_bounded():
     import json
 
-    assert len(json.dumps(get_tools())) <= 60_000
+    tools = get_tools()
+    assert len(tools) == 64
+    assert len(json.dumps(tools)) <= 60_000
 
 
 def test_guarded_tools_have_confirmation_params():

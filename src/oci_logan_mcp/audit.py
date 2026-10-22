@@ -9,6 +9,8 @@ import os
 import re
 import threading
 import uuid
+from contextlib import contextmanager
+from contextvars import ContextVar
 from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any, Dict, Iterator, List
@@ -21,6 +23,7 @@ logger = logging.getLogger(__name__)
 _MAX_FILE_SIZE = 10 * 1024 * 1024  # 10 MB
 _MAX_BACKUPS = 5
 _AUDIT_FILENAME = "audit.log"
+_CLIENT_METADATA: ContextVar[dict | None] = ContextVar("mcp_audit_client", default=None)
 _STRIP_KEYS = frozenset({
     "confirmation_token",
     "confirmation_secret",
@@ -32,6 +35,16 @@ _TEXT_ARGUMENT_KEYS = frozenset({
 _SUMMARY_KEYS = frozenset({
     "success", "status", "execution_ms", "error_type", "row_count", "column_count",
 })
+
+
+@contextmanager
+def audit_client_context(metadata: dict | None) -> Iterator[None]:
+    """Carry client claims into nested audit events for this call only."""
+    token = _CLIENT_METADATA.set(metadata)
+    try:
+        yield
+    finally:
+        _CLIENT_METADATA.reset(token)
 
 
 def _fingerprint(text: str) -> Dict[str, Any]:
@@ -120,7 +133,7 @@ class AuditLogger:
             "audit_ref": audit_ref,
             "actor": user,
             "actor_source": actor_source,
-            "client_metadata": client_metadata or {
+            "client_metadata": client_metadata or _CLIENT_METADATA.get() or {
                 "claimed_client": "unknown",
                 "claimed_version": "unknown",
                 "source_ip_truncated": None,
