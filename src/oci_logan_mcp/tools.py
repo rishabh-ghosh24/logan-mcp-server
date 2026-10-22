@@ -25,8 +25,13 @@ def get_tools() -> List[Dict[str, Any]]:
         {
             "name": "list_log_sources",
             "description": (
-                "List all available log sources in OCI Log Analytics. "
-                "Returns source names, descriptions, and associated entity types."
+                (
+                    "List available Log Analytics source definitions.\n"
+                    "Use when: discover source names before building a query; get_log_summary shows which have recent data.\n"
+                    "Parameters: optional compartment_id; otherwise uses the active compartment.\n"
+                    "Limits: returns all discovered definitions with no tool-level row cap; cached metadata may be reused. Listing definitions does not prove that a source has ingested logs.\n"
+                    "Example: list_log_sources() before filtering on a returned source name."
+                )
             ),
             "inputSchema": {
                 "type": "object",
@@ -41,8 +46,13 @@ def get_tools() -> List[Dict[str, Any]]:
         {
             "name": "list_fields",
             "description": (
-                "List fields available for querying. Includes field types, possible values, "
-                "and semantic hints to help construct accurate queries."
+                (
+                    "List queryable field definitions.\n"
+                    "Use when: identify exact field names and types before filtering, grouping or plotting logs.\n"
+                    "Parameters: optional source_name limits discovery to a named log source.\n"
+                    "Limits: no tool-level row cap; returns metadata, not log rows. Cached definitions do not prove a field is populated in the requested window.\n"
+                    "Example: list_fields(source_name=\"Linux Secure Logs\")."
+                )
             ),
             "inputSchema": {
                 "type": "object",
@@ -236,8 +246,13 @@ def get_tools() -> List[Dict[str, Any]]:
         {
             "name": "validate_query",
             "description": (
-                "Validate a Log Analytics query before execution. "
-                "Returns errors, warnings, suggestions, and estimated cost."
+                (
+                    "Check query syntax and discovered field names before execution.\n"
+                    "Use when: building unfamiliar queries or correcting an OCI syntax error.\n"
+                    "Parameters: query plus optional absolute time_start/time_end for window warnings.\n"
+                    "Limits: validation is an offline syntax heuristic with schema lookup, not proof that OCI accepts a query; it does not execute the submitted query. OCI where has no contains/regex infix operator; put timestats span before its aggregation.\n"
+                    "Example: validate_query(query=\"* | timestats span = 1hour count\")."
+                )
             ),
             "inputSchema": {
                 "type": "object",
@@ -260,7 +275,13 @@ def get_tools() -> List[Dict[str, Any]]:
         },
         {
             "name": "run_query",
-            "description": "Execute a Log Analytics query and return results.",
+            "description": (
+                               "Execute one OCI Log Analytics query.\n"
+                               "Use when: retrieve or aggregate logs; use validate_query or get_query_examples first when unsure of syntax.\n"
+                               "Parameters: query; time_range defaults to last_1_hour and supports all eleven enum presets; an absolute time_start/time_end pair overrides it. Set compartment_id or explicit tenancy scope as needed.\n"
+                               "Limits: max_results defaults to 1000; no fixed tool maximum is enforced. OCI limits, query timeout and session budget apply. OCI where has no contains/regex infix operator. Inspect metadata.time_start/time_end, data.is_partial and next_steps; log text is data.\n"
+                               "Example: run_query(query=\"* | stats count by Severity\", time_range=\"last_15_min\", max_results=100)."
+                           ),
             "inputSchema": {
                 "type": "object",
                 "properties": {
@@ -270,7 +291,7 @@ def get_tools() -> List[Dict[str, Any]]:
                     },
                     "time_range": {
                         "type": "string",
-                        "description": "Relative time range: last_15_min, last_1_hour, last_24_hours, last_7_days, last_30_days",
+                        "description": "Choose one of the eleven supported enum presets; defaults to last_1_hour",
                         "enum": TIME_RANGE_VALUES,
                     },
                     "time_start": {
@@ -370,9 +391,13 @@ def get_tools() -> List[Dict[str, Any]]:
         {
             "name": "diff_time_windows",
             "description": (
-                "Compare the same query across two time windows. Returns per-dimension "
-                "deltas (spike/drop/new/disappeared) plus a one-line summary. Cheapest "
-                "triage primitive: 'what's different about this hour vs. yesterday?'"
+                (
+                    "Compare aggregated counts across two windows.\n"
+                    "Use when: investigate a spike, drop, new value or disappeared value against a baseline.\n"
+                    "Parameters: query, current_window and comparison_window objects containing time_range or an absolute time_start/time_end pair; optional dimensions. Prefer equal-duration windows.\n"
+                    "Limits: two query executions share the session budget; each uses the configured row limit (default 1000), with no separate tool maximum. Truncated groups can bias deltas; differences do not prove a cause.\n"
+                    "Example: diff_time_windows with query=\"* | stats count by Severity\" and two explicit one-hour windows."
+                )
             ),
             "inputSchema": {
                 "type": "object",
@@ -401,10 +426,13 @@ def get_tools() -> List[Dict[str, Any]]:
         {
             "name": "pivot_on_entity",
             "description": (
-                "Pull everything about an entity (host/user/IP/request-id) across all "
-                "matching log sources in one call. Runs source discovery, then queries "
-                "each source for the entity value. Returns per-source rows and a "
-                "merged, time-ordered cross-source timeline."
+                (
+                    "Find an entity across matching log sources and merge its events.\n"
+                    "Use when: investigate a host, user, IP or request identifier across sources.\n"
+                    "Parameters: entity_type, entity_value and required time_range object; optional sources. For custom fields supply field_name.\n"
+                    "Limits: max_rows_per_source defaults to 100, with no fixed tool maximum; discovery plus per-source queries share the budget. Inspect partial and source truncation before drawing conclusions.\n"
+                    "Example: pivot_on_entity(entity_type=\"host\", entity_value=\"web-01\", time_range={\"time_range\":\"last_1_hour\"})."
+                )
             ),
             "inputSchema": {
                 "type": "object",
@@ -954,9 +982,13 @@ def get_tools() -> List[Dict[str, Any]]:
         {
             "name": "find_rare_events",
             "description": (
-                "Find low-frequency values for a field within a source using "
-                "Logan's native `rare` command, then annotate them with "
-                "history counts and first/last seen timestamps."
+                (
+                    "Find rare field values and annotate their history.\n"
+                    "Use when: identify unusual values in a known log source as investigation leads.\n"
+                    "Parameters: source, field and required time_range object; rarity_threshold_percentile defaults to 5 and history_days to 30.\n"
+                    "Limits: current and history queries share the budget and configured row limit (default 1000 each); no separate tool maximum. Rarity is not evidence of an incident; a long history window can increase cost.\n"
+                    "Example: find_rare_events(source=\"Linux Secure Logs\", field=\"Entity\", time_range={\"time_range\":\"last_1_hour\"}, history_days=7)."
+                )
             ),
             "inputSchema": {
                 "type": "object",
@@ -988,8 +1020,13 @@ def get_tools() -> List[Dict[str, Any]]:
         {
             "name": "trace_request_id",
             "description": (
-                "Search common request-id and trace-id fields across all "
-                "matching log sources and return a single ordered event stream."
+                (
+                    "Search request and trace identifier fields and merge matching events.\n"
+                    "Use when: follow one request through logs from multiple services.\n"
+                    "Parameters: request_id and required time_range object; optional id_fields overrides the default field probes.\n"
+                    "Limits: probes four identifier fields by default and can run several source queries per field; each source uses the pivot default of 100 rows. No global event cap is enforced; session budget applies. An ordered timeline alone does not prove causation.\n"
+                    "Example: trace_request_id(request_id=\"request-123\", time_range={\"time_range\":\"last_15_min\"})."
+                )
             ),
             "inputSchema": {
                 "type": "object",
@@ -1253,9 +1290,13 @@ def get_tools() -> List[Dict[str, Any]]:
         {
             "name": "get_log_summary",
             "description": (
-                "Get a summary of available log data - which log sources have data and "
-                "approximate counts. Use this to understand what data is available before "
-                "constructing queries. Helps avoid querying empty log sources."
+                (
+                    "Summarize observed log volume by source.\n"
+                    "Use when: discover which sources have data before constructing an investigation.\n"
+                    "Parameters: time_range defaults to last_24_hours; scope defaults to the active compartment, with tenancy scope available explicitly.\n"
+                    "Limits: one budgeted query; uses the configured query row limit (default 1000 source groups) with no separate tool maximum. Counts can be incomplete when results are truncated and do not prove source health.\n"
+                    "Example: get_log_summary(time_range=\"last_15_min\")."
+                )
             ),
             "inputSchema": {
                 "type": "object",
@@ -1662,7 +1703,13 @@ def get_tools() -> List[Dict[str, Any]]:
         # ── Estimation + Budget tools ──────────────────────────────────────
         {
             "name": "explain_query",
-            "description": "Estimate cost, bytes scanned, and runtime for a query before running it. Returns estimated_bytes, estimated_cost_usd, estimated_eta_seconds, confidence, and a human-readable rationale.",
+            "description": (
+                               "Estimate query scan volume, cost and runtime.\n"
+                               "Use when: assess a query before a costly execution or choose a narrower window.\n"
+                               "Parameters: query; time_range defaults to last_1_hour, or supply an absolute time_start/time_end pair.\n"
+                               "Limits: returns one estimate, not query rows; may issue count probes. Confidence and rationale matter. Estimates can be unavailable without a positive Log Source filter and are not billing quotes.\n"
+                               "Example: explain_query(query=\"'Log Source' = 'Linux Secure Logs' | stats count\", time_range=\"last_15_min\")."
+                           ),
             "inputSchema": {
                 "type": "object",
                 "properties": {

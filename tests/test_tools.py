@@ -1,7 +1,28 @@
 """Tests for tool definitions — confirmation params and destructive flags."""
 
+import pytest
+
 from oci_logan_mcp.tools import get_tools
 from oci_logan_mcp.confirmation import GUARDED_TOOLS
+
+
+CONVENTION_TOOLS = ["run_query", "list_log_sources", "list_fields", "validate_query", "explain_query",
+                    "get_log_summary", "diff_time_windows", "pivot_on_entity", "trace_request_id", "find_rare_events"]
+
+
+@pytest.mark.parametrize("name", CONVENTION_TOOLS)
+def test_top_tools_follow_description_convention(name):
+    description = next(tool["description"] for tool in get_tools() if tool["name"] == name)
+    labels = ("Use when:", "Parameters:", "Limits:", "Example:")
+    assert all(label in description for label in labels)
+    assert [description.index(label) for label in labels] == sorted(description.index(label) for label in labels)
+    assert len(description) <= 1200
+
+
+def test_tools_list_payload_stays_bounded():
+    import json
+
+    assert len(json.dumps(get_tools())) <= 60_000
 
 
 def test_guarded_tools_have_confirmation_params():

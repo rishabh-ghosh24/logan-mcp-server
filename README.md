@@ -555,6 +555,8 @@ OCI_LOGAN_MCP_READ_ONLY=1 oci-logan-mcp
 
 Read-only mode blocks OCI resource changes, outbound delivery, context/preference changes, learned-query saves, confirmation-secret setup, and playbook creation/deletion. Queries, listing, validation, visualization and permitted local exports/reports remain available. Cache, history and audit files can still be written. OCI IAM controls the data the process can access.
 
+Tool hints follow this same policy: OCI calls stay within the authenticated tenancy, only external delivery is open-world, and tools that write local reports, exports or transcripts remain read-only.
+
 ### Guarded operations
 
 Guarded tools include alert, saved-search and dashboard creation, updates and deletion; dashboard tile changes; log-source onboarding; and playbook deletion. A budget override also requires confirmation.
@@ -564,7 +566,7 @@ Guarded tools include alert, saved-search and dashboard creation, updates and de
 
 This is **two-step server-side confirmation**. It helps a well-behaved client avoid accidental execution. It does not provide an independent approval channel against a compromised client that can submit both values.
 
-Tokens validate the tool and submitted arguments. Keep the namespace and compartment stable between preview and execution; binding confirmation to the effective scope and serializing concurrent scope changes remain part of the publication fixes.
+Tokens validate the tool, submitted arguments, and effective namespace, compartment and subcompartment setting. Scope changes wait for running operations. Changing the default scope between preview and execution requires a new confirmation token.
 
 Token expiry defaults to 300 seconds:
 
