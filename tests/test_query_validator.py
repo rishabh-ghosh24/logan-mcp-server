@@ -23,6 +23,31 @@ class TestQueryValidator:
         """Create validator with mock schema manager."""
         return QueryValidator(mock_schema_manager)
 
+    @pytest.mark.parametrize("query", [
+        "* | where Message contains 'error'", "* | where Message regex '\\d+ms'",
+        "* | timestats count span=1h", "* | regex 'Original Log Content' = '.*ms.*'",
+    ])
+    def test_syntax_rules_reject_forms_oci_rejects(self, validator, query):
+        errors = validator._validate_syntax(query)
+        assert errors and any("use" in error.lower() or "write options" in error.lower() for error in errors)
+
+    @pytest.mark.parametrize("query", [
+        "* | where contains(Message, 'error')",
+        "* | where 'Original Log Content' like '%contains regex%'",
+        "* | where startsWith(Message, 'x') and Severity = 'regex'",
+        "'Log Source' = 'S' | timestats span = 1hour count by Severity",
+        "Message = \"literal | where Message contains 'text'\" | stats count",
+        "Message = \"literal | regex 'Original Log Content' = 'text'\" | stats count",
+        "* | regex Message = 'contains regex'",
+    ])
+    def test_syntax_rules_accept_valid_forms(self, validator, query):
+        assert validator._validate_syntax(query) == []
+
+    def test_suggestions_use_valid_timestats_form(self, validator):
+        expected = "* | timestats span = 1hour count"
+        assert expected in validator.get_query_suggestions("* | timestats")
+        assert expected in validator.get_query_suggestions("*")
+
     @pytest.mark.asyncio
     async def test_validate_empty_query(self, validator):
         """Test validation of empty query."""

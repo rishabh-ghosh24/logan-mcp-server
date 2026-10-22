@@ -8,6 +8,7 @@ from pathlib import Path
 import shlex
 import sys
 import time
+import subprocess
 
 import pytest
 import matplotlib
@@ -151,3 +152,28 @@ async def test_scope_change_waits_for_in_flight_query(tmp_path):
         assert completed["query"] <= completed["change"]
         after = await session.call_tool("run_query", {"query": "* | stats count"})
         assert json.loads(after.content[0].text)["data"]["rows"] == [[42, "other"]]
+
+
+@pytest.mark.parametrize("fake_oci", [True, False])
+def test_catalog_validation_cli_reports_every_result_and_fails_on_tool_errors(tmp_path, fake_oci):
+    from importlib.resources import files
+    import yaml
+
+    params = _params(tmp_path, GOOD_CONFIG if fake_oci else BAD_CONFIG, fake_oci)
+    if fake_oci:
+        (tmp_path / "barrier" / "release").touch()
+    script = Path(__file__).resolve().parents[1] / "scripts" / "validate_catalog_live.py"
+    result = subprocess.run([sys.executable, str(script)], cwd=tmp_path, env=params.env,
+                            capture_output=True, text=True, timeout=60)
+    assert result.returncode == (0 if fake_oci else 1), result.stdout + result.stderr
+    for filename in ("starter_queries.yaml", "builtin_queries.yaml"):
+        entries = yaml.safe_load((files("oci_logan_mcp") / "data" / filename).read_text())["queries"]
+        for entry in entries:
+            assert f"{'PASS' if fake_oci else 'FAIL'}\t{filename}\t{entry['name']}" in result.stdout
+    if fake_oci:
+        audit = tmp_path / "home" / ".oci-logan-mcp" / "logs" / "audit.log"
+        calls = [json.loads(line) for line in audit.read_text().splitlines()]
+        invoked = [call for call in calls if call["tool"] == "run_query" and call["outcome"] == "invoked"]
+        assert len(invoked) == 31
+        assert all(call["args_redacted"]["time_range"] == "last_15_min" and call["args_redacted"]["max_results"] == 1
+                   for call in invoked)

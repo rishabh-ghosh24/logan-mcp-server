@@ -30,13 +30,13 @@ queries:
     category: basic
 
   - name: Search by keyword
-    query: "* | where Message contains 'error'"
+    query: "'Original Log Content' like '%error%' | head 100"
     description: Find logs containing specific text
     category: basic
 
   # --- security ---
   - name: Failed logins
-    query: "'Log Source' = 'Linux Secure Logs' | where Message contains 'Failed password'"
+    query: "'Log Source' = 'Linux Secure Logs' and 'Original Log Content' like '%Failed password%'"
     description: Find failed SSH login attempts
     category: security
 
@@ -46,7 +46,7 @@ queries:
     category: security
 
   - name: Sudo commands
-    query: "'Log Source' = 'Linux Secure Logs' | where Message contains 'sudo'"
+    query: "'Log Source' = 'Linux Secure Logs' and 'Original Log Content' like '%sudo%'"
     description: Track sudo usage
     category: security
 
@@ -74,14 +74,19 @@ queries:
 
   # --- performance ---
   - name: Slow operations
-    query: "* | where Message contains 'slow' or Message contains 'timeout'"
+    query: "'Original Log Content' like '%slow%' or 'Original Log Content' like '%timeout%' | head 100"
     description: Find performance-related issues
     category: performance
 
-  - name: Response times
-    query: "* | where Message regex '\\d+ms' | head 100"
-    description: Logs mentioning millisecond timings
+  - name: Volume trend (5 minute buckets)
+    query: "'Log Source' != null | timestats span = 5minute count by 'Log Source'"
+    description: Compare log source volume in five-minute buckets
     category: performance
+
+  - name: Keyword search (any of)
+    query: "* | search anyof(error, warning, fatal) | head 100"
+    description: Find logs containing any of the listed keywords
+    category: basic
 
   # --- statistics ---
   - name: Logs by entity
@@ -100,6 +105,6 @@ queries:
     category: statistics
 
   - name: Hourly volume
-    query: "* | timestats count span=1h"
+    query: "* | timestats span = 1hour count"
     description: Log volume per hour
     category: statistics
