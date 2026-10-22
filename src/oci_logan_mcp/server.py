@@ -5,7 +5,7 @@ import json
 import logging
 import os
 import sys
-from typing import Any, Sequence
+from typing import Any
 
 from mcp.server import Server
 from mcp.server.stdio import stdio_server
@@ -15,6 +15,7 @@ from mcp.types import (
     Resource,
     TextContent,
     ImageContent,
+    CallToolResult,
 )
 
 try:
@@ -114,6 +115,18 @@ def build_tool_list() -> list[Tool]:
     return tools
 
 
+def build_call_tool_result(results: list[dict]) -> CallToolResult:
+    """Preserve tool content and expose handler failures to MCP clients."""
+    return CallToolResult(
+        content=[
+            ImageContent(type="image", data=result["data"], mimeType=result.get("mimeType", "image/png"))
+            if result["type"] == "image" else TextContent(type="text", text=result["text"])
+            for result in results
+        ],
+        isError=any(result.get("is_error", False) for result in results),
+    )
+
+
 class OCILogAnalyticsMCPServer:
     """Main MCP Server for OCI Log Analytics.
 
@@ -164,24 +177,18 @@ class OCILogAnalyticsMCPServer:
         @self.server.call_tool()
         async def call_tool(
             name: str, arguments: dict[str, Any] | None
-        ) -> Sequence[TextContent | ImageContent]:
+        ) -> CallToolResult:
             """Handle tool calls."""
             if self.handlers is None:
-                return [TextContent(type="text", text=json.dumps(self._not_initialized_payload(), indent=2))]
+                return CallToolResult(
+                    content=[TextContent(type="text", text=json.dumps(self._not_initialized_payload(), indent=2))],
+                    isError=True,
+                )
 
             arguments = arguments or {}
             results = await self.handlers.handle_tool_call(name, arguments)
 
-            return [
-                ImageContent(
-                    type="image",
-                    data=r["data"],
-                    mimeType=r.get("mimeType", "image/png"),
-                )
-                if r["type"] == "image"
-                else TextContent(type="text", text=r["text"])
-                for r in results
-            ]
+            return build_call_tool_result(results)
 
         @self.server.read_resource()
         async def read_resource(uri: str) -> list[ReadResourceContents]:

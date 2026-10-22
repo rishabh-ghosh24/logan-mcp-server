@@ -11,6 +11,19 @@ Verifies that:
 import asyncio
 import json
 import pytest
+
+
+def test_build_call_tool_result_sets_is_error_and_preserves_content():
+    from oci_logan_mcp.server import build_call_tool_result
+
+    ok = build_call_tool_result([{"type": "text", "text": "ok"}])
+    bad = build_call_tool_result([
+        {"type": "text", "text": "before"},
+        {"type": "image", "data": "cG5n", "mimeType": "image/png", "is_error": True},
+    ])
+    assert ok.isError is False and ok.content[0].text == "ok"
+    assert bad.isError is True and bad.content[0].text == "before"
+    assert bad.content[1].data == "cG5n" and bad.content[1].mimeType == "image/png"
 from unittest.mock import MagicMock, AsyncMock, patch
 
 from oci_logan_mcp.server import OCILogAnalyticsMCPServer

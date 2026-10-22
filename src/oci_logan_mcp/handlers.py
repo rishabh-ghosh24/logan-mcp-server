@@ -318,7 +318,7 @@ class MCPHandlers:
                 blocked=True,
                 block_reason="unknown_tool",
             )
-            return [{"type": "text", "text": f"Unknown tool: {name}"}]
+            return [{"type": "text", "text": f"Unknown tool: {name}", "is_error": True}]
 
         # --- Read-only guard (runs BEFORE confirmation gate) ---
         try:
@@ -336,7 +336,7 @@ class MCPHandlers:
                 blocked=True,
                 block_reason="read_only",
             )
-            return [{"type": "text", "text": json.dumps({
+            return [{"type": "text", "is_error": True, "text": json.dumps({
                 "status": "read_only_blocked",
                 "tool": name,
                 "error": str(e),
@@ -362,7 +362,7 @@ class MCPHandlers:
                         blocked=True,
                         block_reason="confirmation_unavailable",
                     )
-                return [{"type": "text", "text": json.dumps(
+                return [{"type": "text", "is_error": True, "text": json.dumps(
                     self._build_confirmation_unavailable_response(status),
                     indent=2,
                 )}]
@@ -429,7 +429,7 @@ class MCPHandlers:
                     blocked=True,
                     block_reason="confirmation_failed",
                 )
-                return [{"type": "text", "text": json.dumps({
+                return [{"type": "text", "is_error": True, "text": json.dumps({
                     "status": "confirmation_failed",
                     "error": "Invalid/expired token, wrong secret, or arguments changed. "
                              "Request a new confirmation token.",
@@ -485,7 +485,7 @@ class MCPHandlers:
                 error=str(e),
                 error_type=type(e).__name__,
             )
-            return [{"type": "text", "text": f"Error executing {name}: {str(e)}"}]
+            return [{"type": "text", "text": f"Error executing {name}: {str(e)}", "is_error": True}]
 
     def _json_response(self, payload: Any) -> List[Dict]:
         return [{"type": "text", "text": json.dumps(payload, indent=2, default=str)}]
@@ -493,7 +493,7 @@ class MCPHandlers:
     def _error_response(self, error_code: str, message: str, **extra: Any) -> List[Dict]:
         payload = {"status": "error", "error_code": error_code, "error": message}
         payload.update(extra)
-        return self._json_response(payload)
+        return [{**item, "is_error": True} for item in self._json_response(payload)]
 
     def _audit_strictness(self, tool_name: str, arguments: Dict[str, Any]) -> str:
         if self.confirmation_manager.is_guarded_call(tool_name, arguments):
@@ -550,7 +550,7 @@ class MCPHandlers:
     def _audit_blocked_response(
         self, tool_name: str, audit_strictness: str
     ) -> List[Dict[str, str]]:
-        return self._json_response({
+        return [{**item, "is_error": True} for item in self._json_response({
             "status": "audit_blocked",
             "tool": tool_name,
             "audit_strictness": audit_strictness,
@@ -558,7 +558,7 @@ class MCPHandlers:
                 "Audit logging failed. This operation was not executed because "
                 "it requires a durable audit entry before side effects are allowed."
             ),
-        })
+        })]
 
     @staticmethod
     def _extract_audit_ref(arguments: Dict[str, Any]) -> Optional[str]:
@@ -1053,7 +1053,7 @@ class MCPHandlers:
                 "partial": None,
                 "budget": self._budget_tracker.snapshot().to_dict(),
             }
-            return [{"type": "text", "text": json.dumps(payload, indent=2, default=str)}]
+            return [{"type": "text", "is_error": True, "text": json.dumps(payload, indent=2, default=str)}]
         return [{"type": "text", "text": json.dumps(result, indent=2, default=str)}]
 
     async def _pivot_on_entity(self, args: Dict) -> List[Dict]:
@@ -1078,7 +1078,7 @@ class MCPHandlers:
                 "partial": None,
                 "budget": self._budget_tracker.snapshot().to_dict(),
             }
-            return [{"type": "text", "text": json.dumps(payload, indent=2, default=str)}]
+            return [{"type": "text", "is_error": True, "text": json.dumps(payload, indent=2, default=str)}]
         except ValueError as e:
             return [{"type": "text", "text": json.dumps(
                 {"status": "error", "error": str(e)}, indent=2
@@ -1102,7 +1102,7 @@ class MCPHandlers:
                 "partial": None,
                 "budget": self._budget_tracker.snapshot().to_dict(),
             }
-            return [{"type": "text", "text": json.dumps(payload, indent=2, default=str)}]
+            return [{"type": "text", "is_error": True, "text": json.dumps(payload, indent=2, default=str)}]
         return [{"type": "text", "text": json.dumps(result, indent=2, default=str)}]
 
     async def _parser_failure_triage(self, args: Dict) -> List[Dict]:
@@ -1133,7 +1133,7 @@ class MCPHandlers:
                 "partial": None,
                 "budget": self._budget_tracker.snapshot().to_dict(),
             }
-            return [{"type": "text", "text": json.dumps(payload, indent=2, default=str)}]
+            return [{"type": "text", "is_error": True, "text": json.dumps(payload, indent=2, default=str)}]
         return [{"type": "text", "text": json.dumps(result, indent=2, default=str)}]
 
     async def _investigate_incident(self, args: Dict) -> List[Dict]:
@@ -1841,7 +1841,7 @@ class MCPHandlers:
                 "partial": None,
                 "budget": self._budget_tracker.snapshot().to_dict(),
             }
-            return [{"type": "text", "text": json.dumps(payload, indent=2, default=str)}]
+            return [{"type": "text", "is_error": True, "text": json.dumps(payload, indent=2, default=str)}]
         except ValueError as e:
             return [{"type": "text", "text": json.dumps(
                 {"status": "error", "error": str(e)}, indent=2
@@ -1899,7 +1899,7 @@ class MCPHandlers:
                 "partial": None,
                 "budget": self._budget_tracker.snapshot().to_dict(),
             }
-            return [{"type": "text", "text": json.dumps(payload, indent=2, default=str)}]
+            return [{"type": "text", "is_error": True, "text": json.dumps(payload, indent=2, default=str)}]
         return [{"type": "text", "text": json.dumps(result, indent=2, default=str)}]
 
     async def _find_rare_events(self, args: Dict) -> List[Dict]:
@@ -1994,7 +1994,7 @@ class MCPHandlers:
                 "partial": None,
                 "budget": self._budget_tracker.snapshot().to_dict(),
             }
-            return [{"type": "text", "text": json.dumps(payload, indent=2, default=str)}]
+            return [{"type": "text", "is_error": True, "text": json.dumps(payload, indent=2, default=str)}]
         return [{"type": "text", "text": json.dumps(result, indent=2, default=str)}]
 
     async def _related_dashboards_and_searches(self, args: Dict) -> List[Dict]:

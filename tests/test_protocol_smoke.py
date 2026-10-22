@@ -68,6 +68,7 @@ async def test_stdio_server_explains_failed_init(tmp_path):
         assert len((await session.list_resources()).resources) == 6
         response = await session.call_tool("get_current_context", {})
         payload = json.loads(response.content[0].text)
+        assert response.isError is True
         assert payload["error"] == "server_not_initialized"
         assert "ConfigFileNotFound" in payload["detail"]
         assert any("--setup" in step for step in payload["how_to_fix"])
@@ -96,7 +97,7 @@ async def test_stdio_server_succeeds_against_fake_oci(tmp_path):
         assert not response.isError
         assert json.loads(response.content[0].text)["data"]["rows"] == [[42, "smoke"]]
         unknown = await session.call_tool("no_such_tool", {})
-        # Task 13 adds the isError contract; checkpoint A verifies the response text.
+        assert unknown.isError is True
         assert "Unknown tool" in unknown.content[0].text
 
 

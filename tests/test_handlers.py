@@ -135,6 +135,61 @@ def handlers(settings, mock_oci_client, mock_cache, mock_query_logger, mock_cont
 # ---------------------------------------------------------------------------
 
 @pytest.mark.asyncio
+@pytest.mark.parametrize("failure", ["unknown", "read_only", "unavailable", "audit", "execution", "budget"])
+async def test_failed_tool_calls_are_flagged_as_errors(handlers, failure):
+    name, args = "delete_alert", {"alert_id": "ocid1.alarm.oc1..a"}
+    if failure == "unknown":
+        name, args = "no_such_tool", {}
+    elif failure == "read_only":
+        handlers.settings.read_only = True
+    elif failure == "audit":
+        handlers.audit_logger = None
+    elif failure == "execution":
+        name, args = "list_fields", {}
+        handlers.schema_manager.get_fields = AsyncMock(side_effect=ValueError("broken"))
+    elif failure == "budget":
+        name, args = "run_query", {"query": "* | stats count"}
+        handlers._budget_tracker.limits.max_queries_per_session = 0
+    result = await handlers.handle_tool_call(name, args)
+    assert result[0]["is_error"] is True
+    assert result[0]["text"]
+    if failure == "budget":
+        assert "limit" in result[0]["text"]
+
+
+@pytest.mark.asyncio
+async def test_confirmation_required_is_not_an_error_but_bad_secret_is(handlers):
+    handlers.secret_store.set_secret("correct-secret")
+    args = {"alert_id": "ocid1.alarm.oc1..a"}
+    first = await handlers.handle_tool_call("delete_alert", args)
+    payload = json.loads(first[0]["text"])
+    assert payload["status"] == "confirmation_required"
+    assert not first[0].get("is_error")
+    bad = await handlers.handle_tool_call("delete_alert", {
+        **args, "confirmation_token": payload["confirmation_token"], "confirmation_secret": "wrong",
+    })
+    assert json.loads(bad[0]["text"])["status"] == "confirmation_failed"
+    assert bad[0]["is_error"] is True
+
+
+def test_structured_error_response_is_flagged_as_error(handlers):
+    [result] = handlers._error_response("bad_input", "bad value")
+    assert result["is_error"] is True
+    assert json.loads(result["text"])["error_code"] == "bad_input"
+
+
+@pytest.mark.asyncio
+async def test_structured_budget_refusal_is_flagged_as_error(handlers):
+    from oci_logan_mcp.budget_tracker import BudgetExceededError
+
+    handlers.diff_tool.run = AsyncMock(side_effect=BudgetExceededError("query limit"))
+    [result] = await handlers.handle_tool_call("diff_time_windows", {
+        "query": "* | stats count", "current_window": "last_1_hour", "comparison_window": "last_24_hours",
+    })
+    assert json.loads(result["text"])["status"] == "budget_exceeded"
+    assert result["is_error"] is True
+
+@pytest.mark.asyncio
 @pytest.mark.parametrize("query", [
     "* | stats count",
     "'Log Source' = 'OKE Control Plane Logs' | stats count by Severity | sort -count | head 10",
