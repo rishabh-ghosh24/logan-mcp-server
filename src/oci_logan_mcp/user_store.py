@@ -109,6 +109,7 @@ class UserStore:
         intent_key: Optional[str] = None,
         query_shape: Optional[str] = None,
         origin: str = "manual",
+        evict_auto_names: Optional[List[str]] = None,
     ) -> Dict[str, Any]:
         """Save or update a learned query.
 
@@ -132,6 +133,13 @@ class UserStore:
                         q["use_count"] = q.get("use_count", 0) + 1
                         self._save(data)
                         return deepcopy(q)
+
+            # Stage retention changes in memory. A collision returns without
+            # writing them, and a concurrent manual upgrade remains protected.
+            if origin == "auto" and evict_auto_names:
+                queries = [q for q in queries if q["name"] not in evict_auto_names
+                           or query_origin(q) != "auto"]
+                data["queries"] = queries
 
             # Personal ↔ personal: update in place by name (bypass collision check)
             for q in queries:

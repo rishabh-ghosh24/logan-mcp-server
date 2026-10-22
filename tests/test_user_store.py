@@ -38,6 +38,17 @@ def test_explicit_save_upgrades_an_auto_entry(store, match_by):
     assert entry["origin"] == "manual" and "auto-saved" not in entry["tags"]
     assert entry["description"] == "manual words"
 
+
+def test_auto_eviction_rechecks_origin_and_preserves_manual_rows(store):
+    manual = store.save_query(name="manual", query="manual query", description="mine")
+    store.save_query(name="old_auto", query="old automatic query", description="auto", origin="auto")
+    saved = store.save_query(name="new_auto", query="new automatic query", description="new",
+                              origin="auto", evict_auto_names=["manual", "old_auto"])
+    entries = store.list_queries()
+    assert {entry["name"] for entry in entries} == {"manual", "new_auto"}
+    assert next(entry for entry in entries if entry["name"] == "manual") == manual
+    assert saved["query"] == "new automatic query"
+
 class TestUserStoreInit:
     def test_creates_user_directory(self, store, base_dir):
         assert (base_dir / "users" / "alice").is_dir()

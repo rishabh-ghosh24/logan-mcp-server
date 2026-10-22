@@ -31,6 +31,86 @@ def auto_saver(mock_context_manager, mock_user_store):
 DUMMY_RESULT = {"data": {"rows": [[1]], "columns": [{"name": "count"}]}}
 
 
+class TestVariantCaps:
+    SHAPE = "'Log Source' = 'VCN Flow Logs' | stats count by 'Action' | sort -count | head 10"
+    BASE = "top_10_vcn_flow_logs_count_by_action"
+
+    def variant(self, index):
+        return self.SHAPE + f" | eval v = {index}"
+
+    @staticmethod
+    def audit_shape(index):
+        return f"'Log Source' = 'OCI Audit Logs' | stats count by 'Field{index}' | sort -count | head 10"
+
+    def test_fourth_variant_replaces_weakest_auto_saved(self, auto_saver, mock_user_store):
+        for index in range(3):
+            assert auto_saver.process_successful_query(self.variant(index), DUMMY_RESULT) is not None
+        mock_user_store.record_success(self.variant(1))
+        mock_user_store.record_success(self.variant(2))
+        saved = auto_saver.process_successful_query(self.variant(3), DUMMY_RESULT)
+        queries = mock_user_store.list_queries()
+        assert saved is not None and len(queries) == 3
+        assert {entry["query"] for entry in queries} == {self.variant(i) for i in (1, 2, 3)}
+        assert not any(entry["name"].endswith("_v4") for entry in queries)
+
+    def test_source_cap_evicts_weakest_across_distinct_shapes(self, auto_saver, mock_user_store):
+        for index in range(22):
+            assert auto_saver.process_successful_query(self.audit_shape(index), DUMMY_RESULT) is not None
+        queries = mock_user_store.list_queries()
+        assert len(queries) == 20
+        assert {entry["query"] for entry in queries} == {self.audit_shape(i) for i in range(2, 22)}
+
+    def test_source_cap_never_evicts_manual_saves(self, auto_saver, mock_user_store):
+        manual = mock_user_store.save_query(name="mine", query=self.audit_shape(99), description="manual")
+        for index in range(25):
+            assert auto_saver.process_successful_query(self.audit_shape(index), DUMMY_RESULT) is not None
+        queries = mock_user_store.list_queries()
+        assert len(queries) == 21
+        assert sum(entry.get("origin") == "auto" for entry in queries) == 20
+        assert next(entry for entry in queries if entry["entry_id"] == manual["entry_id"])["query"] == self.audit_shape(99)
+
+    def test_legacy_ten_variants_are_reduced_to_cap(self, auto_saver, mock_user_store):
+        from oci_logan_mcp.file_lock import atomic_yaml_write
+
+        entries = [dict(entry_id=f"id{i}", name=self.BASE if i == 0 else f"{self.BASE}_v{i+1}",
+                        query=self.variant(i), description="legacy auto", category="network",
+                        tags=["auto-saved"], use_count=1, success_count=i,
+                        failure_count=0, interest_score=5) for i in range(10)]
+        atomic_yaml_write(mock_user_store._queries_path, {"version": 1, "queries": entries})
+        saved = auto_saver.process_successful_query(self.variant(99), DUMMY_RESULT)
+        queries = mock_user_store.list_queries()
+        assert saved is not None and len(queries) == 3
+        assert {entry["query"] for entry in queries} == {self.variant(i) for i in (8, 9, 99)}
+
+    def test_legacy_without_tags_is_manual_and_new_variants_are_bounded(self, auto_saver, mock_user_store):
+        from oci_logan_mcp.file_lock import atomic_yaml_write
+
+        entry = dict(entry_id="legacy", name="legacy", query=self.variant(50),
+                     description="old manual", category="general", use_count=1,
+                     success_count=0, failure_count=0, interest_score=5)
+        atomic_yaml_write(mock_user_store._queries_path, {"version": 1, "queries": [entry]})
+        for index in range(5):
+            assert auto_saver.process_successful_query(self.variant(index), DUMMY_RESULT) is not None
+        queries = mock_user_store.list_queries()
+        assert len(queries) == 4
+        assert next(item for item in queries if item["entry_id"] == "legacy") == entry
+        assert sum(item.get("origin") == "auto" for item in queries) == 3
+        assert any(item["query"] == self.variant(4) for item in queries)
+
+    def test_collision_does_not_evict_existing_auto_queries(self, auto_saver, mock_user_store):
+        from oci_logan_mcp.file_lock import atomic_yaml_write
+
+        for index in range(3):
+            assert auto_saver.process_successful_query(self.variant(index), DUMMY_RESULT) is not None
+        original = mock_user_store.list_queries()
+        atomic_yaml_write(mock_user_store._shared_dir / "promoted_queries.yaml", {"queries": [
+            {"name": self.BASE, "query": "protected shared query", "description": "shared"}
+        ]})
+        saved = auto_saver.process_successful_query(self.variant(3), DUMMY_RESULT)
+        assert saved is None
+        assert mock_user_store.list_queries() == original
+
+
 def test_semantic_auto_save_preserves_a_manual_entry(auto_saver, mock_user_store):
     query = (
         "Severity in ('ERROR', 'CRITICAL', 'FATAL') or "

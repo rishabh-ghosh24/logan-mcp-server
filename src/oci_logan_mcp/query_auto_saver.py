@@ -15,6 +15,8 @@ from .context_manager import ContextManager
 from .user_store import UserStore, query_origin
 
 logger = logging.getLogger(__name__)
+MAX_VARIANTS_PER_SHAPE = 3
+MAX_AUTO_SAVED_PER_SOURCE = 20
 
 # ----------------------------------------------------------------
 # Trivial-query patterns (never auto-save)
@@ -102,6 +104,7 @@ class QueryAutoSaver:
                 return None
 
             # 4. Generate metadata from query text
+            evictions: set[str] = set()
             if semantic:
                 name = self._unique_name(semantic["name"])
                 description = semantic["description"]
@@ -109,7 +112,8 @@ class QueryAutoSaver:
                 intent_key = semantic["intent_key"]
                 query_shape = semantic["query_shape"]
             else:
-                name, description, category = self._generate_metadata(query)
+                name, description, category = self._generate_metadata(query, evictions)
+                self._enforce_source_cap(self._extract_source(query), evictions)
                 intent_key = None
                 query_shape = None
 
@@ -124,6 +128,7 @@ class QueryAutoSaver:
                 intent_key=intent_key,
                 query_shape=query_shape,
                 origin="auto",
+                evict_auto_names=list(evictions),
             )
             # If collision with builtin/shared, silently skip
             if "collision_warning" in saved:
@@ -186,7 +191,9 @@ class QueryAutoSaver:
     # Metadata generation
     # ----------------------------------------------------------------
 
-    def _generate_metadata(self, query: str) -> Tuple[str, str, str]:
+    def _generate_metadata(
+        self, query: str, evictions: Optional[set[str]] = None,
+    ) -> Tuple[str, str, str]:
         """Generate (name, description, category) from query text."""
         q = query.strip()
         q_lower = q.lower()
@@ -216,7 +223,7 @@ class QueryAutoSaver:
         name = name[:60]  # max length
 
         # Deduplicate name if collision
-        name = self._unique_name(name)
+        name = self._variant_name(name, evictions)
 
         # --- Build description ---
         desc_parts: list[str] = []
@@ -386,3 +393,40 @@ class QueryAutoSaver:
             if candidate not in existing_names:
                 return candidate
         return f"{base_name}_{id(base_name)}"
+
+    @staticmethod
+    def _weakness(entry: Dict[str, Any]) -> tuple:
+        return (entry.get("success_count", 0), entry.get("use_count", 0),
+                entry.get("last_used") or "")
+
+    def _variant_name(self, base: str, evictions: Optional[set[str]] = None) -> str:
+        """Select a reusable name and stage the weakest automatic variants."""
+        if evictions is None:
+            evictions = set()
+        entries = self.user_store.list_queries()
+        pattern = re.compile(rf"^{re.escape(base)}(?:_v\d+)?$")
+        variants = sorted(
+            (entry for entry in entries if query_origin(entry) == "auto"
+             and pattern.fullmatch(entry["name"])), key=self._weakness,
+        )
+        while len(variants) >= MAX_VARIANTS_PER_SHAPE:
+            evictions.add(variants.pop(0)["name"])
+        names = {entry["name"] for entry in entries} - evictions
+        if base not in names:
+            return base
+        index = 2
+        while f"{base}_v{index}" in names:
+            index += 1
+        return f"{base}_v{index}"
+
+    def _enforce_source_cap(self, source: Optional[str], evictions: set[str]) -> None:
+        """Stage source evictions without changing the store before save."""
+        if source is None:
+            return
+        entries = sorted(
+            (entry for entry in self.user_store.list_queries()
+             if query_origin(entry) == "auto" and entry["name"] not in evictions
+             and self._extract_source(entry["query"]) == source), key=self._weakness,
+        )
+        while len(entries) >= MAX_AUTO_SAVED_PER_SOURCE:
+            evictions.add(entries.pop(0)["name"])
