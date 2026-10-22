@@ -88,6 +88,10 @@ class UserStore:
         # Ensure shared_dir exists so lock file can be created
         self._shared_dir.mkdir(parents=True, exist_ok=True)
 
+    def locked_queries(self):
+        """Hold the personal-query lock across a multi-step update."""
+        return locked_file(self._lock_path, self._thread_lock)
+
     def _migrate_legacy(self, base_dir: Path) -> None:
         """One-time migration: copy legacy context/learned_queries.yaml to user dir."""
         legacy = base_dir / "context" / "learned_queries.yaml"
@@ -116,6 +120,8 @@ class UserStore:
         Returns the saved entry dict, or a dict with 'collision_warning' key if
         the name (case-insensitive) collides with a builtin or shared entry and
         force=False was not specified.
+        Automatic inserts can return capacity_warning when retention prefers
+        the existing catalog. In that case no staged eviction is written.
         """
         effective_name = rename_to if rename_to else name
         now = datetime.now(timezone.utc).isoformat()
@@ -147,7 +153,7 @@ class UserStore:
                     q["query"] = query
                     q["description"] = description
                     q["category"] = category
-                    q["tags"] = tags or q.get("tags", [])
+                    q["tags"] = tags or q.get("tags") or []
                     q["origin"] = origin
                     if origin == "manual":
                         q["tags"] = [tag for tag in q["tags"] if tag != "auto-saved"]
@@ -184,7 +190,7 @@ class UserStore:
                     q["name"] = effective_name
                     q["description"] = description
                     q["category"] = category
-                    q["tags"] = tags or q.get("tags", [])
+                    q["tags"] = tags or q.get("tags") or []
                     q["origin"] = origin
                     if origin == "manual":
                         q["tags"] = [tag for tag in q["tags"] if tag != "auto-saved"]
@@ -237,8 +243,13 @@ class UserStore:
 
             # Enforce max limit
             if len(queries) > MAX_QUERIES_PER_USER:
-                queries.sort(key=lambda q: (q.get("use_count", 0), q.get("last_used", "")))
+                queries.sort(key=lambda q: (
+                    origin == "auto" and query_origin(q) == "manual",
+                    q.get("use_count", 0), q.get("last_used", ""),
+                ))
                 queries = queries[-MAX_QUERIES_PER_USER:]
+                if origin == "auto" and not any(q["entry_id"] == entry["entry_id"] for q in queries):
+                    return {"capacity_warning": "Personal catalog capacity protects existing higher-priority queries"}
 
             data["queries"] = queries
             self._save(data)

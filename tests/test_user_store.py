@@ -49,6 +49,20 @@ def test_auto_eviction_rechecks_origin_and_preserves_manual_rows(store):
     assert next(entry for entry in entries if entry["name"] == "manual") == manual
     assert saved["query"] == "new automatic query"
 
+
+@pytest.mark.parametrize("match_by", ["name", "query"])
+def test_manual_update_accepts_legacy_null_tags(store, match_by):
+    original = store.save_query(name="legacy", query="legacy query", description="old")
+    data = store._load()
+    data["queries"][0]["tags"] = None
+    store._save(data)
+    name = "legacy" if match_by == "name" else "renamed_legacy"
+    saved = store.save_query(name=name, query="legacy query", description="updated")
+    [entry] = store.list_queries()
+    assert saved["entry_id"] == entry["entry_id"] == original["entry_id"]
+    assert entry["name"] == name and entry["description"] == "updated"
+    assert entry["tags"] == [] and entry["origin"] == "manual"
+
 class TestUserStoreInit:
     def test_creates_user_directory(self, store, base_dir):
         assert (base_dir / "users" / "alice").is_dir()

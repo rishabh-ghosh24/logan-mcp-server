@@ -142,7 +142,7 @@ audit:
 
 The equivalent environment setting is `OCI_LOGAN_AUDIT_STORE_ARGUMENTS=0`. Audit records then fingerprint query/free-text arguments and errors, retain selected numeric/boolean result summaries, and carry `text_retained: false`. Playbooks retain omission placeholders and warn that argument text was not retained; transcripts preserve the flag.
 
-Each user's query history remains a separate file at `users/<username>/history/queries.log`, with mode `0600` and rotation. To disable history files, also set:
+Each user's query history remains a separate file at `users/<username>/history/queries.log`, with POSIX mode `0600` and rotation. To disable history files, also set:
 
 ```yaml
 logging:

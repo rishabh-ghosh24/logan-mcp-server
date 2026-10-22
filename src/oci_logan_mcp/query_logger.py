@@ -34,7 +34,7 @@ class QueryLogger:
     def _ensure_private_file(path: Path) -> None:
         descriptor = os.open(path, os.O_CREAT | os.O_APPEND | os.O_WRONLY, 0o600)
         try:
-            os.fchmod(descriptor, 0o600)
+            os.chmod(path, 0o600)
         finally:
             os.close(descriptor)
 
@@ -59,7 +59,7 @@ class QueryLogger:
                 os.replace(self._history_path, self._history_path.with_name("queries.log.1"))
             descriptor = os.open(self._history_path, os.O_CREAT | os.O_APPEND | os.O_WRONLY, 0o600)
             with os.fdopen(descriptor, "a", encoding="utf-8") as output:
-                os.fchmod(output.fileno(), 0o600)
+                os.chmod(self._history_path, 0o600)
                 output.write(f"{datetime.now():%Y-%m-%d %H:%M:%S} | {line}\n")
 
     def log_query(

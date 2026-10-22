@@ -167,6 +167,17 @@ def test_history_rotation_keeps_private_mode_and_recent_content(tmp_path, monkey
         assert path.stat().st_mode & 0o777 == 0o600
 
 
+def test_history_writes_when_descriptor_chmod_is_unavailable(tmp_path, monkeypatch):
+    from oci_logan_mcp import query_logger as module
+
+    monkeypatch.delattr(module.os, "fchmod", raising=False)
+    history = QueryLogger(LoggingConfig(), user_dir=tmp_path / "users" / "alice")
+    _log_sample(history, query="PORTABLE_HISTORY")
+    path = tmp_path / "users" / "alice" / "history" / "queries.log"
+    assert "PORTABLE_HISTORY" in path.read_text()
+    assert history.get_recent_queries()[0]["query"] == "PORTABLE_HISTORY"
+
+
 class TestGetRecentQueries:
     """Tests for get_recent_queries method."""
 

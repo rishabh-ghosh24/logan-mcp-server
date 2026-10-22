@@ -35,6 +35,78 @@ class TestVariantCaps:
     SHAPE = "'Log Source' = 'VCN Flow Logs' | stats count by 'Action' | sort -count | head 10"
     BASE = "top_10_vcn_flow_logs_count_by_action"
 
+    @pytest.mark.parametrize("auto_slot", [True, False])
+    def test_overall_store_limit_preserves_manual_entries(self, auto_saver, mock_user_store, auto_slot):
+        from oci_logan_mcp.file_lock import atomic_yaml_write
+        from oci_logan_mcp.user_store import MAX_QUERIES_PER_USER
+
+        probe = auto_saver.process_successful_query("'Log Source' = 'Old' | stats count", DUMMY_RESULT)
+        assert probe is not None
+        manual = [dict(entry_id=f"manual-{i}", name=f"manual_{i}", query=f"manual query {i}",
+                       description="mine", origin="manual", tags=[], use_count=1,
+                       last_used="2000-01-01T00:00:00Z", success_count=0, interest_score=4)
+                  for i in range(MAX_QUERIES_PER_USER - int(auto_slot))]
+        seeded = manual + ([probe] if auto_slot else [])
+        atomic_yaml_write(mock_user_store._queries_path, {"version": 1, "queries": seeded})
+        new_query = "'Log Source' = 'New' | stats count"
+        saved = auto_saver.process_successful_query(new_query, DUMMY_RESULT)
+        entries = mock_user_store.list_queries()
+        assert {entry["entry_id"] for entry in manual} <= {entry["entry_id"] for entry in entries}
+        assert len(entries) == MAX_QUERIES_PER_USER
+        if auto_slot:
+            assert saved is not None
+            assert any(entry["query"] == new_query for entry in entries)
+            assert not any(entry["entry_id"] == probe["entry_id"] for entry in entries)
+        else:
+            assert saved is None
+            assert {entry["entry_id"]: entry for entry in entries} == {
+                entry["entry_id"]: entry for entry in seeded
+            }
+
+    def test_concurrent_savers_plan_and_apply_source_retention_together(self, auto_saver, mock_user_store, monkeypatch):
+        import threading
+        from concurrent.futures import ThreadPoolExecutor
+
+        for index in range(19):
+            assert auto_saver.process_successful_query(self.audit_shape(index), DUMMY_RESULT) is not None
+        other_store = UserStore(mock_user_store.base_dir, user_id=mock_user_store.user_id)
+        other = QueryAutoSaver(MagicMock(), other_store)
+        planned, release, attempted, other_planned = (threading.Event() for _ in range(4))
+        save = mock_user_store.save_query
+        metadata = other._generate_metadata
+
+        def gated_save(*args, **kwargs):
+            planned.set()
+            if not release.wait(5):
+                raise TimeoutError("Test did not release the first saver")
+            return save(*args, **kwargs)
+
+        def observed_metadata(*args, **kwargs):
+            other_planned.set()
+            return metadata(*args, **kwargs)
+
+        def second_save():
+            attempted.set()
+            return other.process_successful_query(self.audit_shape(20), DUMMY_RESULT)
+
+        monkeypatch.setattr(mock_user_store, "save_query", gated_save)
+        monkeypatch.setattr(other, "_generate_metadata", observed_metadata)
+        with ThreadPoolExecutor(max_workers=2) as executor:
+            first = executor.submit(auto_saver.process_successful_query, self.audit_shape(19), DUMMY_RESULT)
+            try:
+                assert planned.wait(3)
+                second = executor.submit(second_save)
+                assert attempted.wait(3)
+                entered_while_first_pending = other_planned.wait(0.2)
+            finally:
+                release.set()
+            assert first.result(timeout=5) is not None
+            assert second.result(timeout=5) is not None
+        entries = mock_user_store.list_queries()
+        assert len(entries) == 20
+        assert not entered_while_first_pending
+        assert {self.audit_shape(19), self.audit_shape(20)} <= {entry["query"] for entry in entries}
+
     def variant(self, index):
         return self.SHAPE + f" | eval v = {index}"
 

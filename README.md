@@ -496,6 +496,7 @@ Each user has separate query and preference files under `~/.oci-logan-mcp/users/
 
 - Successful complex queries are scored and auto-saved. Trivial queries are skipped.
 - Automatic learning keeps at most 3 variants per query shape and 20 automatic entries per log source. It removes entries with the fewest recorded successes, then the lowest usage and oldest use.
+- The personal store holds at most 200 queries. Automatic eviction protects manual saves; a store filled with manual queries skips additional automatic saves.
 - `save_learned_query` marks an explicit save as manual and gives it a promotion-eligible interest score. Within the relevant learned examples, explicit saves rank ahead of automatic saves in `get_query_examples`.
 - Preferences track field usage, time ranges and disambiguation choices. `set_compartment` remembers your default compartment without rewriting the shared configuration file.
 - Shared examples show `source`, `user_count` and `success_count`. Execution counts describe recorded use, not proof that a query is correct for another environment.
@@ -586,7 +587,7 @@ The former `OCI_LA_CONFIRMATION_SECRET` variable is no longer used.
 
 ### History and audit records
 
-Private query history is stored at `~/.oci-logan-mcp/users/<username>/history/queries.log`, with mode `0600` and rotation. It does not propagate through the operational logger. `logging.query_logging: false` disables file history; the recent-query resource remains in memory for the session.
+Private query history is stored at `~/.oci-logan-mcp/users/<username>/history/queries.log`, with POSIX mode `0600` and rotation. It does not propagate through the operational logger. `logging.query_logging: false` disables file history; the recent-query resource remains in memory for the session.
 
 Audit records are stored separately at `~/.oci-logan-mcp/logs/audit.log`. New records contain `args_redacted`, not a duplicate raw `args` field. The local single-user default retains redacted argument text so investigation playbooks and transcripts remain useful.
 

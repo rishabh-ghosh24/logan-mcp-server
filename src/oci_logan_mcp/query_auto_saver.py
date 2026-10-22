@@ -86,55 +86,56 @@ class QueryAutoSaver:
         Returns the saved/updated entry, or None if skipped.
         """
         try:
-            # 1. Trivial? → skip
-            score = self._compute_interest_score(query)
-            if score < 2:
-                return None
+            with self.user_store.locked_queries():
+                # 1. Trivial? → skip
+                score = self._compute_interest_score(query)
+                if score < 2:
+                    return None
 
-            # 2. Canonical semantic queries before the generic exact-query
-            # usage bump, so legacy auto-save names can be migrated in place.
-            semantic = self._semantic_metadata(query)
-            if semantic:
-                canonical = self._canonicalize_semantic_query(query, semantic, score)
-                if canonical:
-                    return canonical
+                # 2. Canonical semantic queries before the generic exact-query
+                # usage bump, so legacy auto-save names can be migrated in place.
+                semantic = self._semantic_metadata(query)
+                if semantic:
+                    canonical = self._canonicalize_semantic_query(query, semantic, score)
+                    if canonical:
+                        return canonical
 
-            # 3. Already saved? → bump use_count only
-            if self.user_store.record_usage(query):
-                return None
+                # 3. Already saved? → bump use_count only
+                if self.user_store.record_usage(query):
+                    return None
 
-            # 4. Generate metadata from query text
-            evictions: set[str] = set()
-            if semantic:
-                name = self._unique_name(semantic["name"])
-                description = semantic["description"]
-                category = semantic["category"]
-                intent_key = semantic["intent_key"]
-                query_shape = semantic["query_shape"]
-            else:
-                name, description, category = self._generate_metadata(query, evictions)
-                self._enforce_source_cap(self._extract_source(query), evictions)
-                intent_key = None
-                query_shape = None
+                # 4. Generate metadata from query text
+                evictions: set[str] = set()
+                if semantic:
+                    name = self._unique_name(semantic["name"])
+                    description = semantic["description"]
+                    category = semantic["category"]
+                    intent_key = semantic["intent_key"]
+                    query_shape = semantic["query_shape"]
+                else:
+                    name, description, category = self._generate_metadata(query, evictions)
+                    self._enforce_source_cap(self._extract_source(query), evictions)
+                    intent_key = None
+                    query_shape = None
 
-            # 5. Save via user_store
-            saved = self.user_store.save_query(
-                name=name,
-                query=query.strip(),
-                description=f"[auto-saved] {description}",
-                category=category,
-                tags=["auto-saved"],
-                interest_score=score,
-                intent_key=intent_key,
-                query_shape=query_shape,
-                origin="auto",
-                evict_auto_names=list(evictions),
-            )
-            # If collision with builtin/shared, silently skip
-            if "collision_warning" in saved:
-                return None
-            logger.info(f"Auto-saved query: {name} (score={score})")
-            return saved
+                # 5. Save via user_store
+                saved = self.user_store.save_query(
+                    name=name,
+                    query=query.strip(),
+                    description=f"[auto-saved] {description}",
+                    category=category,
+                    tags=["auto-saved"],
+                    interest_score=score,
+                    intent_key=intent_key,
+                    query_shape=query_shape,
+                    origin="auto",
+                    evict_auto_names=list(evictions),
+                )
+                # Skip rejected names and entries that cannot fit the catalog.
+                if "collision_warning" in saved or "capacity_warning" in saved:
+                    return None
+                logger.info(f"Auto-saved query: {name} (score={score})")
+                return saved
 
         except Exception as exc:
             # Never let auto-save failures break query execution
