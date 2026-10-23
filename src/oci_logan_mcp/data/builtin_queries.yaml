@@ -30,7 +30,7 @@ queries:
     query: "'Severity' = '{level}' | stats count by '{field}'"
 
   - name: error_by_host
-    description: Count errors by a discovered host field; set {field} from list_fields (Entity groups monitored entities)
+    description: Count errors grouped by {field}, selected with list_fields; use a host field for host analysis, or Entity for monitored entities
     query: "'Severity' = 'Error' | stats count by '{field}' | sort -count"
 
   - name: recent_logs

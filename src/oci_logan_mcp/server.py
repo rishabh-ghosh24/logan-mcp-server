@@ -66,7 +66,8 @@ class _SecretRedactFilter(logging.Filter):
 
 def install_secret_redaction(handler: logging.Handler) -> None:
     """Redact after interpolation on each sink, including child logger records."""
-    handler.addFilter(_SecretRedactFilter())
+    if not any(isinstance(item, _SecretRedactFilter) for item in handler.filters):
+        handler.addFilter(_SecretRedactFilter())
 
 
 logging.basicConfig(

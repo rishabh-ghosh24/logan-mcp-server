@@ -249,15 +249,21 @@ class QueryAutoSaver:
 
     def _semantic_metadata(self, query: str) -> Optional[Dict[str, str]]:
         """Return high-confidence semantic metadata for known query intents."""
-        if self._is_error_like_sources_query(query):
+        keyword_form = re.fullmatch(
+            r"\(\s*error\s+or\s+fail\s+or\s+fatal\s+or\s+critical\s+or\s+exception\s*\)"
+            r"\s*\|\s*stats\s+count\s+by\s+'log source'\s*\|\s*sort\s+-count",
+            query.strip(), re.IGNORECASE,
+        ) is not None
+        if keyword_form or self._is_error_like_sources_query(query):
             return {
                 "name": "error_like_sources_by_log_source",
                 "description": (
+                    "Count logs matching error keywords by log source" if keyword_form else
                     "Count error-like activity by log source using severity "
                     "and case-insensitive Original Log Content keyword search"
                 ),
                 "category": "errors",
-                "intent_key": "error_like_sources",
+                "intent_key": "error_keyword_sources" if keyword_form else "error_like_sources",
                 "query_shape": "count_by_log_source",
             }
         return None

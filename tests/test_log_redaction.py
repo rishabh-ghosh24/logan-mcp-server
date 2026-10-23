@@ -63,3 +63,38 @@ def test_main_redacts_root_handlers_added_after_import(monkeypatch):
     assert "safe_id=release_check" in output
     assert "LATE_HANDLER_SECRET_MARKER" not in output
     assert output.count("<REDACTED>") == 1
+
+
+def test_repeated_install_filters_each_handler_once_and_keeps_other_filters(monkeypatch):
+    import oci_logan_mcp.server as server_module
+
+    calls = []
+    real_filter = server_module._SecretRedactFilter.filter
+
+    def observed_filter(self, record):
+        calls.append(record.name)
+        return real_filter(self, record)
+
+    monkeypatch.setattr(server_module._SecretRedactFilter, "filter", observed_filter)
+    buffer = io.StringIO()
+    handlers = [logging.StreamHandler(buffer), logging.StreamHandler(buffer)]
+    other_filters = [logging.Filter(), logging.Filter()]
+    try:
+        for index, handler in enumerate(handlers):
+            handler.addFilter(other_filters[index])
+            server_module.install_secret_redaction(handler)
+            server_module.install_secret_redaction(handler)
+            handler.handle(logging.LogRecord(
+                f"cleanup.handler.{index}", logging.WARNING, "<probe>", 1,
+                "confirmation_secret=FAKE_CLEANUP_SECRET safe_id=retained", (), None,
+            ))
+            assert other_filters[index] in handler.filters
+    finally:
+        for handler in handlers:
+            handler.close()
+
+    assert calls == ["cleanup.handler.0", "cleanup.handler.1"]
+    output = buffer.getvalue()
+    assert "FAKE_CLEANUP_SECRET" not in output
+    assert output.count("safe_id=retained") == 2
+    assert output.count("<REDACTED>") == 2

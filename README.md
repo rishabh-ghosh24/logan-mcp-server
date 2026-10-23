@@ -666,7 +666,6 @@ python run_tests.py
 - Show execution/user counts on shared examples.
 - Exercise real MCP stdio and configure an eight-job CI matrix with wheel builds.
 - Move internal installer/documents out of tracked publication files and add public setup, deployment and security guidance.
-
 - Report blocked, unknown and failed tool calls as MCP errors.
 - Limit batches to ten queries and reserve budget for each live item.
 - Bind confirmations to the effective scope and wait for active operations before changing scope.
@@ -679,6 +678,8 @@ python run_tests.py
 - Use discovered grouping fields in host templates instead of assuming Host Name exists in every tenancy.
 - Replace the broad substring starter with keyword matching; counts follow keyword semantics.
 - Clarify core tool descriptions and record per-call MCP client claims in audit events.
+- Recognize the keyword starter during automatic learning while keeping legacy query semantics distinct.
+- Install confirmation-secret redaction once per logging handler.
 
 
 ### 1.2.0 (2026-04-17)

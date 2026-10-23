@@ -576,3 +576,83 @@ class TestHelpers:
 
     def test_infer_category_general(self, auto_saver):
         assert auto_saver._infer_category("just a random query") == "general"
+
+
+class TestKeywordStarterLearning:
+    QUERY = "(error or fail or fatal or critical or exception) | stats count by 'Log Source' | sort -count"
+
+    @pytest.mark.parametrize("query", [
+        QUERY,
+        "( ERROR  or fail or fatal or critical or exception )\n| stats count by 'Log Source' | sort -count",
+    ])
+    def test_successful_keyword_starter_persists_semantic_metadata(self, auto_saver, mock_user_store, query):
+        saved = auto_saver.process_successful_query(query, DUMMY_RESULT)
+
+        assert saved is not None
+        assert saved["name"] == "error_like_sources_by_log_source"
+        assert saved["category"] == "errors"
+        assert saved["intent_key"] == "error_keyword_sources"
+        assert saved["query_shape"] == "count_by_log_source"
+        assert saved["description"] == "[auto-saved] Count logs matching error keywords by log source"
+        persisted = UserStore(mock_user_store.base_dir, user_id="testuser").list_queries()
+        assert len(persisted) == 1
+        assert persisted[0]["entry_id"] == saved["entry_id"]
+        assert persisted[0]["query"] == query
+
+    def test_keyword_rename_preserves_a_distinct_legacy_query_and_usage(self, auto_saver, mock_user_store):
+        legacy_query = (
+            "(Severity in ('ERROR', 'CRITICAL', 'FATAL') or 'Original Log Content' like '%error%' "
+            "or 'Original Log Content' like '%fail%' or 'Original Log Content' like '%fatal%' "
+            "or 'Original Log Content' like '%critical%' or 'Original Log Content' like '%exception%') "
+            "and 'Original Log Content' not like '%NOERROR%' | stats count by 'Log Source' | sort -count"
+        )
+        legacy = auto_saver.process_successful_query(legacy_query, DUMMY_RESULT)
+        generic = mock_user_store.save_query(
+            name="count_by_log_source", query=self.QUERY,
+            description="[auto-saved] Count grouped by Log Source", origin="auto",
+        )
+
+        first = auto_saver.process_successful_query(self.QUERY, DUMMY_RESULT)
+        second = auto_saver.process_successful_query(self.QUERY, DUMMY_RESULT)
+
+        assert first is not None and second is not None
+        entries = {entry["query"]: entry for entry in mock_user_store.list_queries()}
+        assert set(entries) == {legacy_query, self.QUERY}
+        assert entries[legacy_query] == legacy
+        assert entries[self.QUERY]["entry_id"] == generic["entry_id"]
+        assert first["name"] == second["name"] == "error_like_sources_by_log_source_v2"
+        assert entries[self.QUERY]["use_count"] == 3
+        assert entries[self.QUERY]["intent_key"] == "error_keyword_sources"
+        assert entries[legacy_query]["intent_key"] == "error_like_sources"
+
+    def test_keyword_learning_preserves_an_explicit_user_name(self, auto_saver, mock_user_store):
+        manual = mock_user_store.save_query(
+            name="my_keyword_triage", query=self.QUERY,
+            description="My investigation", origin="manual",
+        )
+
+        saved = auto_saver.process_successful_query(self.QUERY, DUMMY_RESULT)
+
+        assert saved is not None
+        assert saved["entry_id"] == manual["entry_id"]
+        assert saved["name"] == "my_keyword_triage"
+        assert saved["description"] == "My investigation"
+        assert saved["origin"] == "manual"
+        assert saved["query"] == self.QUERY
+        assert saved["use_count"] == 2
+        assert len(mock_user_store.list_queries()) == 1
+
+    @pytest.mark.parametrize("query", [
+        "(error or fail or fatal or critical) | stats count by 'Log Source' | sort -count",
+        "(error and fail and fatal and critical and exception) | stats count by 'Log Source' | sort -count",
+        "'Message' = 'error or fail or fatal or critical or exception' | stats count by 'Log Source' | sort -count",
+        "(error or fail or fatal or critical or exception) and 'Log Group' = 'Development' | stats count by 'Log Source' | sort -count",
+        "(error or fail or fatal or critical or exception) | stats count by 'Entity' | sort -count",
+    ])
+    def test_other_query_meanings_do_not_receive_keyword_metadata(self, auto_saver, mock_user_store, query):
+        saved = auto_saver.process_successful_query(query, DUMMY_RESULT)
+
+        assert saved is not None
+        assert saved.get("intent_key") != "error_keyword_sources"
+        assert saved["name"] != "error_like_sources_by_log_source"
+        assert mock_user_store.list_queries()[0]["query"] == query
