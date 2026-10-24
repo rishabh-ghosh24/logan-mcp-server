@@ -2345,7 +2345,7 @@ class MCPHandlers:
                 )
                 data = query_result.get("data", {})
                 rows = data.get("rows", [])
-                count = data.get("total_count") or (rows[0][0] if rows and rows[0] else 0)
+                count = rows[0][0] if rows and rows[0] else 0
                 result["checks"].append({
                     "name": "Query execution",
                     "status": f"OK - {count:,} logs in last hour"
