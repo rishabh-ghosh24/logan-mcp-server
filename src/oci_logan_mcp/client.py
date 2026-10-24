@@ -138,6 +138,7 @@ class OCILogAnalyticsClient:
 
     def monitoring_client_for_region(self, region: str, *, timeout_seconds: float):
         """Get an immutable regional configuration without changing the alarm client."""
+        self.settings.require_monitoring_config()
         if not isinstance(region, str) or not re.fullmatch(r"[a-z][a-z0-9]*(?:-[a-z0-9]+)+-\d+", region):
             raise ValueError("Choose a valid OCI region name.")
         if (type(timeout_seconds) not in (int, float)

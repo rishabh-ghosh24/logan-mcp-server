@@ -3,6 +3,7 @@
 import logging
 import math
 import os
+from copy import deepcopy
 from dataclasses import asdict, dataclass, field, fields
 from pathlib import Path
 from typing import Any, Dict, Literal, Optional
@@ -38,6 +39,16 @@ class LogAnalyticsConfig:
     default_log_group_id: Optional[str] = None
 
 
+class MonitoringConfigError(ValueError):
+    """Invalid setting names, without retaining or displaying their values."""
+
+    code = "monitoring_config_invalid"
+
+    def __init__(self, settings, guidance="Correct the named settings before using Monitoring."):
+        self.settings = (settings,) if isinstance(settings, str) else tuple(settings)
+        super().__init__(f"Monitoring configuration is invalid: {', '.join(self.settings)}. {guidance}")
+
+
 @dataclass
 class MonitoringConfig:
     """Defaults for bounded, independent OCI Monitoring requests."""
@@ -57,13 +68,13 @@ class MonitoringConfig:
         ):
             value = getattr(self, name)
             if type(value) is not int or not minimum <= value <= maximum:
-                raise ValueError(f"monitoring.{name} must be an integer from {minimum} to {maximum}.")
+                raise MonitoringConfigError(f"monitoring.{name}", f"Use an integer from {minimum} to {maximum}.")
         if (type(self.timeout_seconds) not in (int, float)
                 or not math.isfinite(self.timeout_seconds) or self.timeout_seconds <= 0):
-            raise ValueError("monitoring.timeout_seconds must be a finite positive number.")
+            raise MonitoringConfigError("monitoring.timeout_seconds", "Use a finite positive number.")
         for name in ("default_compartment_id", "region"):
             if not isinstance(getattr(self, name), str):
-                raise ValueError(f"monitoring.{name} must be text.")
+                raise MonitoringConfigError(f"monitoring.{name}", "Use text.")
 
 
 @dataclass
@@ -180,6 +191,8 @@ class Settings:
     oci: OCIConfig = field(default_factory=OCIConfig)
     log_analytics: LogAnalyticsConfig = field(default_factory=LogAnalyticsConfig)
     monitoring: MonitoringConfig = field(default_factory=MonitoringConfig)
+    monitoring_config_errors: tuple[str, ...] = field(default=(), init=False)
+    _monitoring_file_data: Any = field(default=None, init=False, repr=False)
     query: QueryConfig = field(default_factory=QueryConfig)
     cache: CacheConfig = field(default_factory=CacheConfig)
     logging: LoggingConfig = field(default_factory=LoggingConfig)
@@ -193,10 +206,18 @@ class Settings:
     read_only: bool = False
     transcript_dir: Path = field(default_factory=lambda: Path.home() / ".oci-logan-mcp" / "transcripts")
 
+    def require_monitoring_config(self) -> MonitoringConfig:
+        """Reject recorded setup errors before a Monitoring operation starts."""
+        if self.monitoring_config_errors:
+            raise MonitoringConfigError(self.monitoring_config_errors)
+        return self.monitoring
+
     def to_dict(self) -> dict:
         """Convert settings to dictionary for serialization."""
         return {
-            "monitoring": asdict(self.monitoring),
+            "monitoring": (deepcopy(self._monitoring_file_data)
+                           if self._monitoring_file_data is not None and self.monitoring_config_errors
+                           else asdict(self.monitoring)),
             "audit": {"store_arguments": self.audit.store_arguments},
             "oci": {
                 "config_path": str(self.oci.config_path),
@@ -280,11 +301,13 @@ def resolve_config_path(config_path: Optional[Path] = None) -> Path:
     return CONFIG_PATH
 
 
-def load_config(config_path: Optional[Path] = None) -> Settings:
+def load_config(config_path: Optional[Path] = None, *, isolate_monitoring_errors: bool = False) -> Settings:
     """Load configuration from file, with environment variable overrides.
 
     Args:
         config_path: Optional path to config file. Uses default if not specified.
+        isolate_monitoring_errors: Record invalid Monitoring settings for runtime
+            service isolation. Strict validation remains the default for callers.
 
     Returns:
         Settings object with loaded configuration.
@@ -300,26 +323,50 @@ def load_config(config_path: Optional[Path] = None) -> Settings:
     if config_path.exists():
         with open(config_path) as f:
             data = yaml.safe_load(f) or {}
-            settings = _parse_config(data)
+            settings = _parse_config(data, isolate_monitoring_errors=isolate_monitoring_errors)
 
     # Apply environment variable overrides
-    settings = _apply_env_overrides(settings)
+    settings = _apply_env_overrides(settings, isolate_monitoring_errors=isolate_monitoring_errors)
 
     return settings
 
 
-def _parse_config(data: Dict[str, Any]) -> Settings:
+def _monitoring_failure(settings: Settings, error: MonitoringConfigError, isolate: bool) -> None:
+    if not isolate:
+        raise error from None
+    settings.monitoring_config_errors = tuple(sorted(set(settings.monitoring_config_errors + error.settings)))
+    logging.getLogger(__name__).warning("%s", error)
+
+
+def _set_monitoring_value(settings: Settings, name: str, value: Any, isolate: bool) -> None:
+    candidate = asdict(settings.monitoring)
+    candidate[name] = value
+    try:
+        validated = MonitoringConfig(**candidate)
+    except MonitoringConfigError as error:
+        _monitoring_failure(settings, error, isolate)
+    else:
+        settings.monitoring = validated
+        settings.monitoring_config_errors = tuple(
+            item for item in settings.monitoring_config_errors if item != f"monitoring.{name}"
+        )
+
+
+def _parse_config(data: Dict[str, Any], *, isolate_monitoring_errors: bool = False) -> Settings:
     """Parse configuration dictionary into Settings object."""
     settings = Settings()
 
     if "monitoring" in data:
-        monitoring_data = data["monitoring"] or {}
+        monitoring_data = data["monitoring"] if data["monitoring"] is not None else {}
         if not isinstance(monitoring_data, dict):
-            raise ValueError("monitoring must be a mapping.")
-        settings.monitoring = MonitoringConfig(**{
-            item.name: monitoring_data.get(item.name, getattr(settings.monitoring, item.name))
-            for item in fields(MonitoringConfig)
-        })
+            _monitoring_failure(settings, MonitoringConfigError("monitoring", "Use a YAML mapping."), isolate_monitoring_errors)
+        else:
+            for item in fields(MonitoringConfig):
+                if item.name in monitoring_data:
+                    _set_monitoring_value(settings, item.name, monitoring_data[item.name], isolate_monitoring_errors)
+        if settings.monitoring_config_errors:
+            # Keep bad YAML intact if an unrelated log setting is later saved.
+            settings._monitoring_file_data = deepcopy(monitoring_data)
 
     if oci_data := data.get("oci"):
         settings.oci = OCIConfig(
@@ -460,7 +507,7 @@ def _parse_config(data: Dict[str, Any]) -> Settings:
     return settings
 
 
-def _apply_env_overrides(settings: Settings) -> Settings:
+def _apply_env_overrides(settings: Settings, *, isolate_monitoring_errors: bool = False) -> Settings:
     """Override settings with environment variables."""
     env_mappings = {
         "OCI_LA_NAMESPACE": ("log_analytics", "namespace"),
@@ -522,7 +569,6 @@ def _apply_env_overrides(settings: Settings) -> Settings:
                 raw_audit,
             )
 
-    monitoring = asdict(settings.monitoring)
     for suffix, name, converter in (
         ("COMPARTMENT", "default_compartment_id", str),
         ("REGION", "region", str),
@@ -535,10 +581,11 @@ def _apply_env_overrides(settings: Settings) -> Settings:
         raw = os.environ.get("OCI_LOGAN_MONITORING_" + suffix)
         if raw is not None and raw != "":
             try:
-                monitoring[name] = converter(raw)
+                value = converter(raw)
             except (TypeError, ValueError):
-                raise ValueError(f"monitoring.{name} has an invalid environment value.") from None
-    settings.monitoring = MonitoringConfig(**monitoring)
+                _monitoring_failure(settings, MonitoringConfigError(f"monitoring.{name}"), isolate_monitoring_errors)
+            else:
+                _set_monitoring_value(settings, name, value, isolate_monitoring_errors)
     return settings
 
 

@@ -244,7 +244,7 @@ class OCILogAnalyticsMCPServer:
                 "the server before using it with an MCP client."
             )
 
-        self.settings = load_config()
+        self.settings = load_config(isolate_monitoring_errors=True)
 
         # Initialize components
         self.cache = CacheManager(self.settings.cache)
