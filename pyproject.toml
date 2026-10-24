@@ -24,8 +24,8 @@ classifiers = [
     "Topic :: System :: Logging",
 ]
 dependencies = [
-    "mcp>=1.0.0,<2",
-    "oci>=2.90.0",
+    "mcp>=1.22.0,<2",
+    "oci>=2.104.2",
     "matplotlib>=3.7.0",
     "pandas>=2.0.0",
     "pyyaml>=6.0",

@@ -8,6 +8,8 @@ Connect an MCP-compatible assistant to [OCI Log Analytics](https://docs.oracle.c
 
 Use Python 3.11 to 3.14. In the commands below, `python3` must point to a supported version.
 
+Installation requires MCP SDK 1.22.0 or later within version 1, and OCI SDK 2.104.2 or later. Older versions lack APIs used by the server.
+
 ```bash
 git clone https://github.com/rishabh-ghosh24/logan-mcp-server.git
 cd logan-mcp-server
@@ -797,6 +799,8 @@ python run_tests.py
 ## Version History
 
 ### 1.3.0 (unreleased)
+
+- Require MCP SDK 1.22.0 and OCI SDK 2.104.2 or later so installations include the APIs used by the server.
 
 - Preserve OCI's native metric units while accepting capitalization variants of percent.
 - Report aggregate log counts accurately in connection diagnostics, including zero.
