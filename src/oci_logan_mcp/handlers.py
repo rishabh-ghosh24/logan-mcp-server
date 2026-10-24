@@ -3,6 +3,7 @@
 import hashlib
 import asyncio
 from contextlib import asynccontextmanager
+from functools import partial
 import json
 import logging
 import secrets
@@ -61,6 +62,10 @@ from .report_store import (
 )
 from .sanitize import sanitize_query_text
 from .promote import SINGLE_USER_MIN_INTEREST
+from .metrics.audit import METRIC_TOOLS, metric_audit_arguments, metric_audit_summary
+from .metrics.runtime import MonitoringRuntime
+from .metrics.serialization import metrics_content
+from .metrics.service import MetricsService
 
 if TYPE_CHECKING:
     from .catalog import CatalogEntry
@@ -131,10 +136,12 @@ class MCPHandlers:
         preference_store: Optional[PreferenceStore] = None,
         secret_store: Optional[SecretStore] = None,
         audit_logger: Optional[AuditLogger] = None,
+        scope_guard: ScopeGuard | None = None,
+        metrics_runtime: MonitoringRuntime | None = None,
     ):
         """Initialize MCP handlers."""
         self.settings = settings
-        self.scope_guard = ScopeGuard()
+        self.scope_guard = scope_guard if scope_guard is not None else ScopeGuard()
         self.oci_client = oci_client
         self.cache = cache
         self.query_logger = query_logger
@@ -142,6 +149,12 @@ class MCPHandlers:
         self.user_store = user_store
         self.preference_store = preference_store
         self.audit_logger = audit_logger
+        self._shared_compartment_id = None
+        self._logs_last_tested = None
+        if preference_store is not None:
+            remembered = preference_store.get(COMPARTMENT_PREFERENCE_KEY)
+            if isinstance(remembered, dict) and isinstance(remembered.get('resolved_value'), str):
+                self._shared_compartment_id = remembered['resolved_value'] or None
 
         if secret_store is None:
             from pathlib import Path
@@ -174,6 +187,10 @@ class MCPHandlers:
             oci_client, cache, query_logger,
             estimator=self._query_estimator,
             budget_tracker=self._budget_tracker,
+        )
+        self.metrics_service = MetricsService(
+            settings, oci_client, self._budget_tracker,
+            metrics_runtime if metrics_runtime is not None else MonitoringRuntime(),
         )
         self.diff_tool = DiffTool(self.query_engine)
         self.pivot_tool = PivotTool(self.query_engine)
@@ -331,6 +348,7 @@ class MCPHandlers:
                 "get_playbook": self._get_playbook,
                 "delete_playbook": self._delete_playbook,
             }
+            handlers.update({tool: partial(self._metric_tool, tool) for tool in METRIC_TOOLS})
             with audit_client_context(client_metadata):
                 return await self._handle_tool_call_locked(name, arguments, handlers, client_metadata=client_metadata)
 
@@ -338,7 +356,9 @@ class MCPHandlers:
         self, name: str, arguments: Dict[str, Any], handlers: Dict, *, client_metadata: dict | None = None
     ) -> List[Dict[str, Any]]:
         """Route a tool call while its effective scope is stable."""
-        effective_scope = self._effective_scope(arguments)
+        safe_diagnostics = (name in METRIC_TOOLS or name == 'get_current_context'
+            or (name == 'test_connection' and arguments.get('service', 'logs') != 'logs'))
+        effective_scope = {} if safe_diagnostics else self._effective_scope(arguments)
 
         user_id = self.user_store.user_id
         trace_id = f"trace_{secrets.token_hex(16)}"
@@ -529,11 +549,24 @@ class MCPHandlers:
                 audit_ref=audit_ref,
                 audit_strictness=audit_strictness,
                 client_metadata=client_metadata,
-                result_summary=self._summarize_tool_result(result, elapsed_ms),
+                result_summary=(metric_audit_summary(json.loads(result[0]['text']), execution_ms=elapsed_ms)
+                    if safe_diagnostics else self._summarize_tool_result(result, elapsed_ms)),
             )
             return result
+        except asyncio.CancelledError:
+            if safe_diagnostics:
+                self._write_audit_event(
+                    user=user_id, tool=name, args=arguments, outcome='cancelled',
+                    trace_id=trace_id, audit_ref=audit_ref, audit_strictness=audit_strictness,
+                    client_metadata=client_metadata,
+                    result_summary={'success': False, 'execution_ms': int((time.perf_counter()-start)*1000)},
+                )
+            raise
         except Exception as e:
-            logger.exception(f"Error in tool {name}")
+            if safe_diagnostics:
+                logger.error('Monitoring or service diagnostics failed for %s', name)
+            else:
+                logger.exception(f"Error in tool {name}")
             elapsed_ms = int((time.perf_counter() - start) * 1000)
             self._write_audit_event(
                 user=user_id,
@@ -549,10 +582,16 @@ class MCPHandlers:
                     "execution_ms": elapsed_ms,
                     "error_type": type(e).__name__,
                 },
-                error=str(e),
+                error='Service operation failed.' if safe_diagnostics else str(e),
                 error_type=type(e).__name__,
             )
+            if safe_diagnostics:
+                return self._error_response('service_unavailable', 'The service operation could not complete. Check configuration and retry explicitly.')
             return [{"type": "text", "text": f"Error executing {name}: {str(e)}", "is_error": True}]
+
+    async def _metric_tool(self, name: str, arguments: Dict) -> List[Dict]:
+        result = await self.metrics_service.call(name, arguments, shared_compartment_id=self._shared_compartment_id)
+        return metrics_content(result.payload, is_error=result.is_error)
 
     def _json_response(self, payload: Any) -> List[Dict]:
         return [{"type": "text", "text": json.dumps(payload, indent=2, default=str)}]
@@ -694,6 +733,9 @@ class MCPHandlers:
         return summary
 
     def _clean_args_for_audit(self, tool_name: str, arguments: Dict[str, Any]) -> Dict[str, Any]:
+        if (tool_name in METRIC_TOOLS
+                or (tool_name == 'test_connection' and arguments.get('service', 'logs') != 'logs')):
+            return metric_audit_arguments(tool_name, arguments)
         clean_args = self._strip_confirmation_args(arguments)
         if tool_name == "deliver_report":
             clean_args = dict(clean_args)
@@ -2184,6 +2226,7 @@ class MCPHandlers:
     async def _set_compartment(self, args: Dict) -> List[Dict]:
         """Set compartment context and remember the user's choice."""
         new_id = args["compartment_id"]
+        self._shared_compartment_id = new_id
         self.oci_client.compartment_id = new_id
         self.settings.log_analytics.default_compartment_id = new_id
         self.cache.clear()
@@ -2210,6 +2253,14 @@ class MCPHandlers:
             "compartment_id": self.oci_client.compartment_id,
             "default_time_range": self.settings.query.default_time_range,
             "max_results": self.settings.query.max_results,
+            "services": {
+                "log_analytics": {
+                    "configured": bool(self.oci_client.namespace and self.oci_client.compartment_id),
+                    "client_created": self.oci_client.__dict__.get('_OCILogAnalyticsClient__la_client') is not None,
+                    "last_tested": self._logs_last_tested,
+                },
+                "monitoring": self.metrics_service.readiness(),
+            },
         }
         return [{"type": "text", "text": json.dumps(context, indent=2)}]
 
@@ -2222,6 +2273,26 @@ class MCPHandlers:
         return [{"type": "text", "text": json.dumps(compartments, indent=2)}]
 
     async def _test_connection(self, args: Dict) -> List[Dict]:
+        """Probe only requested services while retaining the default logs contract."""
+        service = args.get('service', 'logs')
+        if service not in ('logs', 'metrics', 'all'):
+            return self._error_response('invalid_service', 'Choose logs, metrics or all.')
+        if service == 'logs':
+            return await self._test_logs_connection(args)
+        metrics = await self.metrics_service.check_connection(shared_compartment_id=self._shared_compartment_id)
+        if service == 'metrics':
+            return metrics_content(metrics.payload, is_error=metrics.is_error)
+        logs_content = await self._test_logs_connection(args)
+        logs = json.loads(logs_content[0]['text'])
+        logs_failed = logs['status'] != 'All systems operational'
+        failed = metrics.is_error or logs_failed
+        payload = {'status': 'partial' if failed else 'success',
+            'services': {'logs': logs, 'metrics': metrics.payload}}
+        if failed:
+            payload['error'] = {'code': 'service_check_failed'}
+        return metrics_content(payload, is_error=failed)
+
+    async def _test_logs_connection(self, args: Dict) -> List[Dict]:
         """Test connection to OCI Log Analytics."""
         result = {
             "status": "unknown",
@@ -2295,6 +2366,10 @@ class MCPHandlers:
         except Exception as e:
             result["status"] = f"Connection test failed: {str(e)}"
 
+        self._logs_last_tested = {
+            'at': datetime.now(timezone.utc).isoformat().replace('+00:00', 'Z'),
+            'status': 'success' if result['status'] == 'All systems operational' else 'error',
+        }
         return [{"type": "text", "text": json.dumps(result, indent=2)}]
 
     async def _find_compartment(self, args: Dict) -> List[Dict]:

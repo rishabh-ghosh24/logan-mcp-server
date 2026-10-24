@@ -38,6 +38,7 @@ from .tools import get_tools, tool_title
 from .read_only_guard import MUTATING_TOOLS, OUTBOUND_TOOLS
 from .resources import get_resources
 from .handlers import MCPHandlers, COMPARTMENT_PREFERENCE_KEY, ScopeGuard
+from .metrics.runtime import MonitoringRuntime
 from ._version import __version__
 
 SERVER_INSTRUCTIONS = (
@@ -157,6 +158,8 @@ class OCILogAnalyticsMCPServer:
         self.preference_store = None
         self.handlers = None
         self._init_error: str | None = None
+        self.scope_guard = ScopeGuard()
+        self.metrics_runtime = MonitoringRuntime()
 
         self._setup_handlers()
 
@@ -352,6 +355,8 @@ class OCILogAnalyticsMCPServer:
                 preference_store=self.preference_store,
                 secret_store=self.secret_store,
                 audit_logger=self.audit_logger,
+                scope_guard=self.scope_guard,
+                metrics_runtime=self.metrics_runtime,
             )
 
         logger.info("OCI Log Analytics MCP Server initialized")

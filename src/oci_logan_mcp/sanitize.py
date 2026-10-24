@@ -101,6 +101,11 @@ def redact_dict(obj):
     - Tuples are converted to lists.
     """
     if isinstance(obj, dict):
+        if (set(obj) == {'sha256', 'length'} and isinstance(obj['sha256'], str)
+                and re.fullmatch(r'[0-9a-f]{64}', obj['sha256'])
+                and type(obj['length']) is int and obj['length'] >= 0):
+            # A canonical fingerprint contains no source text to redact.
+            return dict(obj)
         result = {}
         for k, v in obj.items():
             if isinstance(k, str) and k.lower() in _SECRETISH_KEYS:

@@ -60,3 +60,9 @@ class ResponseLimits:
     max_series: int = 20
     max_datapoints: int = 4000
     max_response_bytes: int = 262144
+
+
+@dataclass(frozen=True)
+class MetricResult:
+    payload: dict
+    is_error: bool = False
