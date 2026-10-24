@@ -18,15 +18,20 @@ def _is_timeout(error: Exception) -> bool:
 
 
 def _safe_error(error: Exception) -> MetricsError:
-    if _is_timeout(error):
-        return MetricsError('monitoring_timeout','Monitoring exceeded its deadline. Narrow the request before trying again.')
+    status, code, request_id = None, 'monitoring_unavailable', None
     if isinstance(error,oci.exceptions.ServiceError):
         code = error.code if isinstance(error.code,str) and re.fullmatch(r'[A-Za-z0-9_.-]{1,128}',error.code) else 'monitoring_service_error'
         request_id = error.request_id
         if not isinstance(request_id,str) or not re.fullmatch(r'[A-Za-z0-9_./:-]{1,256}',request_id):
             request_id = None
+        status = error.status if type(error.status) is int else None
+    if _is_timeout(error):
+        return MetricsError('monitoring_timeout','Monitoring exceeded its deadline. Narrow the request before trying again.',
+                            status=status, request_id=request_id,
+                            details={'service_code':code} if isinstance(error,oci.exceptions.ServiceError) else None)
+    if isinstance(error,oci.exceptions.ServiceError):
         return MetricsError(code,'OCI Monitoring rejected the request. Check scope, IAM permissions and query syntax.',
-                            status=error.status if type(error.status) is int else None, request_id=request_id)
+                            status=status, request_id=request_id)
     return MetricsError('monitoring_unavailable','Monitoring is unavailable. Check OCI setup and use test_connection.')
 
 
