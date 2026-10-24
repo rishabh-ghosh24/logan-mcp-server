@@ -803,6 +803,7 @@ python run_tests.py
 - Require MCP SDK 1.22.0 and OCI SDK 2.104.2 or later so installations include the APIs used by the server.
 - Create native saved searches with their query and widget configuration, and retain support for existing scheduled-task IDs.
 - Translate five-field alert schedules to OCI's cron format and reject invalid field ranges before creating resources.
+- Compare alert thresholds with the value each scheduled run extracts, over a window that spans the schedule, and run every 15 minutes by default.
 - Fetch entity inventories with larger pages outside the event loop, and use the SDK's supported source filter for field discovery.
 
 - Preserve OCI's native metric units while accepting capitalization variants of percent.

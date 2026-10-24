@@ -3,6 +3,7 @@
 from typing import List, Dict, Any
 
 from .time_parser import TIME_RANGES
+from .alarm_service import DEFAULT_ALERT_SCHEDULE
 from .metrics.tools import get_metric_tools
 
 TIME_RANGE_VALUES = list(TIME_RANGES)
@@ -1471,7 +1472,9 @@ def get_tools() -> List[Dict[str, Any]]:
             "destructive": True,
             "description": (
                 "Create an OCI-native autonomous alert from a Log Analytics query. "
-                "The alert fires 24/7 via OCI Monitoring, independent of the MCP server. "
+                "On each scheduled run OCI evaluates the query over the previous hour and posts "
+                "its aggregated value; an OCI Monitoring alarm compares that value with the "
+                "threshold, independent of the MCP server. "
                 "Requires a numeric aggregation query (e.g. '| stats count'). "
                 "TWO-FACTOR CONFIRMATION REQUIRED: First call returns a confirmation token and summary. "
                 "To execute, re-invoke with confirmation_token and your confirmation secret."
@@ -1483,7 +1486,7 @@ def get_tools() -> List[Dict[str, Any]]:
                     "display_name": {"type": "string", "description": "Alert name."},
                     "query": {"type": "string", "description": "Log Analytics query (must include | stats aggregation)."},
                     "destination_topic_id": {"type": "string", "description": "ONS topic OCID for notifications."},
-                    "schedule": {"type": "string", "description": "Cron schedule (5-field). Default: '0 */15 * * *'"},
+                    "schedule": {"type": "string", "description": f"Cron schedule (5-field). Default: '{DEFAULT_ALERT_SCHEDULE}' (every 15 minutes)"},
                     "threshold_value": {"type": "integer", "description": "Numeric threshold. Default: 0"},
                     "threshold_operator": {"type": "string", "enum": ["gt", "gte", "eq", "lt", "lte"], "description": "Comparison operator. Default: 'gt'"},
                     "severity": {"type": "string", "enum": ["CRITICAL", "ERROR", "WARNING", "INFO"], "description": "Alert severity. Default: 'CRITICAL'"},

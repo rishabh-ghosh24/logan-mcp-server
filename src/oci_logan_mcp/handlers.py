@@ -26,7 +26,7 @@ from .preferences import PreferenceStore
 from .query_auto_saver import QueryAutoSaver
 from .config import Settings
 from .resources import get_syntax_guide, get_reference_docs
-from .alarm_service import AlarmService
+from .alarm_service import AlarmService, DEFAULT_ALERT_SCHEDULE
 from .dashboard_service import DashboardService
 from .notification_service import NotificationService
 from .confirmation import ConfirmationManager
@@ -2686,7 +2686,7 @@ class MCPHandlers:
             display_name=args["display_name"],
             query=args["query"],
             destination_topic_id=args["destination_topic_id"],
-            schedule=args.get("schedule", "0 */15 * * *"),
+            schedule=args.get("schedule", DEFAULT_ALERT_SCHEDULE),
             threshold_value=args.get("threshold_value", 0),
             threshold_operator=args.get("threshold_operator", "gt"),
             severity=args.get("severity", "CRITICAL"),

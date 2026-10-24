@@ -21,13 +21,46 @@ _CRON_RE = re.compile(
 )
 _AGGREGATION_RE = re.compile(r"\|\s*stats\b", re.IGNORECASE)
 
+# Every 15 minutes; the task, handler and tool description share this value.
+DEFAULT_ALERT_SCHEDULE = "*/15 * * * *"
+
 
 class AlarmService:
     def __init__(self, oci_client: OCILogAnalyticsClient, cache: CacheManager):
         self.oci_client = oci_client
         self.cache = cache
 
+    _OPERATORS = {"gt": ">", "gte": ">=", "eq": "==", "lt": "<", "lte": "<="}
+
     def _validate_cron(self, expr: str) -> str:
+        return self._parse_cron(expr)[0]
+
+    @classmethod
+    def alarm_interval(cls, schedule: str) -> str:
+        """MQL interval long enough that the latest run's datapoint is always in the window."""
+        _, fields, values = cls._parse_cron(schedule)
+        minutes, hours = sorted(values[0]), sorted(values[1])
+        if fields[1] == "*":
+            runs, period = minutes, 60
+        else:
+            runs, period = sorted(h * 60 + m for h in hours for m in minutes), 1440
+        gap = max([b - a for a, b in zip(runs, runs[1:])] + [period - runs[-1] + runs[0]])
+        if any(field != "*" for field in fields[2:]) or gap >= 1440:
+            return "1d"
+        if gap < 60:
+            return f"{gap}m"
+        if gap % 60 == 0:
+            return f"{gap // 60}h"
+        return "1d"
+
+    @classmethod
+    def _condition(cls, metric_name: str, interval: str, operator: str, threshold) -> str:
+        """Compare the extracted value itself; count() would only count datapoints."""
+        statistic = "min" if operator in ("lt", "lte") else "max"
+        return f"{metric_name}[{interval}].{statistic}() {cls._OPERATORS.get(operator, '>')} {threshold}"
+
+    @classmethod
+    def _parse_cron(cls, expr: str):
         if not _CRON_RE.match(expr.strip()):
             raise ValueError(
                 f"Invalid cron expression '{expr}'. "
@@ -60,7 +93,7 @@ class AlarmService:
             day = "?"
             if weekday != "*":
                 weekday = ",".join(str(value) for value in sorted({value % 7 + 1 for value in values[4]}))
-        return f"0 {minute} {hour} {day} {month} {weekday}"
+        return f"0 {minute} {hour} {day} {month} {weekday}", fields, values
 
     def _validate_metric_query(self, query: str) -> None:
         if not _AGGREGATION_RE.search(query):
@@ -75,7 +108,7 @@ class AlarmService:
         display_name: str,
         query: str,
         destination_topic_id: str,
-        schedule: str = "0 */15 * * *",
+        schedule: str = DEFAULT_ALERT_SCHEDULE,
         threshold_value: int = 0,
         threshold_operator: str = "gt",
         severity: str = "CRITICAL",
@@ -84,6 +117,7 @@ class AlarmService:
         cid = compartment_id or self.oci_client.compartment_id
 
         native_schedule = self._validate_cron(schedule)
+        interval = self.alarm_interval(schedule)
         self._validate_metric_query(query)
         await self.oci_client.get_topic(destination_topic_id)
 
@@ -147,9 +181,7 @@ class AlarmService:
             task = await self.oci_client.create_scheduled_task(task_details)
             task_id = task["id"]
 
-            op_map = {"gt": ">", "gte": ">=", "eq": "==", "lt": "<", "lte": "<="}
-            op_sym = op_map.get(threshold_operator, ">")
-            mql = f"{metric_name}[1m].count() {op_sym} {threshold_value}"
+            mql = self._condition(metric_name, interval, threshold_operator, threshold_value)
             alarm_details = oci.monitoring.models.CreateAlarmDetails(
                 display_name=display_name,
                 compartment_id=cid,
@@ -159,7 +191,8 @@ class AlarmService:
                 severity=severity,
                 destinations=[destination_topic_id],
                 is_enabled=True,
-                pending_duration="PT5M",
+                # One datapoint per run: the first breaching evaluation must fire.
+                pending_duration="PT1M",
                 body=f"Logan alert: {display_name}\nQuery: {query}",
                 message_format="ONS_OPTIMIZED",
                 freeform_tags={
@@ -308,17 +341,21 @@ class AlarmService:
 
         alarm_update_fields = {}
         current_mql = alarm.get("query", "")
-        if threshold_value is not None or threshold_operator is not None:
+        if threshold_value is not None or threshold_operator is not None or schedule:
             metric_name = current_mql.split("[")[0].strip()
             if not metric_name:
                 raise ValueError(
                     "Cannot update threshold: alarm query is missing or not in Logan MQL format. "
                     "Retrieve the alarm with get_alarm to inspect its current query."
                 )
-            op_map = {"gt": ">", "gte": ">=", "eq": "==", "lt": "<", "lte": "<="}
-            op_sym = op_map.get(threshold_operator or "gt", ">")
-            tv = threshold_value if threshold_value is not None else 0
-            alarm_update_fields["query"] = f"{metric_name}[1m].count() {op_sym} {tv}"
+            current = re.search(r"\)\s*(>=|<=|==|>|<)\s*(-?\d+(?:\.\d+)?)\s*$", current_mql)
+            symbols = {symbol: name for name, symbol in self._OPERATORS.items()}
+            operator = threshold_operator or (symbols[current.group(1)] if current else "gt")
+            tv = threshold_value if threshold_value is not None else (current.group(2) if current else 0)
+            effective_schedule = schedule or tags.get("logan_schedule") or DEFAULT_ALERT_SCHEDULE
+            alarm_update_fields["query"] = self._condition(
+                metric_name, self.alarm_interval(effective_schedule), operator, tv,
+            )
         if severity:
             alarm_update_fields["severity"] = severity
         if destination_topic_id:
