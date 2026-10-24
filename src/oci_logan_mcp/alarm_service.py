@@ -23,6 +23,9 @@ _AGGREGATION_RE = re.compile(r"\|\s*stats\b", re.IGNORECASE)
 
 # Every 15 minutes; the task, handler and tool description share this value.
 DEFAULT_ALERT_SCHEDULE = "*/15 * * * *"
+# The task posts under this resource group; the alarm must name the same one, because an
+# alarm without a resource group only sees metrics that have none.
+METRIC_RESOURCE_GROUP = "logan_alerts"
 
 
 class AlarmService:
@@ -173,7 +176,7 @@ class AlarmService:
                         compartment_id=cid,
                         namespace="logan_custom_metrics",
                         metric_name=metric_name,
-                        resource_group="logan_alerts",
+                        resource_group=METRIC_RESOURCE_GROUP,
                     ),
                 ),
                 freeform_tags={**base_tags, "logan_kind": "alert_metric_task"},
@@ -187,6 +190,7 @@ class AlarmService:
                 compartment_id=cid,
                 metric_compartment_id=cid,
                 namespace="logan_custom_metrics",
+                resource_group=METRIC_RESOURCE_GROUP,
                 query=mql,
                 severity=severity,
                 destinations=[destination_topic_id],
@@ -356,6 +360,8 @@ class AlarmService:
             alarm_update_fields["query"] = self._condition(
                 metric_name, self.alarm_interval(effective_schedule), operator, tv,
             )
+            # Repairs alarms created before the resource group was set on the alarm.
+            alarm_update_fields["resource_group"] = METRIC_RESOURCE_GROUP
         if severity:
             alarm_update_fields["severity"] = severity
         if destination_topic_id:

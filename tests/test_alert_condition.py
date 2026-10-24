@@ -73,6 +73,35 @@ class TestCreateCondition:
         assert alarm.query.endswith("[5m].min() < 5")
 
 
+class TestResourceGroup:
+    """The task posts under resource group logan_alerts; an alarm without that resource group
+    only sees metrics that have none, so it never fires (live finding, 2026-10-24)."""
+
+    @pytest.mark.asyncio
+    async def test_alarm_matches_the_metric_resource_group(self):
+        client = make_client()
+
+        await make_svc(client).create_alert(
+            display_name="t", query="* | stats count", destination_topic_id="ocid1.topic.1",
+        )
+
+        task = client.create_scheduled_task.call_args[0][0]
+        alarm = client.create_alarm.call_args[0][0]
+        assert task.action.metric_extraction.resource_group == "logan_alerts"
+        assert alarm.resource_group == "logan_alerts"
+
+    @pytest.mark.asyncio
+    async def test_condition_update_repairs_a_legacy_alarm_without_resource_group(self):
+        client = make_client()
+        client.get_alarm.return_value = existing_alarm("logan_alert_abc[1m].count() > 0", "0 */15 * * *")
+        client.update_alarm.return_value = {"id": "ocid1.alarm.1"}
+
+        await make_svc(client).update_alert("ocid1.alarm.1", threshold_value=1)
+
+        alarm = client.update_alarm.call_args[0][1]
+        assert alarm.resource_group == "logan_alerts"
+
+
 class TestAlarmInterval:
     @pytest.mark.parametrize("schedule, interval", [
         ("*/5 * * * *", "5m"),
