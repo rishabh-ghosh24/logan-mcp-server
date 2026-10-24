@@ -2,8 +2,10 @@
 """Detect and redact sensitive data before promoting queries to shared storage."""
 from __future__ import annotations
 
-import re
 import hashlib
+from ipaddress import IPv6Address
+import re
+from typing import Optional
 
 
 class AuditFingerprint(dict):
@@ -11,8 +13,6 @@ class AuditFingerprint(dict):
 
     def __init__(self, text: str):
         super().__init__(sha256=hashlib.sha256(text.encode('utf-8')).hexdigest(), length=len(text))
-from ipaddress import IPv6Address
-from typing import Optional
 
 OCID_RE = re.compile(r"ocid1\.[A-Za-z0-9_.-]+")
 IPV4_RE = re.compile(r"(?<![\d.])(?:\d{1,3}\.){3}\d{1,3}(?![\d.])")

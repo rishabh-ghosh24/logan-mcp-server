@@ -798,6 +798,9 @@ python run_tests.py
 
 ### 1.3.0 (unreleased)
 
+- Preserve OCI's native metric units while accepting capitalization variants of percent.
+- Report aggregate log counts accurately in connection diagnostics, including zero.
+- Return safe generic errors when service-context diagnostics fail.
 - Add five Monitoring metric tools and two resources for MQL syntax and starter queries.
 - Query metrics without configuring Log Analytics, with separate service initialization.
 - Include 23 reviewed metric definitions with source provenance; withhold unverified candidates.
