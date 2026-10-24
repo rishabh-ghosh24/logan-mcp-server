@@ -1,7 +1,7 @@
 """Keep metrics text out of operational audit records under both retention modes."""
 from collections.abc import Mapping
-import hashlib
 import re
+from ..sanitize import AuditFingerprint
 
 METRIC_TOOLS = frozenset({
     'list_metric_namespaces', 'list_metrics', 'search_metric_catalog',
@@ -11,7 +11,7 @@ METRIC_TOOLS = frozenset({
 
 def _fingerprint(value):
     text = value if isinstance(value, str) else str(type(value).__name__)
-    return {'sha256': hashlib.sha256(text.encode('utf-8')).hexdigest(), 'length': len(text)}
+    return AuditFingerprint(text)
 
 
 def metric_audit_arguments(name: str, arguments: Mapping) -> dict:

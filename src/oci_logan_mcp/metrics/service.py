@@ -96,6 +96,12 @@ class MetricsService:
             if name == 'query_catalog_metric':
                 catalog = self._load_catalog()
                 definition = catalog.require(arguments.get('metric_key'))
+                filters = arguments.get('dimension_filters', {})
+                if isinstance(filters, Mapping) and any(
+                        isinstance(value, str) and any(char in ('"', '\\') or ord(char) < 32 or ord(char) == 127
+                            for char in value) for value in filters.values()):
+                    raise MetricsError('unsupported_exact_filter',
+                        'Catalog exact filters do not support quotes, backslashes or control characters. Use raw MQL for expert expressions.')
                 plan = plan_catalog_query(definition, arguments, catalog_version=catalog.version)
             elif name == 'query_metrics':
                 plan = build_raw_plan(arguments)

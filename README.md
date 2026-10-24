@@ -208,6 +208,11 @@ the catalog. The catalog adapts reviewed data from Argus and OCI-Mon; source
 commits, official URLs and withheld definitions ship in its manifest. Source
 review does not establish live coverage in your tenancy.
 
+Catalog filters refuse quotes, backslashes and control characters until their
+escaped meaning is verified against a matching live stream. Literal `*` and `|`
+remain supported with equality. Use expert raw MQL for explicit `=~` fuzzy matching
+or other advanced expressions.
+
 The query interval and resolution are different. Raw resolution defaults to the
 largest supported value no greater than every operand interval; catalog
 resolution follows its interval. An explicit resolution cannot exceed an operand

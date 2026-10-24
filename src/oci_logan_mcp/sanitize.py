@@ -3,6 +3,14 @@
 from __future__ import annotations
 
 import re
+import hashlib
+
+
+class AuditFingerprint(dict):
+    """Mark a fingerprint generated inside the process, never by remote JSON."""
+
+    def __init__(self, text: str):
+        super().__init__(sha256=hashlib.sha256(text.encode('utf-8')).hexdigest(), length=len(text))
 from ipaddress import IPv6Address
 from typing import Optional
 
@@ -101,10 +109,8 @@ def redact_dict(obj):
     - Tuples are converted to lists.
     """
     if isinstance(obj, dict):
-        if (set(obj) == {'sha256', 'length'} and isinstance(obj['sha256'], str)
-                and re.fullmatch(r'[0-9a-f]{64}', obj['sha256'])
-                and type(obj['length']) is int and obj['length'] >= 0):
-            # A canonical fingerprint contains no source text to redact.
+        if isinstance(obj, AuditFingerprint):
+            # Only internally generated fingerprints bypass identifier masking.
             return dict(obj)
         result = {}
         for k, v in obj.items():
