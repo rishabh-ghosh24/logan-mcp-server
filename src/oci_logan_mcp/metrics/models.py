@@ -1,6 +1,8 @@
 """Immutable Monitoring contracts and safe failures."""
 
 from dataclasses import dataclass
+from datetime import datetime
+from typing import Literal
 
 
 class MetricsError(ValueError):
@@ -30,3 +32,31 @@ class MetricDefinition:
     default_aggregation: str = "mean"
     default_interval: str = "5m"
     source_urls: tuple[str, ...] = ()
+
+
+@dataclass(frozen=True)
+class MetricScope:
+    compartment_id: str
+    region: str
+    include_subcompartments: bool = False
+    tenancy_id: str | None = None
+
+
+@dataclass(frozen=True)
+class QueryPlan:
+    namespace: str
+    queries: tuple[str, ...]
+    start: 'datetime'
+    end: 'datetime'
+    resolution: str
+    resolution_source: 'Literal["explicit", "query_interval", "catalog_interval"]'
+    resource_group: str | None = None
+    catalog_key: str | None = None
+    catalog_version: str | None = None
+
+
+@dataclass(frozen=True)
+class ResponseLimits:
+    max_series: int = 20
+    max_datapoints: int = 4000
+    max_response_bytes: int = 262144
