@@ -8,6 +8,7 @@ import json
 import os
 from pathlib import Path
 import re
+import shutil
 import sys
 
 from mcp import ClientSession, StdioServerParameters
@@ -199,6 +200,11 @@ def main(argv=None):
     parser.add_argument('--region')
     parser.add_argument('--output-dir',type=Path,required=True)
     arguments=parser.parse_args(argv)
+    interpreter=shutil.which(os.path.expanduser(arguments.python))
+    if interpreter is None:
+        parser.error('--python must name an executable file or a command on PATH.')
+    # Keep virtual-environment symlinks while fixing the caller's working directory.
+    arguments.python=os.path.abspath(interpreter)
     arguments.output_dir.mkdir(mode=0o700,parents=True,exist_ok=False)
     summary={'status':'pending','sdk_version':oci.__version__,'positive_query_count':0,
         'direct_comparison':'unverified','starter_results':[],

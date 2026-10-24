@@ -798,6 +798,12 @@ python run_tests.py
 
 ### 1.3.0 (unreleased)
 
+- Add five Monitoring metric tools and two resources for MQL syntax and starter queries.
+- Query metrics without configuring Log Analytics, with separate service initialization.
+- Include 23 reviewed metric definitions with source provenance; withhold unverified candidates.
+- Check logs, metrics or both with `test_connection(service=...)`.
+- Add Monitoring settings and `OCI_LOGAN_MONITORING_*` environment overrides.
+- Document separate `inspect metrics` and `read metrics` IAM permissions.
 - Fix wheel construction and include both query catalogs.
 - Set the Python minimum to 3.11 and report one package version.
 - Publish server instructions, tool titles and annotations.
