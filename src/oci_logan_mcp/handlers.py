@@ -66,6 +66,7 @@ from .metrics.audit import METRIC_TOOLS, metric_audit_arguments, metric_audit_su
 from .metrics.runtime import MonitoringRuntime
 from .metrics.serialization import metrics_content
 from .metrics.service import MetricsService
+from .metrics.resources import read_monitoring_resource
 
 if TYPE_CHECKING:
     from .catalog import CatalogEntry
@@ -825,6 +826,9 @@ class MCPHandlers:
 
     async def _handle_resource_read_locked(self, uri: str) -> Any:
         """Read a resource while its namespace and compartment remain stable."""
+        uri = str(uri)
+        if uri in ('monitoring://syntax-guide', 'monitoring://query-templates'):
+            return read_monitoring_resource(uri)
         if uri == "loganalytics://schema":
             return await self.schema_manager.get_full_schema()
         elif uri == "loganalytics://query-templates":

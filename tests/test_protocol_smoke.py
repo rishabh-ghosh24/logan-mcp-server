@@ -64,10 +64,10 @@ async def test_stdio_server_explains_failed_init(tmp_path):
         assert initialized.serverInfo.version == __version__
         assert "investigate_incident" in initialized.instructions
         tools = (await session.list_tools()).tools
-        assert len(tools) == 64
+        assert len(tools) == 69
         assert {tool.name for tool in tools} == {tool["name"] for tool in get_tools()}
         assert all(tool.title and tool.annotations is not None for tool in tools)
-        assert len((await session.list_resources()).resources) == 6
+        assert len((await session.list_resources()).resources) == 8
         response = await session.call_tool("get_current_context", {})
         payload = json.loads(response.content[0].text)
         assert response.isError is True
@@ -83,7 +83,7 @@ async def test_stdio_server_succeeds_against_fake_oci(tmp_path):
         response = await session.call_tool("get_current_context", {})
         assert not response.isError and json.loads(response.content[0].text)["namespace"] == "smoke"
         resources = (await session.list_resources()).resources
-        assert len(resources) == 6
+        assert len(resources) == 8
         contents = {}
         for resource in resources:
             result = await session.read_resource(resource.uri)
@@ -126,7 +126,7 @@ async def test_fake_oci_barrier_waits_for_release_and_echoes_namespace(tmp_path)
                     await asyncio.sleep(0.02)
             assert (barrier / "started").read_text() == "smoke"
             assert not pending.done()
-            assert len((await asyncio.wait_for(session.list_tools(), 2)).tools) == 64
+            assert len((await asyncio.wait_for(session.list_tools(), 2)).tools) == 69
         finally:
             (barrier / "release").touch()
         result = await pending

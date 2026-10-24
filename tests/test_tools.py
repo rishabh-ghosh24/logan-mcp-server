@@ -23,7 +23,7 @@ def test_tools_list_payload_stays_bounded():
     import json
 
     tools = get_tools()
-    assert len(tools) == 64
+    assert len(tools) == 69
     assert len(json.dumps(tools)) <= 60_000
 
 

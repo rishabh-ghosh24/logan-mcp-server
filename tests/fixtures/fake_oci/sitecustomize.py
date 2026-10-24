@@ -70,3 +70,6 @@ oci.signer.Signer = _Signer
 oci.log_analytics.LogAnalyticsClient = _LogAnalyticsClient
 oci.identity.IdentityClient = _IdentityClient
 oci.base_client.BaseClient.call_api = _unexpected_real_call
+
+from metrics_backend import install as _install_metrics_backend
+_install_metrics_backend()

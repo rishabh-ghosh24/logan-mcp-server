@@ -78,6 +78,10 @@ class MetricsService:
             if name in ('list_metric_namespaces', 'list_metrics'):
                 namespaces = name == 'list_metric_namespaces'
                 filters = {key: arguments.get(key) for key in ('namespace', 'metric_name', 'resource_group', 'dimension_filters')}
+                namespace = filters['namespace']
+                if not namespaces and (not isinstance(namespace, str) or not namespace.strip()
+                        or len(namespace) > 256 or any(ord(char) < 32 for char in namespace)):
+                    raise MetricsError('invalid_namespace', 'Provide a metric namespace from discovery.')
                 response = await self.gateway.discover(scope, **filters, limit=arguments.get('limit', 50),
                     page_token=arguments.get('page_token'), group_namespaces=namespaces, deadline=deadline)
                 self._inspect_authorized = True
@@ -98,11 +102,21 @@ class MetricsService:
             else:
                 raise MetricsError('unknown_metric_tool', 'Choose an advertised Monitoring tool.')
             validate_plan(plan, limits, now=datetime.now(timezone.utc), max_window_hours=config.max_window_hours)
-            series, completed, failure = [], [], None
+            series, completed, expressions, failure = [], [], [], None
             for query in plan.queries:
                 try:
                     response = await self.gateway.query(scope, plan, query, deadline=deadline)
                     rows = normalize_metric_series(response, scope=scope, plan=plan, query=query, definition=definition)
+                    expression = {'query': query, 'request_id': (getattr(response, 'headers', None) or {}).get('opc-request-id')}
+                    if definition is not None:
+                        expression.update(catalog_key=plan.catalog_key, catalog_version=plan.catalog_version,
+                            catalog_unit=definition.unit, source_urls=list(definition.source_urls))
+                    expression_index = len(expressions)
+                    expressions.append(expression)
+                    for row in rows:
+                        for key in ('query', 'request_id', 'catalog_key', 'catalog_version', 'catalog_unit', 'source_urls'):
+                            row.pop(key, None)
+                        row['expression_index'] = expression_index
                     series.extend(rows)
                     completed.append(query)
                     self._read_authorized = True
@@ -118,14 +132,16 @@ class MetricsService:
                 'time_end': plan.end.isoformat().replace('+00:00', 'Z'),
                 'resolution': plan.resolution, 'resolution_source': plan.resolution_source,
                 'resource_group': plan.resource_group, 'catalog_key': plan.catalog_key,
-                'catalog_version': plan.catalog_version, 'completed_queries': completed,
+                'catalog_version': plan.catalog_version, 'completed_queries': completed, 'expressions': expressions,
                 'complete': failure is None, **self._budget_context()}
             if failure:
                 context.update(error=failure, status='partial' if completed else 'error')
                 if not completed:
                     context.pop('queries')
                     context.pop('resource_group')
-            payload = fit_series(series, context=context, limits=limits)
+            # Format completed evidence even when the OCI deadline has expired.
+            # Caps bound the response; formatting must not discard partial data.
+            payload = await asyncio.to_thread(fit_series, series, context=context, limits=limits)
             return MetricResult(payload, is_error=failure is not None)
         except Exception as error:
             return MetricResult({'status': 'error', 'complete': False, 'query_language': 'mql',

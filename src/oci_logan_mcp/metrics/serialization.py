@@ -143,6 +143,7 @@ def format_discovery(response: Any, *, scope: MetricScope, namespace: str | None
     payload = {'query_language':'mql','scope':asdict(scope),'namespace':namespace,
                'filters':dict(filters),'returned_count':len(rows),'page_complete':True,
                'next_page_token':headers.get('opc-next-page'),'request_id':headers.get('opc-request-id'),
+               'more_available':bool(headers.get('opc-next-page')),
                'warnings':['One native page; no total inventory count is available.']}
     if group_namespaces:
         payload['namespaces'] = [row.namespace for row in rows]

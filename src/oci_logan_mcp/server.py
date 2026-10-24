@@ -15,7 +15,6 @@ from mcp.types import (
     Tool,
     Resource,
     TextContent,
-    ImageContent,
     CallToolResult,
 )
 
@@ -39,6 +38,8 @@ from .read_only_guard import MUTATING_TOOLS, OUTBOUND_TOOLS
 from .resources import get_resources
 from .handlers import MCPHandlers, COMPARTMENT_PREFERENCE_KEY, ScopeGuard
 from .metrics.runtime import MonitoringRuntime
+from .metrics.resources import read_monitoring_resource
+from .protocol_results import build_call_tool_result
 from ._version import __version__
 
 SERVER_INSTRUCTIONS = (
@@ -134,8 +135,6 @@ def client_metadata_from_context(server: Server) -> dict:
     }
 
 
-from .protocol_results import build_call_tool_result
-
 class OCILogAnalyticsMCPServer:
     """Main MCP Server for OCI Log Analytics.
 
@@ -206,11 +205,15 @@ class OCILogAnalyticsMCPServer:
         @self.server.read_resource()
         async def read_resource(uri: str) -> list[ReadResourceContents]:
             """Handle resource reads."""
+            uri = str(uri)
             if self.handlers is None:
+                if uri in ('monitoring://syntax-guide', 'monitoring://query-templates'):
+                    content = read_monitoring_resource(uri)
+                    return [ReadResourceContents(content=content if isinstance(content, str) else json.dumps(content))]
                 return [ReadResourceContents(content=json.dumps(self._not_initialized_payload()))]
 
             try:
-                content = await self.handlers.handle_resource_read(str(uri))
+                content = await self.handlers.handle_resource_read(uri)
                 if not isinstance(content, str):
                     content = json.dumps(content, indent=2, default=str)
                 return [ReadResourceContents(content=content)]

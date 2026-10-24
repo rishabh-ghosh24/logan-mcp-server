@@ -3,6 +3,7 @@
 from typing import List, Dict, Any
 
 from .time_parser import TIME_RANGES
+from .metrics.tools import get_metric_tools
 
 TIME_RANGE_VALUES = list(TIME_RANGES)
 
@@ -1223,7 +1224,9 @@ def get_tools() -> List[Dict[str, Any]]:
                 "the server is properly configured and can connect to OCI. Returns "
                 "connection status, namespace, compartment, and a sample query result."
             ),
-            "inputSchema": {"type": "object", "properties": {}},
+            "inputSchema": {"type": "object", "properties": {
+                "service": {"type": "string", "enum": ["logs", "metrics", "all"], "default": "logs"}
+            }},
         },
         {
             "name": "find_compartment",
@@ -1865,4 +1868,4 @@ def get_tools() -> List[Dict[str, Any]]:
                 "required": ["playbook_id"],
             },
         },
-    ]
+    ] + get_metric_tools()

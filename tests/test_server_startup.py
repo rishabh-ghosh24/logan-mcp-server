@@ -118,7 +118,7 @@ async def test_registered_tool_list_has_titles_and_accurate_annotations():
         types.ListToolsRequest(method="tools/list")
     )
     tools = response.root.tools
-    assert len(tools) == 64
+    assert len(tools) == 69
     expected = {tool["name"]: tool for tool in get_tools()}
     assert {tool.name for tool in tools} == set(expected)
     titles = {tool.name: tool.title for tool in tools}

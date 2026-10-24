@@ -5,6 +5,7 @@ import importlib.resources
 from typing import List, Dict, Any
 
 import yaml
+from .metrics.resources import get_monitoring_resources
 
 
 def get_resources() -> List[Dict[str, Any]]:
@@ -58,7 +59,7 @@ def get_resources() -> List[Dict[str, Any]]:
             ),
             "mimeType": "application/json",
         },
-    ]
+    ] + get_monitoring_resources()
 
 
 @functools.lru_cache(maxsize=1)
