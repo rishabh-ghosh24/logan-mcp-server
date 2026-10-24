@@ -1,0 +1,1149 @@
+{
+  "version": "2026-10-24",
+  "provenance": {
+    "argus": {
+      "repository": "rishabh-ghosh24/argus-oci-observability",
+      "commit": "970329dd79bbc134b0e4b77418f458c00fe3fca3",
+      "catalog_version": "2026-08-09"
+    },
+    "oci_mon": {
+      "repository": "rishabh-ghosh24/oci-mon-mcp-server",
+      "registry_commit": "aa650179ad0e6bb12191cdb90be0644c1df6e8dc",
+      "note": "Separate committed registry snapshot, not the public-main snapshot."
+    },
+    "license": "MIT; data adapted from the named user-owned source snapshots. Official service facts were checked separately."
+  },
+  "candidates": [
+    {
+      "metric_key": "cpu",
+      "upstream_key": "cpu",
+      "upstream_commit": "970329dd79bbc134b0e4b77418f458c00fe3fca3",
+      "status": "corrected",
+      "reason": "Checked exact names, native units and applicable dimension choices. Removed unsupported upstream dimensions and rate labels; defaults use the documented sample meaning.",
+      "verification": {
+        "namespace": "oci_computeagent",
+        "resource_group": null,
+        "metrics": {
+          "CpuUtilization": {
+            "unit": "percent",
+            "dimensions": [
+              "availabilityDomain",
+              "faultDomain",
+              "imageId",
+              "instancePoolId",
+              "region",
+              "resourceDisplayName",
+              "resourceId",
+              "shape"
+            ],
+            "source_urls": [
+              "https://docs.oracle.com/en-us/iaas/Content/Compute/References/computemetrics.htm"
+            ],
+            "source_sha256": "dad88bb990f1cd27de2bab7119e3d58fc1d2b2a874fbe67337de8e25bb33b682",
+            "reviewed": "2026-10-24"
+          }
+        }
+      },
+      "notes": "No rate conversion is applied."
+    },
+    {
+      "metric_key": "memory",
+      "upstream_key": "memory",
+      "upstream_commit": "970329dd79bbc134b0e4b77418f458c00fe3fca3",
+      "status": "corrected",
+      "reason": "Checked exact names, native units and applicable dimension choices. Removed unsupported upstream dimensions and rate labels; defaults use the documented sample meaning.",
+      "verification": {
+        "namespace": "oci_computeagent",
+        "resource_group": null,
+        "metrics": {
+          "MemoryUtilization": {
+            "unit": "percent",
+            "dimensions": [
+              "availabilityDomain",
+              "faultDomain",
+              "imageId",
+              "instancePoolId",
+              "region",
+              "resourceDisplayName",
+              "resourceId",
+              "shape"
+            ],
+            "source_urls": [
+              "https://docs.oracle.com/en-us/iaas/Content/Compute/References/computemetrics.htm"
+            ],
+            "source_sha256": "dad88bb990f1cd27de2bab7119e3d58fc1d2b2a874fbe67337de8e25bb33b682",
+            "reviewed": "2026-10-24"
+          }
+        }
+      },
+      "notes": "No rate conversion is applied."
+    },
+    {
+      "metric_key": "cpu_memory",
+      "upstream_key": "cpu_memory",
+      "upstream_commit": "970329dd79bbc134b0e4b77418f458c00fe3fca3",
+      "status": "corrected",
+      "reason": "Checked exact names, native units and applicable dimension choices. Removed unsupported upstream dimensions and rate labels; defaults use the documented sample meaning.",
+      "verification": {
+        "namespace": "oci_computeagent",
+        "resource_group": null,
+        "metrics": {
+          "CpuUtilization": {
+            "unit": "percent",
+            "dimensions": [
+              "availabilityDomain",
+              "faultDomain",
+              "imageId",
+              "instancePoolId",
+              "region",
+              "resourceDisplayName",
+              "resourceId",
+              "shape"
+            ],
+            "source_urls": [
+              "https://docs.oracle.com/en-us/iaas/Content/Compute/References/computemetrics.htm"
+            ],
+            "source_sha256": "dad88bb990f1cd27de2bab7119e3d58fc1d2b2a874fbe67337de8e25bb33b682",
+            "reviewed": "2026-10-24"
+          },
+          "MemoryUtilization": {
+            "unit": "percent",
+            "dimensions": [
+              "availabilityDomain",
+              "faultDomain",
+              "imageId",
+              "instancePoolId",
+              "region",
+              "resourceDisplayName",
+              "resourceId",
+              "shape"
+            ],
+            "source_urls": [
+              "https://docs.oracle.com/en-us/iaas/Content/Compute/References/computemetrics.htm"
+            ],
+            "source_sha256": "dad88bb990f1cd27de2bab7119e3d58fc1d2b2a874fbe67337de8e25bb33b682",
+            "reviewed": "2026-10-24"
+          }
+        }
+      },
+      "notes": "No rate conversion is applied."
+    },
+    {
+      "metric_key": "disk_io_throughput",
+      "upstream_key": "disk_io_throughput",
+      "upstream_commit": "970329dd79bbc134b0e4b77418f458c00fe3fca3",
+      "status": "corrected",
+      "reason": "Checked exact names, native units and applicable dimension choices. Removed unsupported upstream dimensions and rate labels; defaults use the documented sample meaning.",
+      "verification": {
+        "namespace": "oci_computeagent",
+        "resource_group": null,
+        "metrics": {
+          "DiskBytesRead": {
+            "unit": "bytes",
+            "dimensions": [
+              "availabilityDomain",
+              "faultDomain",
+              "imageId",
+              "instancePoolId",
+              "region",
+              "resourceDisplayName",
+              "resourceId",
+              "shape"
+            ],
+            "source_urls": [
+              "https://docs.oracle.com/en-us/iaas/Content/Compute/References/computemetrics.htm"
+            ],
+            "source_sha256": "dad88bb990f1cd27de2bab7119e3d58fc1d2b2a874fbe67337de8e25bb33b682",
+            "reviewed": "2026-10-24"
+          },
+          "DiskBytesWritten": {
+            "unit": "bytes",
+            "dimensions": [
+              "availabilityDomain",
+              "faultDomain",
+              "imageId",
+              "instancePoolId",
+              "region",
+              "resourceDisplayName",
+              "resourceId",
+              "shape"
+            ],
+            "source_urls": [
+              "https://docs.oracle.com/en-us/iaas/Content/Compute/References/computemetrics.htm"
+            ],
+            "source_sha256": "dad88bb990f1cd27de2bab7119e3d58fc1d2b2a874fbe67337de8e25bb33b682",
+            "reviewed": "2026-10-24"
+          }
+        }
+      },
+      "notes": "No rate conversion is applied."
+    },
+    {
+      "metric_key": "disk_io_iops",
+      "upstream_key": "disk_io_iops",
+      "upstream_commit": "970329dd79bbc134b0e4b77418f458c00fe3fca3",
+      "status": "corrected",
+      "reason": "Checked exact names, native units and applicable dimension choices. Removed unsupported upstream dimensions and rate labels; defaults use the documented sample meaning.",
+      "verification": {
+        "namespace": "oci_computeagent",
+        "resource_group": null,
+        "metrics": {
+          "DiskIopsRead": {
+            "unit": "operations",
+            "dimensions": [
+              "availabilityDomain",
+              "faultDomain",
+              "imageId",
+              "instancePoolId",
+              "region",
+              "resourceDisplayName",
+              "resourceId",
+              "shape"
+            ],
+            "source_urls": [
+              "https://docs.oracle.com/en-us/iaas/Content/Compute/References/computemetrics.htm"
+            ],
+            "source_sha256": "dad88bb990f1cd27de2bab7119e3d58fc1d2b2a874fbe67337de8e25bb33b682",
+            "reviewed": "2026-10-24"
+          },
+          "DiskIopsWritten": {
+            "unit": "operations",
+            "dimensions": [
+              "availabilityDomain",
+              "faultDomain",
+              "imageId",
+              "instancePoolId",
+              "region",
+              "resourceDisplayName",
+              "resourceId",
+              "shape"
+            ],
+            "source_urls": [
+              "https://docs.oracle.com/en-us/iaas/Content/Compute/References/computemetrics.htm"
+            ],
+            "source_sha256": "dad88bb990f1cd27de2bab7119e3d58fc1d2b2a874fbe67337de8e25bb33b682",
+            "reviewed": "2026-10-24"
+          }
+        }
+      },
+      "notes": "No rate conversion is applied."
+    },
+    {
+      "metric_key": "vcn_bytes_in",
+      "upstream_key": "vcn_bytes_in",
+      "upstream_commit": "970329dd79bbc134b0e4b77418f458c00fe3fca3",
+      "status": "corrected",
+      "reason": "Checked exact names, native units and applicable dimension choices. Removed unsupported upstream dimensions and rate labels; defaults use the documented sample meaning.",
+      "verification": {
+        "namespace": "oci_vcn",
+        "resource_group": null,
+        "metrics": {
+          "VnicFromNetworkBytes": {
+            "unit": "bytes",
+            "dimensions": [
+              "resourceId"
+            ],
+            "source_urls": [
+              "https://docs.oracle.com/en-us/iaas/Content/Network/Reference/vnicmetrics.htm"
+            ],
+            "source_sha256": "0353f19bb7d37aff7ce820cbe6cc33d28eb4a6d18bfc505229c7d99d542dfb39",
+            "reviewed": "2026-10-24"
+          }
+        }
+      },
+      "notes": "No rate conversion is applied."
+    },
+    {
+      "metric_key": "vcn_bytes_out",
+      "upstream_key": "vcn_bytes_out",
+      "upstream_commit": "970329dd79bbc134b0e4b77418f458c00fe3fca3",
+      "status": "corrected",
+      "reason": "Checked exact names, native units and applicable dimension choices. Removed unsupported upstream dimensions and rate labels; defaults use the documented sample meaning.",
+      "verification": {
+        "namespace": "oci_vcn",
+        "resource_group": null,
+        "metrics": {
+          "VnicToNetworkBytes": {
+            "unit": "bytes",
+            "dimensions": [
+              "resourceId"
+            ],
+            "source_urls": [
+              "https://docs.oracle.com/en-us/iaas/Content/Network/Reference/vnicmetrics.htm"
+            ],
+            "source_sha256": "0353f19bb7d37aff7ce820cbe6cc33d28eb4a6d18bfc505229c7d99d542dfb39",
+            "reviewed": "2026-10-24"
+          }
+        }
+      },
+      "notes": "No rate conversion is applied."
+    },
+    {
+      "metric_key": "vcn_packets_in",
+      "upstream_key": "vcn_packets_in",
+      "upstream_commit": "970329dd79bbc134b0e4b77418f458c00fe3fca3",
+      "status": "corrected",
+      "reason": "Checked exact names, native units and applicable dimension choices. Removed unsupported upstream dimensions and rate labels; defaults use the documented sample meaning.",
+      "verification": {
+        "namespace": "oci_vcn",
+        "resource_group": null,
+        "metrics": {
+          "VnicFromNetworkPackets": {
+            "unit": "packets",
+            "dimensions": [
+              "resourceId"
+            ],
+            "source_urls": [
+              "https://docs.oracle.com/en-us/iaas/Content/Network/Reference/vnicmetrics.htm"
+            ],
+            "source_sha256": "0353f19bb7d37aff7ce820cbe6cc33d28eb4a6d18bfc505229c7d99d542dfb39",
+            "reviewed": "2026-10-24"
+          }
+        }
+      },
+      "notes": "No rate conversion is applied."
+    },
+    {
+      "metric_key": "vcn_packets_out",
+      "upstream_key": "vcn_packets_out",
+      "upstream_commit": "970329dd79bbc134b0e4b77418f458c00fe3fca3",
+      "status": "corrected",
+      "reason": "Checked exact names, native units and applicable dimension choices. Removed unsupported upstream dimensions and rate labels; defaults use the documented sample meaning.",
+      "verification": {
+        "namespace": "oci_vcn",
+        "resource_group": null,
+        "metrics": {
+          "VnicToNetworkPackets": {
+            "unit": "packets",
+            "dimensions": [
+              "resourceId"
+            ],
+            "source_urls": [
+              "https://docs.oracle.com/en-us/iaas/Content/Network/Reference/vnicmetrics.htm"
+            ],
+            "source_sha256": "0353f19bb7d37aff7ce820cbe6cc33d28eb4a6d18bfc505229c7d99d542dfb39",
+            "reviewed": "2026-10-24"
+          }
+        }
+      },
+      "notes": "No rate conversion is applied."
+    },
+    {
+      "metric_key": "volume_read_throughput",
+      "upstream_key": "volume_read_throughput",
+      "upstream_commit": "970329dd79bbc134b0e4b77418f458c00fe3fca3",
+      "status": "corrected",
+      "reason": "Checked exact names, native units and applicable dimension choices. Removed unsupported upstream dimensions and rate labels; defaults use the documented sample meaning.",
+      "verification": {
+        "namespace": "oci_blockstore",
+        "resource_group": null,
+        "metrics": {
+          "VolumeReadThroughput": {
+            "unit": "bytes",
+            "dimensions": [
+              "attachmentId",
+              "resourceId"
+            ],
+            "source_urls": [
+              "https://docs.oracle.com/en-us/iaas/Content/Block/References/volumemetrics-reference.htm"
+            ],
+            "source_sha256": "10c813461d529d3bef3a68be120aaa0d84927412af4ed27d9370f8e7367edcea",
+            "reviewed": "2026-10-24"
+          }
+        }
+      },
+      "notes": "No rate conversion is applied."
+    },
+    {
+      "metric_key": "volume_write_throughput",
+      "upstream_key": "volume_write_throughput",
+      "upstream_commit": "970329dd79bbc134b0e4b77418f458c00fe3fca3",
+      "status": "corrected",
+      "reason": "Checked exact names, native units and applicable dimension choices. Removed unsupported upstream dimensions and rate labels; defaults use the documented sample meaning.",
+      "verification": {
+        "namespace": "oci_blockstore",
+        "resource_group": null,
+        "metrics": {
+          "VolumeWriteThroughput": {
+            "unit": "bytes",
+            "dimensions": [
+              "attachmentId",
+              "resourceId"
+            ],
+            "source_urls": [
+              "https://docs.oracle.com/en-us/iaas/Content/Block/References/volumemetrics-reference.htm"
+            ],
+            "source_sha256": "10c813461d529d3bef3a68be120aaa0d84927412af4ed27d9370f8e7367edcea",
+            "reviewed": "2026-10-24"
+          }
+        }
+      },
+      "notes": "No rate conversion is applied."
+    },
+    {
+      "metric_key": "volume_read_ops",
+      "upstream_key": "volume_read_ops",
+      "upstream_commit": "970329dd79bbc134b0e4b77418f458c00fe3fca3",
+      "status": "corrected",
+      "reason": "Checked exact names, native units and applicable dimension choices. Removed unsupported upstream dimensions and rate labels; defaults use the documented sample meaning.",
+      "verification": {
+        "namespace": "oci_blockstore",
+        "resource_group": null,
+        "metrics": {
+          "VolumeReadOps": {
+            "unit": "reads",
+            "dimensions": [
+              "attachmentId",
+              "resourceId"
+            ],
+            "source_urls": [
+              "https://docs.oracle.com/en-us/iaas/Content/Block/References/volumemetrics-reference.htm"
+            ],
+            "source_sha256": "10c813461d529d3bef3a68be120aaa0d84927412af4ed27d9370f8e7367edcea",
+            "reviewed": "2026-10-24"
+          }
+        }
+      },
+      "notes": "No rate conversion is applied."
+    },
+    {
+      "metric_key": "volume_write_ops",
+      "upstream_key": "volume_write_ops",
+      "upstream_commit": "970329dd79bbc134b0e4b77418f458c00fe3fca3",
+      "status": "corrected",
+      "reason": "Checked exact names, native units and applicable dimension choices. Removed unsupported upstream dimensions and rate labels; defaults use the documented sample meaning.",
+      "verification": {
+        "namespace": "oci_blockstore",
+        "resource_group": null,
+        "metrics": {
+          "VolumeWriteOps": {
+            "unit": "writes",
+            "dimensions": [
+              "attachmentId",
+              "resourceId"
+            ],
+            "source_urls": [
+              "https://docs.oracle.com/en-us/iaas/Content/Block/References/volumemetrics-reference.htm"
+            ],
+            "source_sha256": "10c813461d529d3bef3a68be120aaa0d84927412af4ed27d9370f8e7367edcea",
+            "reviewed": "2026-10-24"
+          }
+        }
+      },
+      "notes": "No rate conversion is applied."
+    },
+    {
+      "metric_key": "lb_http_requests",
+      "upstream_key": "lb_http_requests",
+      "upstream_commit": "970329dd79bbc134b0e4b77418f458c00fe3fca3",
+      "status": "corrected",
+      "reason": "Checked exact names, native units and applicable dimension choices. Removed unsupported upstream dimensions and rate labels; defaults use the documented sample meaning.",
+      "verification": {
+        "namespace": "oci_lbaas",
+        "resource_group": null,
+        "metrics": {
+          "httpRequests": {
+            "unit": "count",
+            "dimensions": [
+              "availabilityDomain",
+              "lbComponent",
+              "lbHostId",
+              "lbName",
+              "region",
+              "resourceId"
+            ],
+            "source_urls": [
+              "https://docs.oracle.com/en-us/iaas/Content/Balance/Reference/loadbalancermetrics.htm"
+            ],
+            "source_sha256": "fb5516064b7d2d2da0963dfb8886a42ff47caa9dc7d72d0424355b0d9a504f5e",
+            "reviewed": "2026-10-24"
+          }
+        }
+      },
+      "notes": "No rate conversion is applied."
+    },
+    {
+      "metric_key": "lb_active_connections",
+      "upstream_key": "lb_active_connections",
+      "upstream_commit": "970329dd79bbc134b0e4b77418f458c00fe3fca3",
+      "status": "corrected",
+      "reason": "Checked exact names, native units and applicable dimension choices. Removed unsupported upstream dimensions and rate labels; defaults use the documented sample meaning.",
+      "verification": {
+        "namespace": "oci_lbaas",
+        "resource_group": null,
+        "metrics": {
+          "activeConnections": {
+            "unit": "count",
+            "dimensions": [
+              "availabilityDomain",
+              "lbComponent",
+              "lbHostId",
+              "lbName",
+              "region",
+              "resourceId"
+            ],
+            "source_urls": [
+              "https://docs.oracle.com/en-us/iaas/Content/Balance/Reference/loadbalancermetrics.htm"
+            ],
+            "source_sha256": "fb5516064b7d2d2da0963dfb8886a42ff47caa9dc7d72d0424355b0d9a504f5e",
+            "reviewed": "2026-10-24"
+          }
+        }
+      },
+      "notes": "No rate conversion is applied."
+    },
+    {
+      "metric_key": "lb_bandwidth",
+      "upstream_key": "lb_bandwidth",
+      "upstream_commit": "970329dd79bbc134b0e4b77418f458c00fe3fca3",
+      "status": "corrected",
+      "reason": "Checked exact names, native units and applicable dimension choices. Removed unsupported upstream dimensions and rate labels; defaults use the documented sample meaning.",
+      "verification": {
+        "namespace": "oci_lbaas",
+        "resource_group": null,
+        "metrics": {
+          "bytesReceived": {
+            "unit": "bytes",
+            "dimensions": [
+              "availabilityDomain",
+              "lbComponent",
+              "lbHostId",
+              "lbName",
+              "region",
+              "resourceId"
+            ],
+            "source_urls": [
+              "https://docs.oracle.com/en-us/iaas/Content/Balance/Reference/loadbalancermetrics.htm"
+            ],
+            "source_sha256": "fb5516064b7d2d2da0963dfb8886a42ff47caa9dc7d72d0424355b0d9a504f5e",
+            "reviewed": "2026-10-24"
+          },
+          "bytesSent": {
+            "unit": "bytes",
+            "dimensions": [
+              "availabilityDomain",
+              "lbComponent",
+              "lbHostId",
+              "lbName",
+              "region",
+              "resourceId"
+            ],
+            "source_urls": [
+              "https://docs.oracle.com/en-us/iaas/Content/Balance/Reference/loadbalancermetrics.htm"
+            ],
+            "source_sha256": "fb5516064b7d2d2da0963dfb8886a42ff47caa9dc7d72d0424355b0d9a504f5e",
+            "reviewed": "2026-10-24"
+          }
+        }
+      },
+      "notes": "No rate conversion is applied."
+    },
+    {
+      "metric_key": "db_cpu",
+      "upstream_key": "db_cpu",
+      "upstream_commit": "970329dd79bbc134b0e4b77418f458c00fe3fca3",
+      "status": "withheld",
+      "reason": "Not reviewed in this milestone."
+    },
+    {
+      "metric_key": "db_storage",
+      "upstream_key": "db_storage",
+      "upstream_commit": "970329dd79bbc134b0e4b77418f458c00fe3fca3",
+      "status": "withheld",
+      "reason": "Not reviewed in this milestone."
+    },
+    {
+      "metric_key": "adb_cpu",
+      "upstream_key": "adb_cpu",
+      "upstream_commit": "970329dd79bbc134b0e4b77418f458c00fe3fca3",
+      "status": "corrected",
+      "reason": "Checked exact names, native units and applicable dimension choices. Removed unsupported upstream dimensions and rate labels; defaults use the documented sample meaning.",
+      "verification": {
+        "namespace": "oci_autonomous_database",
+        "resource_group": null,
+        "metrics": {
+          "CpuUtilization": {
+            "unit": "percent",
+            "dimensions": [
+              "AUTONOMOUSDBTYPE",
+              "deploymentType",
+              "DISPLAYNAME",
+              "REGION",
+              "RESOURCEID",
+              "RESOURCENAME"
+            ],
+            "source_urls": [
+              "https://docs.oracle.com/en-us/iaas/autonomous-database-serverless/doc/autonomous-monitor-metrics-list.html"
+            ],
+            "source_sha256": "225c80dc0ebe321540ebc8478b58d3cb69673591bb38b6228494777c5f28e851",
+            "reviewed": "2026-10-24"
+          }
+        }
+      },
+      "notes": "ADB dimension selectors are intentionally omitted; use live discovery and raw MQL for exact emitted dimensions."
+    },
+    {
+      "metric_key": "adb_storage",
+      "upstream_key": "adb_storage",
+      "upstream_commit": "970329dd79bbc134b0e4b77418f458c00fe3fca3",
+      "status": "corrected",
+      "reason": "Checked exact names, native units and applicable dimension choices. Removed unsupported upstream dimensions and rate labels; defaults use the documented sample meaning.",
+      "verification": {
+        "namespace": "oci_autonomous_database",
+        "resource_group": null,
+        "metrics": {
+          "StorageUtilization": {
+            "unit": "percent",
+            "dimensions": [
+              "AUTONOMOUSDBTYPE",
+              "deploymentType",
+              "DISPLAYNAME",
+              "REGION",
+              "RESOURCEID",
+              "RESOURCENAME"
+            ],
+            "source_urls": [
+              "https://docs.oracle.com/en-us/iaas/autonomous-database-serverless/doc/autonomous-monitor-metrics-list.html"
+            ],
+            "source_sha256": "225c80dc0ebe321540ebc8478b58d3cb69673591bb38b6228494777c5f28e851",
+            "reviewed": "2026-10-24"
+          }
+        }
+      },
+      "notes": "ADB dimension selectors are intentionally omitted; use live discovery and raw MQL for exact emitted dimensions."
+    },
+    {
+      "metric_key": "adb_sessions",
+      "upstream_key": "adb_sessions",
+      "upstream_commit": "970329dd79bbc134b0e4b77418f458c00fe3fca3",
+      "status": "corrected",
+      "reason": "Checked exact names, native units and applicable dimension choices. Removed unsupported upstream dimensions and rate labels; defaults use the documented sample meaning.",
+      "verification": {
+        "namespace": "oci_autonomous_database",
+        "resource_group": null,
+        "metrics": {
+          "Sessions": {
+            "unit": "count",
+            "dimensions": [
+              "AUTONOMOUSDBTYPE",
+              "deploymentType",
+              "DISPLAYNAME",
+              "REGION",
+              "RESOURCEID",
+              "RESOURCENAME"
+            ],
+            "source_urls": [
+              "https://docs.oracle.com/en-us/iaas/autonomous-database-serverless/doc/autonomous-monitor-metrics-list.html"
+            ],
+            "source_sha256": "225c80dc0ebe321540ebc8478b58d3cb69673591bb38b6228494777c5f28e851",
+            "reviewed": "2026-10-24"
+          }
+        }
+      },
+      "notes": "ADB dimension selectors are intentionally omitted; use live discovery and raw MQL for exact emitted dimensions."
+    },
+    {
+      "metric_key": "bucket_size",
+      "upstream_key": "bucket_size",
+      "upstream_commit": "970329dd79bbc134b0e4b77418f458c00fe3fca3",
+      "status": "corrected",
+      "reason": "Checked exact names, native units and applicable dimension choices. Removed unsupported upstream dimensions and rate labels; defaults use the documented sample meaning.",
+      "verification": {
+        "namespace": "oci_objectstorage",
+        "resource_group": null,
+        "metrics": {
+          "StoredBytes": {
+            "unit": "bytes",
+            "dimensions": [
+              "resourceID",
+              "resourceDisplayName",
+              "tier"
+            ],
+            "source_urls": [
+              "https://docs.oracle.com/en-us/iaas/Content/Object/Reference/objectstoragemetrics.htm"
+            ],
+            "source_sha256": "c575310857498f32797627698d7d12d3a041490c6e9050e0b300425d826a8023",
+            "reviewed": "2026-10-24"
+          }
+        }
+      },
+      "notes": "No rate conversion is applied."
+    },
+    {
+      "metric_key": "bucket_requests",
+      "upstream_key": "bucket_requests",
+      "upstream_commit": "970329dd79bbc134b0e4b77418f458c00fe3fca3",
+      "status": "corrected",
+      "reason": "Checked exact names, native units and applicable dimension choices. Removed unsupported upstream dimensions and rate labels; defaults use the documented sample meaning.",
+      "verification": {
+        "namespace": "oci_objectstorage",
+        "resource_group": null,
+        "metrics": {
+          "AllRequests": {
+            "unit": "count",
+            "dimensions": [
+              "resourceID",
+              "resourceDisplayName"
+            ],
+            "source_urls": [
+              "https://docs.oracle.com/en-us/iaas/Content/Object/Reference/objectstoragemetrics.htm"
+            ],
+            "source_sha256": "c575310857498f32797627698d7d12d3a041490c6e9050e0b300425d826a8023",
+            "reviewed": "2026-10-24"
+          }
+        }
+      },
+      "notes": "No rate conversion is applied."
+    },
+    {
+      "metric_key": "oke_node_cpu",
+      "upstream_key": "oke_node_cpu",
+      "upstream_commit": "970329dd79bbc134b0e4b77418f458c00fe3fca3",
+      "status": "withheld",
+      "reason": "The OKE reference does not document CpuUtilization or MemoryUtilization in oci_oke. Do not substitute Compute metrics under OKE keys."
+    },
+    {
+      "metric_key": "oke_node_memory",
+      "upstream_key": "oke_node_memory",
+      "upstream_commit": "970329dd79bbc134b0e4b77418f458c00fe3fca3",
+      "status": "withheld",
+      "reason": "The OKE reference does not document CpuUtilization or MemoryUtilization in oci_oke. Do not substitute Compute metrics under OKE keys."
+    },
+    {
+      "metric_key": "fn_invocations",
+      "upstream_key": "fn_invocations",
+      "upstream_commit": "970329dd79bbc134b0e4b77418f458c00fe3fca3",
+      "status": "corrected",
+      "reason": "Checked exact names, native units and applicable dimension choices. Removed unsupported upstream dimensions and rate labels; defaults use the documented sample meaning.",
+      "verification": {
+        "namespace": "oci_faas",
+        "resource_group": null,
+        "metrics": {
+          "FunctionInvocationCount": {
+            "unit": "count",
+            "dimensions": [
+              "applicationId",
+              "invokeType",
+              "resourceDisplayName",
+              "resourceId",
+              "userTenancyId"
+            ],
+            "source_urls": [
+              "https://docs.oracle.com/en-us/iaas/Content/Functions/Reference/functionsmetrics.htm"
+            ],
+            "source_sha256": "78b82b02ab94b9cf4feec6ae2b03cf87bd9d2237388dce250f7da47644bb0eee",
+            "reviewed": "2026-10-24"
+          }
+        }
+      },
+      "notes": "No rate conversion is applied."
+    },
+    {
+      "metric_key": "fn_duration",
+      "upstream_key": "fn_duration",
+      "upstream_commit": "970329dd79bbc134b0e4b77418f458c00fe3fca3",
+      "status": "corrected",
+      "reason": "Checked exact names, native units and applicable dimension choices. Removed unsupported upstream dimensions and rate labels; defaults use the documented sample meaning.",
+      "verification": {
+        "namespace": "oci_faas",
+        "resource_group": null,
+        "metrics": {
+          "FunctionExecutionDuration": {
+            "unit": "ms",
+            "dimensions": [
+              "applicationId",
+              "invokeType",
+              "resourceDisplayName",
+              "resourceId",
+              "userTenancyId"
+            ],
+            "source_urls": [
+              "https://docs.oracle.com/en-us/iaas/Content/Functions/Reference/functionsmetrics.htm"
+            ],
+            "source_sha256": "78b82b02ab94b9cf4feec6ae2b03cf87bd9d2237388dce250f7da47644bb0eee",
+            "reviewed": "2026-10-24"
+          }
+        }
+      },
+      "notes": "No rate conversion is applied."
+    },
+    {
+      "metric_key": "fn_errors",
+      "upstream_key": "fn_errors",
+      "upstream_commit": "970329dd79bbc134b0e4b77418f458c00fe3fca3",
+      "status": "withheld",
+      "reason": "FunctionErrorCount is not documented. FunctionResponseCount requires responseType=Error, which this definition format does not mandate."
+    },
+    {
+      "metric_key": "ebs_active_users",
+      "upstream_key": "ebs_active_users",
+      "upstream_commit": "970329dd79bbc134b0e4b77418f458c00fe3fca3",
+      "status": "withheld",
+      "reason": "Not reviewed in this milestone."
+    },
+    {
+      "metric_key": "ebs_active_users_by_responsibility",
+      "upstream_key": "ebs_active_users_by_responsibility",
+      "upstream_commit": "970329dd79bbc134b0e4b77418f458c00fe3fca3",
+      "status": "withheld",
+      "reason": "Not reviewed in this milestone."
+    },
+    {
+      "metric_key": "ebs_active_requests",
+      "upstream_key": "ebs_active_requests",
+      "upstream_commit": "970329dd79bbc134b0e4b77418f458c00fe3fca3",
+      "status": "withheld",
+      "reason": "Not reviewed in this milestone."
+    },
+    {
+      "metric_key": "ebs_completed_requests",
+      "upstream_key": "ebs_completed_requests",
+      "upstream_commit": "970329dd79bbc134b0e4b77418f458c00fe3fca3",
+      "status": "withheld",
+      "reason": "Not reviewed in this milestone."
+    },
+    {
+      "metric_key": "ebs_program_runtime",
+      "upstream_key": "ebs_program_runtime",
+      "upstream_commit": "970329dd79bbc134b0e4b77418f458c00fe3fca3",
+      "status": "withheld",
+      "reason": "Not reviewed in this milestone."
+    },
+    {
+      "metric_key": "ebs_app_listener_status",
+      "upstream_key": "ebs_app_listener_status",
+      "upstream_commit": "970329dd79bbc134b0e4b77418f458c00fe3fca3",
+      "status": "withheld",
+      "reason": "Not reviewed in this milestone."
+    },
+    {
+      "metric_key": "ebs_concurrent_processing_status",
+      "upstream_key": "ebs_concurrent_processing_status",
+      "upstream_commit": "970329dd79bbc134b0e4b77418f458c00fe3fca3",
+      "status": "withheld",
+      "reason": "Not reviewed in this milestone."
+    },
+    {
+      "metric_key": "ebs_concurrent_manager_capacity",
+      "upstream_key": "ebs_concurrent_manager_capacity",
+      "upstream_commit": "970329dd79bbc134b0e4b77418f458c00fe3fca3",
+      "status": "withheld",
+      "reason": "Not reviewed in this milestone."
+    },
+    {
+      "metric_key": "ebs_concurrent_requests",
+      "upstream_key": "ebs_concurrent_requests",
+      "upstream_commit": "970329dd79bbc134b0e4b77418f458c00fe3fca3",
+      "status": "withheld",
+      "reason": "Not reviewed in this milestone."
+    },
+    {
+      "metric_key": "ebs_specialized_manager_status",
+      "upstream_key": "ebs_specialized_manager_status",
+      "upstream_commit": "970329dd79bbc134b0e4b77418f458c00fe3fca3",
+      "status": "withheld",
+      "reason": "Not reviewed in this milestone."
+    },
+    {
+      "metric_key": "ebs_forms_sessions",
+      "upstream_key": "ebs_forms_sessions",
+      "upstream_commit": "970329dd79bbc134b0e4b77418f458c00fe3fca3",
+      "status": "withheld",
+      "reason": "Not reviewed in this milestone."
+    },
+    {
+      "metric_key": "ebs_workflow_agent_listener_status",
+      "upstream_key": "ebs_workflow_agent_listener_status",
+      "upstream_commit": "970329dd79bbc134b0e4b77418f458c00fe3fca3",
+      "status": "withheld",
+      "reason": "Not reviewed in this milestone."
+    },
+    {
+      "metric_key": "ebs_workflow_background_status",
+      "upstream_key": "ebs_workflow_background_status",
+      "upstream_commit": "970329dd79bbc134b0e4b77418f458c00fe3fca3",
+      "status": "withheld",
+      "reason": "Not reviewed in this milestone."
+    },
+    {
+      "metric_key": "ebs_workflow_mailer_status",
+      "upstream_key": "ebs_workflow_mailer_status",
+      "upstream_commit": "970329dd79bbc134b0e4b77418f458c00fe3fca3",
+      "status": "withheld",
+      "reason": "Not reviewed in this milestone."
+    },
+    {
+      "metric_key": "stack_host_status",
+      "upstream_key": "stack_host_status",
+      "upstream_commit": "970329dd79bbc134b0e4b77418f458c00fe3fca3",
+      "status": "withheld",
+      "reason": "Not reviewed in this milestone."
+    },
+    {
+      "metric_key": "stack_host_cpu",
+      "upstream_key": "stack_host_cpu",
+      "upstream_commit": "970329dd79bbc134b0e4b77418f458c00fe3fca3",
+      "status": "withheld",
+      "reason": "Not reviewed in this milestone."
+    },
+    {
+      "metric_key": "stack_host_memory",
+      "upstream_key": "stack_host_memory",
+      "upstream_commit": "970329dd79bbc134b0e4b77418f458c00fe3fca3",
+      "status": "withheld",
+      "reason": "Not reviewed in this milestone."
+    },
+    {
+      "metric_key": "stack_host_filesystem",
+      "upstream_key": "stack_host_filesystem",
+      "upstream_commit": "970329dd79bbc134b0e4b77418f458c00fe3fca3",
+      "status": "withheld",
+      "reason": "Not reviewed in this milestone."
+    },
+    {
+      "metric_key": "stack_host_network",
+      "upstream_key": "stack_host_network",
+      "upstream_commit": "970329dd79bbc134b0e4b77418f458c00fe3fca3",
+      "status": "withheld",
+      "reason": "Not reviewed in this milestone."
+    },
+    {
+      "metric_key": "ohs_status",
+      "upstream_key": "ohs_status",
+      "upstream_commit": "970329dd79bbc134b0e4b77418f458c00fe3fca3",
+      "status": "withheld",
+      "reason": "Not reviewed in this milestone."
+    },
+    {
+      "metric_key": "ohs_cpu",
+      "upstream_key": "ohs_cpu",
+      "upstream_commit": "970329dd79bbc134b0e4b77418f458c00fe3fca3",
+      "status": "withheld",
+      "reason": "Not reviewed in this milestone."
+    },
+    {
+      "metric_key": "ohs_memory",
+      "upstream_key": "ohs_memory",
+      "upstream_commit": "970329dd79bbc134b0e4b77418f458c00fe3fca3",
+      "status": "withheld",
+      "reason": "Not reviewed in this milestone."
+    },
+    {
+      "metric_key": "ohs_active_connections",
+      "upstream_key": "ohs_active_connections",
+      "upstream_commit": "970329dd79bbc134b0e4b77418f458c00fe3fca3",
+      "status": "withheld",
+      "reason": "Not reviewed in this milestone."
+    },
+    {
+      "metric_key": "ohs_request_rate",
+      "upstream_key": "ohs_request_rate",
+      "upstream_commit": "970329dd79bbc134b0e4b77418f458c00fe3fca3",
+      "status": "withheld",
+      "reason": "Not reviewed in this milestone."
+    },
+    {
+      "metric_key": "ohs_error_rate",
+      "upstream_key": "ohs_error_rate",
+      "upstream_commit": "970329dd79bbc134b0e4b77418f458c00fe3fca3",
+      "status": "withheld",
+      "reason": "Not reviewed in this milestone."
+    },
+    {
+      "metric_key": "weblogic_status",
+      "upstream_key": "weblogic_status",
+      "upstream_commit": "970329dd79bbc134b0e4b77418f458c00fe3fca3",
+      "status": "withheld",
+      "reason": "Not reviewed in this milestone."
+    },
+    {
+      "metric_key": "weblogic_cpu",
+      "upstream_key": "weblogic_cpu",
+      "upstream_commit": "970329dd79bbc134b0e4b77418f458c00fe3fca3",
+      "status": "withheld",
+      "reason": "Not reviewed in this milestone."
+    },
+    {
+      "metric_key": "weblogic_heap",
+      "upstream_key": "weblogic_heap",
+      "upstream_commit": "970329dd79bbc134b0e4b77418f458c00fe3fca3",
+      "status": "withheld",
+      "reason": "Not reviewed in this milestone."
+    },
+    {
+      "metric_key": "weblogic_stuck_threads",
+      "upstream_key": "weblogic_stuck_threads",
+      "upstream_commit": "970329dd79bbc134b0e4b77418f458c00fe3fca3",
+      "status": "withheld",
+      "reason": "Not reviewed in this milestone."
+    },
+    {
+      "metric_key": "weblogic_jdbc_connections",
+      "upstream_key": "weblogic_jdbc_connections",
+      "upstream_commit": "970329dd79bbc134b0e4b77418f458c00fe3fca3",
+      "status": "withheld",
+      "reason": "Not reviewed in this milestone."
+    },
+    {
+      "metric_key": "weblogic_jdbc_throughput",
+      "upstream_key": "weblogic_jdbc_throughput",
+      "upstream_commit": "970329dd79bbc134b0e4b77418f458c00fe3fca3",
+      "status": "withheld",
+      "reason": "Not reviewed in this milestone."
+    },
+    {
+      "metric_key": "weblogic_http_sessions",
+      "upstream_key": "weblogic_http_sessions",
+      "upstream_commit": "970329dd79bbc134b0e4b77418f458c00fe3fca3",
+      "status": "withheld",
+      "reason": "Not reviewed in this milestone."
+    },
+    {
+      "metric_key": "weblogic_request_time",
+      "upstream_key": "weblogic_request_time",
+      "upstream_commit": "970329dd79bbc134b0e4b77418f458c00fe3fca3",
+      "status": "withheld",
+      "reason": "Not reviewed in this milestone."
+    },
+    {
+      "metric_key": "weblogic_cluster_status",
+      "upstream_key": "weblogic_cluster_status",
+      "upstream_commit": "970329dd79bbc134b0e4b77418f458c00fe3fca3",
+      "status": "withheld",
+      "reason": "Not reviewed in this milestone."
+    },
+    {
+      "metric_key": "managed_db_status",
+      "upstream_key": "managed_db_status",
+      "upstream_commit": "970329dd79bbc134b0e4b77418f458c00fe3fca3",
+      "status": "withheld",
+      "reason": "Not reviewed in this milestone."
+    },
+    {
+      "metric_key": "managed_db_cpu",
+      "upstream_key": "managed_db_cpu",
+      "upstream_commit": "970329dd79bbc134b0e4b77418f458c00fe3fca3",
+      "status": "withheld",
+      "reason": "Not reviewed in this milestone."
+    },
+    {
+      "metric_key": "managed_db_time",
+      "upstream_key": "managed_db_time",
+      "upstream_commit": "970329dd79bbc134b0e4b77418f458c00fe3fca3",
+      "status": "withheld",
+      "reason": "Not reviewed in this milestone."
+    },
+    {
+      "metric_key": "managed_db_wait_time",
+      "upstream_key": "managed_db_wait_time",
+      "upstream_commit": "970329dd79bbc134b0e4b77418f458c00fe3fca3",
+      "status": "withheld",
+      "reason": "Not reviewed in this milestone."
+    },
+    {
+      "metric_key": "managed_db_blocking_sessions",
+      "upstream_key": "managed_db_blocking_sessions",
+      "upstream_commit": "970329dd79bbc134b0e4b77418f458c00fe3fca3",
+      "status": "withheld",
+      "reason": "Not reviewed in this milestone."
+    },
+    {
+      "metric_key": "managed_db_sessions",
+      "upstream_key": "managed_db_sessions",
+      "upstream_commit": "970329dd79bbc134b0e4b77418f458c00fe3fca3",
+      "status": "withheld",
+      "reason": "Not reviewed in this milestone."
+    },
+    {
+      "metric_key": "managed_db_storage",
+      "upstream_key": "managed_db_storage",
+      "upstream_commit": "970329dd79bbc134b0e4b77418f458c00fe3fca3",
+      "status": "withheld",
+      "reason": "Not reviewed in this milestone."
+    },
+    {
+      "metric_key": "managed_db_session_limit",
+      "upstream_key": "managed_db_session_limit",
+      "upstream_commit": "970329dd79bbc134b0e4b77418f458c00fe3fca3",
+      "status": "withheld",
+      "reason": "Not reviewed in this milestone."
+    },
+    {
+      "metric_key": "db_asm_status",
+      "upstream_key": "db_asm_status",
+      "upstream_commit": "970329dd79bbc134b0e4b77418f458c00fe3fca3",
+      "status": "withheld",
+      "reason": "Not reviewed in this milestone."
+    },
+    {
+      "metric_key": "db_asm_disk_group_utilization",
+      "upstream_key": "db_asm_disk_group_utilization",
+      "upstream_commit": "970329dd79bbc134b0e4b77418f458c00fe3fca3",
+      "status": "withheld",
+      "reason": "Not reviewed in this milestone."
+    },
+    {
+      "metric_key": "db_asm_io_throughput",
+      "upstream_key": "db_asm_io_throughput",
+      "upstream_commit": "970329dd79bbc134b0e4b77418f458c00fe3fca3",
+      "status": "withheld",
+      "reason": "Not reviewed in this milestone."
+    },
+    {
+      "metric_key": "db_cluster_status",
+      "upstream_key": "db_cluster_status",
+      "upstream_commit": "970329dd79bbc134b0e4b77418f458c00fe3fca3",
+      "status": "withheld",
+      "reason": "Not reviewed in this milestone."
+    },
+    {
+      "metric_key": "db_cluster_interconnect_errors",
+      "upstream_key": "db_cluster_interconnect_errors",
+      "upstream_commit": "970329dd79bbc134b0e4b77418f458c00fe3fca3",
+      "status": "withheld",
+      "reason": "Not reviewed in this milestone."
+    },
+    {
+      "metric_key": "db_node_cpu",
+      "upstream_key": "db_node_cpu",
+      "upstream_commit": "970329dd79bbc134b0e4b77418f458c00fe3fca3",
+      "status": "withheld",
+      "reason": "Not reviewed in this milestone."
+    },
+    {
+      "metric_key": "db_node_memory",
+      "upstream_key": "db_node_memory",
+      "upstream_commit": "970329dd79bbc134b0e4b77418f458c00fe3fca3",
+      "status": "withheld",
+      "reason": "Not reviewed in this milestone."
+    },
+    {
+      "metric_key": "db_node_storage",
+      "upstream_key": "db_node_storage",
+      "upstream_commit": "970329dd79bbc134b0e4b77418f458c00fe3fca3",
+      "status": "withheld",
+      "reason": "Not reviewed in this milestone."
+    },
+    {
+      "metric_key": "db_listener_status",
+      "upstream_key": "db_listener_status",
+      "upstream_commit": "970329dd79bbc134b0e4b77418f458c00fe3fca3",
+      "status": "withheld",
+      "reason": "Not reviewed in this milestone."
+    },
+    {
+      "metric_key": "db_listener_active_connections",
+      "upstream_key": "db_listener_active_connections",
+      "upstream_commit": "970329dd79bbc134b0e4b77418f458c00fe3fca3",
+      "status": "withheld",
+      "reason": "Not reviewed in this milestone."
+    },
+    {
+      "metric_key": "db_listener_refused_connections",
+      "upstream_key": "db_listener_refused_connections",
+      "upstream_commit": "970329dd79bbc134b0e4b77418f458c00fe3fca3",
+      "status": "withheld",
+      "reason": "Not reviewed in this milestone."
+    }
+  ]
+}
