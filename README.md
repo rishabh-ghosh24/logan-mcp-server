@@ -1,6 +1,6 @@
 # OCI Log Analytics MCP Server
 
-Connect an MCP-compatible assistant to [OCI Log Analytics](https://docs.oracle.com/en-us/iaas/log-analytics/home.htm) to investigate logs, build visualizations, manage saved searches and dashboards, and create log-based alerts. The server exposes 64 tools over stdio.
+Connect an MCP-compatible assistant to [OCI Log Analytics](https://docs.oracle.com/en-us/iaas/log-analytics/home.htm) and [OCI Monitoring](https://docs.oracle.com/en-us/iaas/Content/Monitoring/home.htm) to investigate logs and metrics, build visualizations, manage saved searches and dashboards, and create log-based alerts. The server exposes 69 tools over stdio.
 
 ## Quick Start
 
@@ -111,6 +111,7 @@ Start a new MCP session and call `test_connection`, then use `get_log_summary` o
 | Capability | Tools | Examples |
 |---|---|---|
 | **Query logs** | `run_query`, `run_batch_queries`, `run_saved_search` | Search logs, run multiple queries in parallel, execute saved searches |
+| **Query metrics** | `list_metric_namespaces`, `list_metrics`, `search_metric_catalog`, `query_catalog_metric`, `query_metrics` | Discover Monitoring streams, find reviewed metric keys and run bounded MQL |
 | **Triage diffs** | `diff_time_windows`, `pivot_on_entity`, `ingestion_health`, `parser_failure_triage`, `investigate_incident`, `investigate_and_generate_report`, `why_did_this_fire`, `find_rare_events`, `trace_request_id`, `related_dashboards_and_searches` | Compare a query across two time windows; pull all events for an entity across sources; probe per-source ingestion freshness; surface top parser failures; one-call first-cut investigation orchestrator; run investigation plus report generation; replay a Logan-managed alarm's historical fire window; surface low-frequency field values for a source; search common request-id / trace-id fields across sources; find existing dashboards and saved searches related to a source, entity, or field |
 | **Investigation playbooks** | `record_investigation`, `list_playbooks`, `get_playbook`, `delete_playbook` | Save the current session's audited tool calls as a named playbook, then list, fetch, or delete recorded playbooks |
 | **Reports** | `generate_incident_report`, `get_report_delivery_options`, `list_notification_topics`, `deliver_report` | Convert an investigation result into deterministic Markdown/HTML, then generate a PDF and deliver it through Telegram, ONS email-topic summary, or optional Slack summary |
@@ -125,6 +126,146 @@ Start a new MCP session and call `test_connection`, then use `get_log_summary` o
 | **Validate** | `validate_query`, `get_query_examples` | Check syntax, get curated starter examples by category (included with install) |
 | **Remember** | `save_learned_query`, `get_preferences`, `remember_preference` | Save queries for improved future suggestions, learn field preferences and time ranges per log source |
 | **Monitor** | `test_connection`, `get_current_context`, `get_log_summary` | Check connectivity, see current config, view log volume |
+
+## Monitoring metrics
+
+Logs and metrics use one server and the same OCI identity. Each service initializes
+when needed. Metrics work without a Log Analytics namespace; a service-specific
+failure leaves the other service usable. Common authentication failure affects
+both. The two `monitoring://` help resources remain available without working
+authentication.
+
+For metrics only, create `~/.oci-logan-mcp/config.yaml` with your authentication
+method and Monitoring defaults. This instance-principal example needs no Log
+Analytics section:
+
+```yaml
+oci:
+  auth_type: instance_principal
+monitoring:
+  default_compartment_id: <compartment OCID>
+  region: <OCI region>
+  max_window_hours: 24
+  timeout_seconds: 60
+  max_series: 20
+  max_datapoints: 4000
+  max_response_bytes: 262144
+```
+
+On a laptop, use `auth_type: config_file` and the OCI config/profile described in
+Quick Start. For combined operation, retain your existing `log_analytics` section
+and add `monitoring`. The setup wizard continues to configure logs; edit this
+section directly for metrics.
+
+Environment overrides use the prefix `OCI_LOGAN_MONITORING_` with suffixes
+`COMPARTMENT`, `REGION`, `MAX_WINDOW_HOURS`, `TIMEOUT`, `MAX_SERIES`,
+`MAX_DATAPOINTS` and `MAX_RESPONSE_BYTES`. Invalid Monitoring settings block metrics
+with a safe setting-name error while logs remain usable.
+
+The explicit compartment wins, followed by the user's remembered/session choice,
+Monitoring default, then Log Analytics default. Region comes from the call,
+Monitoring config, authenticated OCI config, then signer. Subtree is false by
+default and requires a tenancy-root scope when the tenancy is known. `set_namespace`
+changes only the Log Analytics namespace. No service silently changes region or
+compartment after a failure.
+
+### Monitoring permissions
+
+Grant discovery with `inspect metrics` and data queries with `read metrics`.
+`read metrics` includes inspection. For example, an instance dynamic group that
+needs both can use:
+
+```text
+Allow dynamic-group <dynamic-group-name> to read metrics in compartment <compartment-name>
+```
+
+Use `group` instead of `dynamic-group` for an API-key user's group. These tools
+need no Compute-instance read, alarm read or administrative permission. Existing
+log and alarm tools retain their separate IAM requirements. See the official
+[Monitoring policy reference](https://docs.oracle.com/en-us/iaas/Content/Identity/policyreference/monitoringpolicyreference.htm).
+
+### Discovery and queries
+
+Start with `test_connection({"service":"metrics"})`; inspection success does not
+prove data-query permission. `get_current_context` reports configuration, created
+clients and the scope of previous permission checks without probing OCI. Use
+`test_connection({"service":"all"})` for separate logs and metrics diagnostics.
+Omitting `service` preserves the existing logs check.
+
+```text
+list_metric_namespaces({"limit":50})
+list_metrics({"namespace":"oci_computeagent","metric_name":"CpuUtilization"})
+search_metric_catalog({"query":"cpu"})
+query_catalog_metric({"metric_key":"cpu","time_range":"last_1_hour"})
+query_metrics({"namespace":"oci_computeagent","query":"CpuUtilization[5m].mean()","time_range":"last_24_hours"})
+```
+
+Discovery returns one native page. When `more_available` is true, pass its
+`next_page_token` with the same scope and filters. Search is local, reports
+ambiguity and never executes a query. Catalog queries require an exact reviewed
+key. Raw MQL supports any authorized namespace, including custom metrics outside
+the catalog. The catalog adapts reviewed data from Argus and OCI-Mon; source
+commits, official URLs and withheld definitions ship in its manifest. Source
+review does not establish live coverage in your tenancy.
+
+The query interval and resolution are different. Raw resolution defaults to the
+largest supported value no greater than every operand interval; catalog
+resolution follows its interval. An explicit resolution cannot exceed an operand
+interval. The response states which value was used. The server allows at most
+24 hours per call. OCI retention measured from now is 7 days at 1m, 30 days at 5m
+and 90 days at 1h or 1d. See the [MQL reference](https://docs.oracle.com/en-us/iaas/Content/Monitoring/Reference/mql.htm).
+
+Results label compact `[timestamp,value]` pairs with `point_columns`. Zeros stay
+zero and gaps stay gaps. Per-expression facts appear once in `expressions`; each
+stream has an `expression_index` and retains its full identity and units. Defaults
+are 20 series and 4,000 points across the response, with hard maxima of 100 series
+and 10,000 points. The configured byte cap also applies. A window that cannot fit
+one whole series is rejected before OCI with compatible alternatives. Runtime
+caps omit whole series and disclose counts and reasons. A capped subset cannot
+establish fleet-wide worst-resource or top-N claims.
+
+For 24 hours, a 5m interval returns about 289 points per stream. Choose explicit
+1h aggregation and resolution when hourly fleet trends answer the question:
+
+```text
+query_catalog_metric({"metric_key":"cpu","interval":"1h","resolution":"1h","aggregation":"mean","time_range":"last_24_hours"})
+```
+
+State that hourly means can hide short spikes, and report interval and coverage.
+Narrow dimensions before increasing caps. A smaller response can reduce tokens
+per call, but extra queries to recover omitted data can increase total tokens.
+The [Monitoring guide](src/oci_logan_mcp/data/monitoring_syntax.md) and
+[starter calls](src/oci_logan_mcp/data/monitoring_templates.yaml) also explain load
+balancer component levels and recovery.
+
+Monitoring requests share the session query budget with logs. Timeouts keep their
+charge because OCI work may still run. Session byte and cost estimates describe
+estimated Log Analytics work; Monitoring responses explicitly say their service
+cost is not estimated. MQL and dimension values enter audit as hashes and lengths
+under both retention modes. MQL never enters the Log Analytics learner or query
+history. Authorized dimensions still appear in tool results.
+
+Correlate logs and metrics using resource id, region, verified compartment and the
+same window. Matching timestamps alone prove neither cause nor an incident.
+Metrics charts/CSV, automatic MQL learning/sharing and alarm-history expansion
+are deferred. Existing log workflows continue unchanged.
+
+### Repeatable live validation
+
+From an installed environment, use the repository's read-only validator:
+
+```bash
+python scripts/validate_metrics_live.py --config ~/.oci-logan-mcp/config.yaml \
+  --python venv/bin/python --compartment-id <compartment-OCID> \
+  --region <OCI-region> --output-dir /tmp/monitoring-validation-new
+```
+
+It uses a new private HOME and stores, compares one selected stream with a direct
+SDK request over the same fixed UTC window and records each applicable starter.
+Keep `private-results.json`, copied settings and `server.stderr` private. Share
+`review-summary.json` for coverage. Exit 0 means required live gates passed, 1
+means a query or comparison failed, and 2 means authorization/data prerequisites
+remain pending. A CPU result does not certify every catalog row.
 
 ## Investigation Toolkit
 
@@ -543,7 +684,7 @@ Set `budget.enabled: false` to disable these limits.
 
 ## Destructive Operation Safety
 
-All 64 tools remain advertised. Writes are enabled by default, with confirmation required for guarded operations.
+All 69 tools remain advertised. Writes are enabled by default, with confirmation required for guarded operations.
 
 ### Read-only mode
 
