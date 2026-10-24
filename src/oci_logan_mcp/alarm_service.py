@@ -8,6 +8,7 @@ import oci
 
 from .client import OCILogAnalyticsClient
 from .cache import CacheManager
+from .saved_search_config import build_scope_filters, build_ui_config
 
 # OCI Management Dashboard API requires crossService in featuresConfig
 FEATURES_CONFIG = {"crossService": {"shared": True}}
@@ -26,12 +27,40 @@ class AlarmService:
         self.oci_client = oci_client
         self.cache = cache
 
-    def _validate_cron(self, expr: str) -> None:
+    def _validate_cron(self, expr: str) -> str:
         if not _CRON_RE.match(expr.strip()):
             raise ValueError(
                 f"Invalid cron expression '{expr}'. "
-                "Expected 5-field format: min hour day month weekday (e.g. '0 */15 * * *')"
+                "Expected 5-field format: min hour day month weekday (e.g. '*/15 * * * *')"
             )
+        fields = expr.split()
+        values = []
+        for field, (low, high) in zip(fields, ((0, 59), (0, 23), (1, 31), (1, 12), (0, 7))):
+            expanded = set()
+            for part in field.split(","):
+                base, _, step = part.partition("/")
+                stride = int(step) if step else 1
+                if base == "*":
+                    start, end = low, high
+                elif "-" in base:
+                    start, end = map(int, base.split("-"))
+                else:
+                    start = int(base)
+                    end = high if step else start
+                if stride < 1 or not low <= start <= end <= high:
+                    raise ValueError("Invalid cron field range or step.")
+                expanded.update(range(start, end + 1, stride))
+            values.append(expanded)
+        minute, hour, day, month, weekday = fields
+        if day != "*" and weekday != "*":
+            raise ValueError("Invalid cron schedule: choose day of month or weekday, not both.")
+        if weekday == "*" and day != "*":
+            weekday = "?"
+        else:
+            day = "?"
+            if weekday != "*":
+                weekday = ",".join(str(value) for value in sorted({value % 7 + 1 for value in values[4]}))
+        return f"0 {minute} {hour} {day} {month} {weekday}"
 
     def _validate_metric_query(self, query: str) -> None:
         if not _AGGREGATION_RE.search(query):
@@ -54,7 +83,7 @@ class AlarmService:
     ) -> Dict[str, Any]:
         cid = compartment_id or self.oci_client.compartment_id
 
-        self._validate_cron(schedule)
+        native_schedule = self._validate_cron(schedule)
         self._validate_metric_query(query)
         await self.oci_client.get_topic(destination_topic_id)
 
@@ -79,6 +108,9 @@ class AlarmService:
                 metadata_version="2.0",
                 nls={},
                 data_config=[{"query": query}],
+                ui_config=build_ui_config(query, "summary_table", build_scope_filters(
+                    cid, self.oci_client.tenancy_id, self.oci_client._config["region"],
+                )),
                 screen_image=" ",
                 widget_template="visualizations/chartWidgetTemplate.html",
                 widget_vm="jet-modules/dashboards/widgets/lxSavedSearchWidget",
@@ -97,7 +129,7 @@ class AlarmService:
                 compartment_id=cid,
                 schedules=[oci.log_analytics.models.CronSchedule(
                     type="CRON",
-                    expression=schedule,
+                    expression=native_schedule,
                     time_zone="UTC",
                 )],
                 action=oci.log_analytics.models.StreamAction(
@@ -238,8 +270,11 @@ class AlarmService:
 
         if query and saved_search_id:
             self._validate_metric_query(query)
+            current = await self.oci_client.get_saved_search(saved_search_id)
             mss_update = oci.management_dashboard.models.UpdateManagementSavedSearchDetails(
                 data_config=[{"query": query}],
+                ui_config={**(current["ui_config"] if "ui_config" in current else {}),
+                           "queryString": query},
             )
             if display_name:
                 mss_update.display_name = f"logan-alert-{display_name}"
@@ -254,11 +289,11 @@ class AlarmService:
             await self.oci_client.update_management_saved_search(saved_search_id, mss_update)
 
         if schedule:
-            self._validate_cron(schedule)
+            native_schedule = self._validate_cron(schedule)
             task_update = oci.log_analytics.models.UpdateStandardTaskDetails(
                 kind="STANDARD",
                 schedules=[oci.log_analytics.models.CronSchedule(
-                    type="CRON", expression=schedule, time_zone="UTC"
+                    type="CRON", expression=native_schedule, time_zone="UTC"
                 )],
             )
             if display_name:

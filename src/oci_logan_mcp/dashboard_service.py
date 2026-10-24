@@ -7,6 +7,7 @@ import oci
 
 from .client import OCILogAnalyticsClient
 from .cache import CacheManager
+from .saved_search_config import build_scope_filters as _build_scope_filters, build_ui_config as _build_ui_config
 
 logger = logging.getLogger(__name__)
 
@@ -74,44 +75,6 @@ TILE_PARAMS_MAP = {
     "log-analytics-entity": "$(dashboard.params.log-analytics-entity-filter)",
     "log-analytics-region": "$(dashboard.params.regionFilter)",
 }
-
-
-def _build_scope_filters(compartment_id: str, tenancy_id: str, region: str = "us-ashburn-1") -> dict:
-    """Build scope filters matching the working pg_dashboard_builder pattern."""
-    region_label = "US East (Ashburn)" if region == "us-ashburn-1" else region
-    base = [
-        {"type": "LogGroup", "flags": {"IncludeSubCompartments": True},
-         "values": [{"value": tenancy_id, "label": "root"}]},
-        {"type": "MetricCompartment", "flags": {}, "values": []},
-        {"type": "Entity", "flags": {"IncludeDependents": True, "ScopeCompartmentId": compartment_id}, "values": []},
-        {"type": "LogSet", "flags": {}, "values": []},
-        {"type": "ResourceCompartment", "flags": {"IncludeSubCompartments": True},
-         "values": [{"value": tenancy_id, "label": "root"}]},
-        {"type": "Region", "flags": {}, "values": [{"value": region, "label": region_label}]},
-    ]
-    result = {"filters": base, "isGlobal": False}
-    for f in base:
-        result[f["type"]] = f
-    return result
-
-
-def _build_ui_config(query: str, viz_type: str, scope_filters: dict) -> dict:
-    """Build uiConfig matching the working pg_dashboard_builder pattern."""
-    return {
-        "timeSelection": {"timePeriod": "l7d"},
-        "showTitle": True,
-        "visualizationType": viz_type,
-        "visualizationOptions": {
-            "customVizOpt": {
-                "primaryFieldIname": "mbody",
-                "primaryFieldDname": "Original Log Content",
-            }
-        },
-        "queryString": query,
-        "scopeFilters": scope_filters,
-        "vizType": "lxSavedSearchWidgetType",
-        "enableWidgetInApp": True,
-    }
 
 
 class DashboardService:

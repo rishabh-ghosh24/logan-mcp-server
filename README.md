@@ -122,7 +122,7 @@ Start a new MCP session and call `test_connection`, then use `get_log_summary` o
 | **Visualize** | `visualize` | Generate pie, bar, line, area, table, tile, treemap, heatmap, histogram charts |
 | **Dashboards** | `create_dashboard`, `add_dashboard_tile`, `list_dashboards`, `delete_dashboard` | Create OCI Management Dashboards with LA widgets, grid layout, and scope filters |
 | **Alerts** | `create_alert`, `update_alert`, `list_alerts`, `delete_alert` | Create OCI-native alarms from LA queries with metric extraction and ONS notifications |
-| **Saved searches** | `create_saved_search`, `update_saved_search`, `list_saved_searches`, `delete_saved_search` | Manage LA saved searches backed by scheduled tasks |
+| **Saved searches** | `create_saved_search`, `update_saved_search`, `list_saved_searches`, `delete_saved_search` | Manage native LA saved searches; existing scheduled-task IDs remain supported |
 | **Export** | `export_results` | Export query results to CSV or JSON |
 | **Manage scope** | `set_compartment`, `set_namespace`, `find_compartment`, `list_compartments` | Switch compartments, query across tenancy |
 | **Validate** | `validate_query`, `get_query_examples` | Check syntax, get curated starter examples by category (included with install) |
@@ -801,6 +801,9 @@ python run_tests.py
 ### 1.3.0 (unreleased)
 
 - Require MCP SDK 1.22.0 and OCI SDK 2.104.2 or later so installations include the APIs used by the server.
+- Create native saved searches with their query and widget configuration, and retain support for existing scheduled-task IDs.
+- Translate five-field alert schedules to OCI's cron format and reject invalid field ranges before creating resources.
+- Fetch entity inventories with larger pages outside the event loop, and use the SDK's supported source filter for field discovery.
 
 - Preserve OCI's native metric units while accepting capitalization variants of percent.
 - Report aggregate log counts accurately in connection diagnostics, including zero.

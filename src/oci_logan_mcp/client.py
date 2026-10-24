@@ -470,7 +470,7 @@ class OCILogAnalyticsClient:
 
         kwargs = {"namespace_name": self._namespace}
         if source_name:
-            kwargs["source_name"] = source_name
+            kwargs["source_names"] = source_name
 
         response = list_call_get_all_results(
             self._la_client.list_fields,
@@ -807,7 +807,11 @@ class OCILogAnalyticsClient:
         if entity_type:
             kwargs["entity_type_name"] = [entity_type]
 
-        response = list_call_get_all_results(
+        # The service defaults to ten entities per page. Larger pages avoid
+        # hundreds of requests and retries when assembling the full schema.
+        kwargs["limit"] = 100
+        response = await asyncio.to_thread(
+            list_call_get_all_results,
             self._la_client.list_log_analytics_entities,
             **kwargs,
         )
@@ -894,6 +898,22 @@ class OCILogAnalyticsClient:
         """Get a specific saved search."""
         await self._rate_limiter.acquire()
 
+        if saved_search_id.startswith("ocid1.managementsavedsearch."):
+            response = await asyncio.to_thread(
+                self.dashx_client.get_management_saved_search,
+                management_saved_search_id=saved_search_id,
+            )
+            self._rate_limiter.reset()
+            data = response.data
+            ui_config = data.ui_config or {}
+            query = ui_config.get("queryString", "")
+            if not query:
+                query = next((item["query"] for item in (data.data_config or [])
+                              if isinstance(item, dict) and item.get("query")), "")
+            return {"id": data.id, "display_name": data.display_name,
+                    "query": query, "ui_config": ui_config,
+                    "lifecycle_state": getattr(data, "lifecycle_state", "")}
+
         response = self._la_client.get_scheduled_task(
             namespace_name=self._namespace,
             scheduled_task_id=saved_search_id,
@@ -901,10 +921,14 @@ class OCILogAnalyticsClient:
         self._rate_limiter.reset()
 
         data = response.data
+        query = getattr(data, "saved_search_query", "")
+        action = getattr(data, "action", None)
+        if not query and action and getattr(action, "saved_search_id", None):
+            query = (await self.get_saved_search(action.saved_search_id))["query"]
         return {
             "id": data.id,
             "display_name": getattr(data, "display_name", ""),
-            "query": getattr(data, "saved_search_query", ""),
+            "query": query,
             "lifecycle_state": getattr(data, "lifecycle_state", ""),
             "_action": getattr(data, "action", None),  # expose for backing MSS lookup
         }
@@ -1227,6 +1251,21 @@ class OCILogAnalyticsClient:
             raise
 
     # ── Management Saved Search methods ───────────────────────────────────
+
+    async def list_management_saved_searches(self) -> List[Dict[str, Any]]:
+        """List native Log Analytics saved searches across all pages."""
+        await self._rate_limiter.acquire()
+        response = await asyncio.to_thread(
+            list_call_get_all_results, self.dashx_client.list_management_saved_searches,
+            compartment_id=self._compartment_id, limit=100,
+        )
+        self._rate_limiter.reset()
+        return [{"id": item.id, "display_name": item.display_name,
+                 "lifecycle_state": getattr(item, "lifecycle_state", ""),
+                 "freeform_tags": getattr(item, "freeform_tags", {}) or {}}
+                for item in _get_items(response.data)
+                if getattr(item, "provider_id", "") == "log-analytics"
+                and getattr(item, "type", "") == "SEARCH_SHOW_IN_DASHBOARD"]
 
     async def create_management_saved_search(self, details) -> Dict[str, Any]:
         """Create a Management Dashboard saved search."""

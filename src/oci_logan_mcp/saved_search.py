@@ -5,6 +5,7 @@ from typing import Optional, List, Dict, Any
 
 from .client import OCILogAnalyticsClient
 from .cache import CacheManager
+from .saved_search_config import build_scope_filters, build_ui_config
 
 PROVIDER_ID = "log-analytics"
 PROVIDER_NAME = "Log Analytics"
@@ -29,7 +30,10 @@ class SavedSearchService:
         if cached:
             return cached
 
-        searches = await self.oci_client.list_saved_searches()
+        searches = [
+            *await self.oci_client.list_management_saved_searches(),
+            *await self.oci_client.list_saved_searches(),
+        ]
         # Exclude Logan-managed backing resources (alert tasks, etc.)
         searches = [
             s for s in searches
@@ -81,7 +85,7 @@ class SavedSearchService:
         compartment_id: Optional[str] = None,
         category: Optional[str] = None,
     ) -> Dict[str, Any]:
-        """Create a new saved search backed by a ManagementSavedSearch and a ScheduledTask."""
+        """Store a reusable query without creating a scheduled streaming job."""
         cid = compartment_id or self.oci_client.compartment_id
 
         mss_details = oci.management_dashboard.models.CreateManagementSavedSearchDetails(
@@ -95,7 +99,10 @@ class SavedSearchService:
             provider_version=PROVIDER_VERSION,
             metadata_version="2.0",
             nls={},
-            data_config=[],
+            data_config=[{"query": query}],
+            ui_config=build_ui_config(query, "summary_table", build_scope_filters(
+                cid, self.oci_client.tenancy_id, self.oci_client._config["region"],
+            )),
             screen_image=" ",
             widget_template="visualizations/chartWidgetTemplate.html",
             widget_vm="jet-modules/dashboards/widgets/lxSavedSearchWidget",
@@ -105,26 +112,9 @@ class SavedSearchService:
         )
         mss = await self.oci_client.create_management_saved_search(mss_details)
 
-        try:
-            task_details = oci.log_analytics.models.CreateStandardTaskDetails(
-                kind="STANDARD",
-                task_type="SAVED_SEARCH",
-                display_name=display_name,
-                compartment_id=cid,
-                action=oci.log_analytics.models.StreamAction(
-                    saved_search_id=mss["id"],
-                    saved_search_duration="PT1H",
-                ),
-                schedules=[],
-            )
-            task = await self.oci_client.create_scheduled_task(task_details)
-        except Exception:
-            await self.oci_client.delete_management_saved_search(mss["id"])
-            raise
-
         self.cache.delete("saved_searches")
         return {
-            "id": task["id"],
+            "id": mss["id"],
             "display_name": display_name,
             "management_saved_search_id": mss["id"],
         }
@@ -145,6 +135,11 @@ class SavedSearchService:
                 mss_update_kwargs["display_name"] = kwargs["display_name"]
             if "query" in kwargs:
                 mss_update_kwargs["data_config"] = [{"query": kwargs["query"]}]
+                current = await self.oci_client.get_saved_search(search_id)
+                mss_update_kwargs["ui_config"] = {
+                    **(current["ui_config"] if "ui_config" in current else {}),
+                    "queryString": kwargs["query"],
+                }
             mss_update = oci.management_dashboard.models.UpdateManagementSavedSearchDetails(
                 **mss_update_kwargs
             )
@@ -183,6 +178,11 @@ class SavedSearchService:
 
     async def delete_search(self, search_id: str) -> None:
         """Delete a saved search and its backing ManagementSavedSearch."""
+        if search_id.startswith("ocid1.managementsavedsearch."):
+            await self.oci_client.delete_management_saved_search(search_id)
+            self.cache.delete("saved_searches")
+            self.cache.delete(f"saved_search:{search_id}")
+            return
         backing_mss_id = await self._get_backing_mss_id(search_id)
         await self.oci_client.delete_scheduled_task(search_id)
         if backing_mss_id:

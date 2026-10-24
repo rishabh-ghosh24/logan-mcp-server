@@ -365,7 +365,8 @@ class TestListFieldsPagination:
             await client.list_fields(source_name="Linux Syslog")
 
         call_kwargs = mock_paginate.call_args.kwargs
-        assert call_kwargs.get("source_name") == "Linux Syslog"
+        assert call_kwargs.get("source_names") == "Linux Syslog"
+        assert "source_name" not in call_kwargs
 
     @pytest.mark.asyncio
     async def test_no_source_filter(self, client):
