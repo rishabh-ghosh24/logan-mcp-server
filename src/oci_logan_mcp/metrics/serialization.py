@@ -63,7 +63,8 @@ def normalize_metric_series(response: Any, *, scope: MetricScope, plan: QueryPla
         warnings = []
         source = 'oci' if unit else 'unknown'
         if exact:
-            if unit and unit!=definition.unit:
+            if unit and unit!=definition.unit and not (
+                    unit.casefold()==definition.unit.casefold()=='percent'):
                 warnings.append('unit_conflict')
             elif not unit:
                 unit,source = definition.unit,'catalog'
