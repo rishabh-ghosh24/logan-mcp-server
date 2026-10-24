@@ -37,6 +37,7 @@ def existing_alarm(query, schedule="*/15 * * * *"):
             "logan_schedule": schedule,
         },
         "query": query,
+        "pending_duration": "PT5M",
         "severity": "CRITICAL",
         "destinations": ["ocid1.topic.1"],
     }
@@ -54,14 +55,14 @@ class TestCreateCondition:
         alarm = client.create_alarm.call_args[0][0]
         metric = alarm.query.split("[")[0]
         assert metric.startswith("logan_alert_")
-        assert alarm.query == f"{metric}[15m].max() > 0"
+        assert alarm.query == f"{metric}[15m].last() > 0"
         assert alarm.pending_duration == "PT1M"
         assert alarm.freeform_tags["logan_schedule"] == "*/15 * * * *"
         task = client.create_scheduled_task.call_args[0][0]
         assert task.schedules[0].expression == "0 */15 * ? * *"
 
     @pytest.mark.asyncio
-    async def test_lower_bound_thresholds_use_the_minimum_value(self):
+    async def test_lower_bound_thresholds_also_follow_the_latest_value(self):
         client = make_client()
 
         await make_svc(client).create_alert(
@@ -70,7 +71,7 @@ class TestCreateCondition:
         )
 
         alarm = client.create_alarm.call_args[0][0]
-        assert alarm.query.endswith("[5m].min() < 5")
+        assert alarm.query.endswith("[5m].last() < 5")
 
 
 class TestResourceGroup:
@@ -100,6 +101,32 @@ class TestResourceGroup:
 
         alarm = client.update_alarm.call_args[0][1]
         assert alarm.resource_group == "logan_alerts"
+
+
+class TestLegacyPendingDuration:
+    @pytest.mark.asyncio
+    async def test_condition_repair_also_resets_the_pending_duration(self):
+        client = make_client()
+        client.get_alarm.return_value = existing_alarm("logan_alert_abc[1m].count() > 0", "0 */15 * * *")
+        client.update_alarm.return_value = {"id": "ocid1.alarm.1"}
+
+        await make_svc(client).update_alert("ocid1.alarm.1", threshold_value=1)
+
+        alarm = client.update_alarm.call_args[0][1]
+        assert alarm.pending_duration == "PT1M"
+
+    @pytest.mark.asyncio
+    async def test_display_name_only_update_leaves_the_condition_alone(self):
+        client = make_client()
+        client.get_alarm.return_value = existing_alarm("logan_alert_abc[15m].last() > 3")
+        client.update_management_saved_search.return_value = {"id": "ocid1.mss.1"}
+        client.update_scheduled_task.return_value = {"id": "ocid1.task.1"}
+        client.update_alarm.return_value = {"id": "ocid1.alarm.1"}
+
+        await make_svc(client).update_alert("ocid1.alarm.1", display_name="renamed")
+
+        alarm = client.update_alarm.call_args[0][1]
+        assert alarm.query is None and alarm.pending_duration is None
 
 
 class TestAlarmInterval:
@@ -133,7 +160,7 @@ class TestUpdateCondition:
         task = client.update_scheduled_task.call_args[0][1]
         assert task.schedules[0].expression == "0 */5 * ? * *"
         alarm = client.update_alarm.call_args[0][1]
-        assert alarm.query == "logan_alert_abc[5m].max() > 3"
+        assert alarm.query == "logan_alert_abc[5m].last() > 3"
         assert alarm.freeform_tags["logan_schedule"] == "*/5 * * * *"
 
     @pytest.mark.asyncio
@@ -147,7 +174,7 @@ class TestUpdateCondition:
         )
 
         alarm = client.update_alarm.call_args[0][1]
-        assert alarm.query == "logan_alert_abc[1h].max() >= 5"
+        assert alarm.query == "logan_alert_abc[1h].last() >= 5"
 
     @pytest.mark.asyncio
     async def test_operator_only_update_keeps_the_current_threshold(self):
@@ -158,7 +185,7 @@ class TestUpdateCondition:
         await make_svc(client).update_alert("ocid1.alarm.1", threshold_operator="lte")
 
         alarm = client.update_alarm.call_args[0][1]
-        assert alarm.query == "logan_alert_abc[15m].min() <= 7"
+        assert alarm.query == "logan_alert_abc[15m].last() <= 7"
 
     @pytest.mark.asyncio
     async def test_legacy_count_condition_is_rewritten_on_update(self):
@@ -170,7 +197,7 @@ class TestUpdateCondition:
 
         alarm = client.update_alarm.call_args[0][1]
         # Runs at 00:00 and 15:00 UTC: the longest gap is 15 hours.
-        assert alarm.query == "logan_alert_abc123[15h].max() > 2"
+        assert alarm.query == "logan_alert_abc123[15h].last() > 2"
 
 
 class TestDefaultSchedule:

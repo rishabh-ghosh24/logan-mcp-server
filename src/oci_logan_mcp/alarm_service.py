@@ -26,6 +26,8 @@ DEFAULT_ALERT_SCHEDULE = "*/15 * * * *"
 # The task posts under this resource group; the alarm must name the same one, because an
 # alarm without a resource group only sees metrics that have none.
 METRIC_RESOURCE_GROUP = "logan_alerts"
+# One datapoint per run: the first breaching evaluation must fire (OCI minimum is PT1M).
+ALERT_PENDING_DURATION = "PT1M"
 
 
 class AlarmService:
@@ -58,9 +60,9 @@ class AlarmService:
 
     @classmethod
     def _condition(cls, metric_name: str, interval: str, operator: str, threshold) -> str:
-        """Compare the extracted value itself; count() would only count datapoints."""
-        statistic = "min" if operator in ("lt", "lte") else "max"
-        return f"{metric_name}[{interval}].{statistic}() {cls._OPERATORS.get(operator, '>')} {threshold}"
+        """Compare the latest extracted value; count() would only count datapoints, and max()
+        would keep an old breach alive after a newer clean run on a sparse schedule."""
+        return f"{metric_name}[{interval}].last() {cls._OPERATORS.get(operator, '>')} {threshold}"
 
     @classmethod
     def _parse_cron(cls, expr: str):
@@ -195,8 +197,7 @@ class AlarmService:
                 severity=severity,
                 destinations=[destination_topic_id],
                 is_enabled=True,
-                # One datapoint per run: the first breaching evaluation must fire.
-                pending_duration="PT1M",
+                pending_duration=ALERT_PENDING_DURATION,
                 body=f"Logan alert: {display_name}\nQuery: {query}",
                 message_format="ONS_OPTIMIZED",
                 freeform_tags={
@@ -360,8 +361,10 @@ class AlarmService:
             alarm_update_fields["query"] = self._condition(
                 metric_name, self.alarm_interval(effective_schedule), operator, tv,
             )
-            # Repairs alarms created before the resource group was set on the alarm.
+            # Repairs alarms created before the resource group and the one-minute pending
+            # duration were set on the alarm.
             alarm_update_fields["resource_group"] = METRIC_RESOURCE_GROUP
+            alarm_update_fields["pending_duration"] = ALERT_PENDING_DURATION
         if severity:
             alarm_update_fields["severity"] = severity
         if destination_topic_id:
