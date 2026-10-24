@@ -1,8 +1,9 @@
 """Configuration dataclasses and file loading for OCI Log Analytics MCP Server."""
 
 import logging
+import math
 import os
-from dataclasses import dataclass, field
+from dataclasses import asdict, dataclass, field, fields
 from pathlib import Path
 from typing import Any, Dict, Literal, Optional
 
@@ -35,6 +36,34 @@ class LogAnalyticsConfig:
     namespace: str = ""
     default_compartment_id: str = ""
     default_log_group_id: Optional[str] = None
+
+
+@dataclass
+class MonitoringConfig:
+    """Defaults for bounded, independent OCI Monitoring requests."""
+
+    default_compartment_id: str = ""
+    region: str = ""
+    max_window_hours: int = 24
+    timeout_seconds: float = 60
+    max_series: int = 20
+    max_datapoints: int = 4000
+    max_response_bytes: int = 262144
+
+    def __post_init__(self):
+        for name, minimum, maximum in (
+            ("max_window_hours", 1, 24), ("max_series", 1, 100),
+            ("max_datapoints", 1, 10000), ("max_response_bytes", 1024, 1000000),
+        ):
+            value = getattr(self, name)
+            if type(value) is not int or not minimum <= value <= maximum:
+                raise ValueError(f"monitoring.{name} must be an integer from {minimum} to {maximum}.")
+        if (type(self.timeout_seconds) not in (int, float)
+                or not math.isfinite(self.timeout_seconds) or self.timeout_seconds <= 0):
+            raise ValueError("monitoring.timeout_seconds must be a finite positive number.")
+        for name in ("default_compartment_id", "region"):
+            if not isinstance(getattr(self, name), str):
+                raise ValueError(f"monitoring.{name} must be text.")
 
 
 @dataclass
@@ -150,6 +179,7 @@ class Settings:
 
     oci: OCIConfig = field(default_factory=OCIConfig)
     log_analytics: LogAnalyticsConfig = field(default_factory=LogAnalyticsConfig)
+    monitoring: MonitoringConfig = field(default_factory=MonitoringConfig)
     query: QueryConfig = field(default_factory=QueryConfig)
     cache: CacheConfig = field(default_factory=CacheConfig)
     logging: LoggingConfig = field(default_factory=LoggingConfig)
@@ -166,6 +196,7 @@ class Settings:
     def to_dict(self) -> dict:
         """Convert settings to dictionary for serialization."""
         return {
+            "monitoring": asdict(self.monitoring),
             "audit": {"store_arguments": self.audit.store_arguments},
             "oci": {
                 "config_path": str(self.oci.config_path),
@@ -280,6 +311,15 @@ def load_config(config_path: Optional[Path] = None) -> Settings:
 def _parse_config(data: Dict[str, Any]) -> Settings:
     """Parse configuration dictionary into Settings object."""
     settings = Settings()
+
+    if "monitoring" in data:
+        monitoring_data = data["monitoring"] or {}
+        if not isinstance(monitoring_data, dict):
+            raise ValueError("monitoring must be a mapping.")
+        settings.monitoring = MonitoringConfig(**{
+            item.name: monitoring_data.get(item.name, getattr(settings.monitoring, item.name))
+            for item in fields(MonitoringConfig)
+        })
 
     if oci_data := data.get("oci"):
         settings.oci = OCIConfig(
@@ -482,6 +522,23 @@ def _apply_env_overrides(settings: Settings) -> Settings:
                 raw_audit,
             )
 
+    monitoring = asdict(settings.monitoring)
+    for suffix, name, converter in (
+        ("COMPARTMENT", "default_compartment_id", str),
+        ("REGION", "region", str),
+        ("MAX_WINDOW_HOURS", "max_window_hours", int),
+        ("TIMEOUT", "timeout_seconds", float),
+        ("MAX_SERIES", "max_series", int),
+        ("MAX_DATAPOINTS", "max_datapoints", int),
+        ("MAX_RESPONSE_BYTES", "max_response_bytes", int),
+    ):
+        raw = os.environ.get("OCI_LOGAN_MONITORING_" + suffix)
+        if raw is not None and raw != "":
+            try:
+                monitoring[name] = converter(raw)
+            except (TypeError, ValueError):
+                raise ValueError(f"monitoring.{name} has an invalid environment value.") from None
+    settings.monitoring = MonitoringConfig(**monitoring)
     return settings
 
 

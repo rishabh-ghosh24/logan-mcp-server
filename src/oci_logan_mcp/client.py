@@ -1,7 +1,11 @@
 """OCI Log Analytics client wrapper."""
 
 import asyncio
+from copy import deepcopy
 import logging
+import math
+import re
+import threading
 from io import BytesIO
 from typing import Optional, List, Dict, Any, Sequence, Tuple
 from datetime import datetime
@@ -19,6 +23,10 @@ logger = logging.getLogger(__name__)
 
 class QueryTimeoutError(Exception):
     """The query exceeded its whole-operation deadline."""
+
+
+class ServiceUnavailableError(RuntimeError):
+    """SDK construction failed without exposing provider exception text."""
 
 
 def _get_items(response_data):
@@ -76,13 +84,14 @@ class OCILogAnalyticsClient:
         self.settings = settings
         self._config, self._signer = get_signer(settings.oci)
 
-        self._la_client = oci.log_analytics.LogAnalyticsClient(
-            config=self._config, signer=self._signer
-        )
-
-        self._identity_client = oci.identity.IdentityClient(
-            config=self._config, signer=self._signer
-        )
+        self._service_lock = threading.RLock()
+        self._la_factory = oci.log_analytics.LogAnalyticsClient
+        self._identity_factory = oci.identity.IdentityClient
+        self._monitoring_factory = oci.monitoring.MonitoringClient
+        self._none_retry_factory = oci.retry.NoneRetryStrategy
+        self.__la_client = None
+        self.__identity_client = None
+        self._regional_monitoring_clients = {}
 
         self._rate_limiter = RateLimiter()
         self._auth_type = settings.oci.auth_type
@@ -90,6 +99,61 @@ class OCILogAnalyticsClient:
         # Runtime context (can be changed)
         self._namespace = settings.log_analytics.namespace
         self._compartment_id = settings.log_analytics.default_compartment_id
+
+    def _construct_service(self, factory, service, **arguments):
+        try:
+            return factory(signer=self._signer, **arguments)
+        except Exception:
+            raise ServiceUnavailableError(
+                f"{service} client is unavailable. Check OCI setup and use test_connection."
+            ) from None
+
+    @property
+    def _la_client(self):
+        with self._service_lock:
+            if self.__la_client is None:
+                self.__la_client = self._construct_service(
+                    self._la_factory, "Log Analytics", config=deepcopy(self._config),
+                )
+            return self.__la_client
+
+    @_la_client.setter
+    def _la_client(self, value):
+        with self._service_lock:
+            self.__la_client = value
+
+    @property
+    def _identity_client(self):
+        with self._service_lock:
+            if self.__identity_client is None:
+                self.__identity_client = self._construct_service(
+                    self._identity_factory, "Identity", config=deepcopy(self._config),
+                )
+            return self.__identity_client
+
+    @_identity_client.setter
+    def _identity_client(self, value):
+        with self._service_lock:
+            self.__identity_client = value
+
+    def monitoring_client_for_region(self, region: str, *, timeout_seconds: float):
+        """Get an immutable regional configuration without changing the alarm client."""
+        if not isinstance(region, str) or not re.fullmatch(r"[a-z][a-z0-9]*(?:-[a-z0-9]+)+-\d+", region):
+            raise ValueError("Choose a valid OCI region name.")
+        if (type(timeout_seconds) not in (int, float)
+                or not math.isfinite(timeout_seconds) or timeout_seconds <= 0):
+            raise ValueError("Monitoring timeout must be a finite positive number.")
+        key = (region, float(timeout_seconds))
+        with self._service_lock:
+            if key not in self._regional_monitoring_clients:
+                config = deepcopy(self._config)
+                config["region"] = region
+                self._regional_monitoring_clients[key] = self._construct_service(
+                    self._monitoring_factory, "Monitoring", config=config,
+                    timeout=(min(10.0, timeout_seconds), timeout_seconds),
+                    retry_strategy=self._none_retry_factory(),
+                )
+            return self._regional_monitoring_clients[key]
 
     @property
     def monitoring_client(self):

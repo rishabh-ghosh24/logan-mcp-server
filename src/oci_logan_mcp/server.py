@@ -261,9 +261,7 @@ class OCILogAnalyticsMCPServer:
 
         try:
             self.oci_client = OCILogAnalyticsClient(self.settings)
-            logger.info(
-                f"Connected to OCI Log Analytics (namespace: {self.oci_client.namespace})"
-            )
+            logger.info("OCI authentication initialized; service access has not yet been tested")
         except Exception as e:
             self._init_error = f"{type(e).__name__}: {e}"
             logger.error(f"Failed to initialize OCI client: {e}")
@@ -375,6 +373,9 @@ class OCILogAnalyticsMCPServer:
         Failures are logged but do not affect server operation — tools
         fetch schema on demand via SchemaManager.
         """
+        if (not self.oci_client
+                or getattr(getattr(self.settings, "log_analytics", None), "namespace", None) == ""):
+            return
         try:
             guard = self.handlers.scope_guard if self.handlers is not None else ScopeGuard()
             async with guard.shared():
@@ -408,7 +409,9 @@ class OCILogAnalyticsMCPServer:
         logger.info("Starting MCP server on stdio...")
         async with stdio_server() as (read_stream, write_stream):
             schema_task = None
-            if self.oci_client and ENABLE_STARTUP_SCHEMA_REFRESH and not (self.settings and self.settings.read_only):
+            if (self.oci_client
+                    and getattr(getattr(self.settings, "log_analytics", None), "namespace", None) != ""
+                    and ENABLE_STARTUP_SCHEMA_REFRESH and not getattr(self.settings, "read_only", False)):
                 schema_task = asyncio.create_task(self._refresh_schema_background())
             elif self.oci_client:
                 logger.info(
