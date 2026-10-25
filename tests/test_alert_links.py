@@ -136,3 +136,48 @@ async def test_find_log_alerts_merges_tagged_and_console_and_caches():
     invalidate(store, COMPARTMENT)
     await find_log_alerts(client, store)
     client.list_alarms.assert_awaited_once()
+
+
+class TestListAlerts:
+    """list_alerts shows every log alert, ours and console-made, with its live condition."""
+
+    def make_service(self, client):
+        from oci_logan_mcp.alarm_service import AlarmService
+        return AlarmService(client, cache())
+
+    @pytest.mark.asyncio
+    async def test_list_alerts_includes_console_alert_with_resolved_query(self):
+        client = make_client([LOGAN_ALARM, CONSOLE_ALARM, LOOKALIKE_ALARM],
+                             all_tasks=[{"id": "ocid1.task.console"}],
+                             task_details={"ocid1.task.console": CONSOLE_TASK})
+
+        rows = await self.make_service(client).list_alerts()
+
+        console = next(r for r in rows if r["alarm_id"] == "ocid1.alarm.console")
+        assert console["created_by"] == "console"
+        assert console["query"] == "* | stats count"
+        assert console["condition"] == "test_metric[5m].max() > 0"
+        assert (console["threshold_operator"], console["threshold_value"]) == ("gt", "0")
+        assert (console["schedule"], console["schedule_format"]) == ("0 */5 * ? * *", "oci")
+        assert console["backing_saved_search_id"] == "ocid1.mss.console"
+        assert console["backing_metric_task_id"] == "ocid1.task.console"
+        assert "ocid1.alarm.cpu" not in {r["alarm_id"] for r in rows}
+
+    @pytest.mark.asyncio
+    async def test_list_alerts_keeps_existing_keys_for_logan_alerts(self):
+        tagged = {**LOGAN_ALARM, "freeform_tags": {**LOGAN_ALARM["freeform_tags"], "logan_group_id": "g1"}}
+        client = make_client([tagged])
+
+        rows = await self.make_service(client).list_alerts()
+
+        assert len(rows) == 1
+        row = rows[0]
+        assert row["created_by"] == "logan"
+        assert row["alert_group"] == "g1"
+        assert row["query"] == LOGAN_ALARM["freeform_tags"]["logan_query"]
+        assert (row["schedule"], row["schedule_format"]) == ("*/15 * * * *", "logan")
+        assert row["condition"] == "logan_alert_abc[15m].last() > 50"
+        assert (row["threshold_operator"], row["threshold_value"]) == ("gt", "50")
+        for key in ("alarm_id", "display_name", "severity", "lifecycle_state",
+                    "backing_saved_search_id", "backing_metric_task_id"):
+            assert key in row

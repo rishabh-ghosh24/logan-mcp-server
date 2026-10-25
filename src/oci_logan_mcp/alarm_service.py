@@ -9,6 +9,7 @@ import oci
 from .client import OCILogAnalyticsClient
 from .cache import CacheManager
 from .saved_search_config import build_scope_filters, build_ui_config
+from .alert_links import find_log_alerts
 
 # OCI Management Dashboard API requires crossService in featuresConfig
 FEATURES_CONFIG = {"crossService": {"shared": True}}
@@ -240,23 +241,24 @@ class AlarmService:
         }
 
     async def list_alerts(self, compartment_id: Optional[str] = None) -> List[Dict[str, Any]]:
-        alarms = await self.oci_client.list_alarms(compartment_id)
-        results = []
-        for a in alarms:
-            tags = a.get("freeform_tags", {})
-            if tags.get("logan_managed") == "true" and tags.get("logan_kind") == "monitoring_alarm":
-                results.append({
-                    "alarm_id": a["id"],
-                    "display_name": a.get("display_name", ""),
-                    "severity": a.get("severity", ""),
-                    "lifecycle_state": a.get("lifecycle_state", ""),
-                    "query": tags.get("logan_query", ""),
-                    "schedule": tags.get("logan_schedule", ""),
-                    "backing_saved_search_id": tags.get("logan_backing_saved_search_id"),
-                    "backing_metric_task_id": tags.get("logan_backing_metric_task_id"),
-                    "alert_group": tags.get("logan_group_id"),
-                })
-        return results
+        """Every alarm backed by a Log Analytics scheduled search, ours or console-made."""
+        alerts = await find_log_alerts(self.oci_client, self.cache, compartment_id)
+        return [{
+            "alarm_id": a.alarm_id,
+            "display_name": a.display_name,
+            "severity": a.severity,
+            "lifecycle_state": a.lifecycle_state,
+            "created_by": a.created_by,
+            "query": a.query,
+            "condition": a.condition,
+            "threshold_operator": a.threshold_operator,
+            "threshold_value": a.threshold_value,
+            "schedule": a.schedule,
+            "schedule_format": a.schedule_format,
+            "backing_saved_search_id": a.backing_saved_search_id,
+            "backing_metric_task_id": a.backing_metric_task_id,
+            "alert_group": a.alert_group,
+        } for a in alerts]
 
     async def delete_alert(self, alert_id: str) -> Dict[str, Any]:
         alarm = await self.oci_client.get_alarm(alert_id)

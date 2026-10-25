@@ -1498,7 +1498,7 @@ def get_tools() -> List[Dict[str, Any]]:
         },
         {
             "name": "list_alerts",
-            "description": "List all Logan-managed OCI autonomous alerts.",
+            "description": "List OCI log alerts in the compartment, including ones created in the console, with each alert's live condition and threshold.",
             "inputSchema": {
                 "type": "object",
                 "properties": {

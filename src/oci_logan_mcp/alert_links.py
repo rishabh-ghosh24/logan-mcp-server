@@ -31,6 +31,7 @@ class LinkedAlert:
     query: str
     schedule: str
     schedule_format: str
+    alert_group: Optional[str] = None
 
 
 def parse_condition(mql: Optional[str]) -> Tuple[Optional[str], Optional[str], Optional[str]]:
@@ -67,7 +68,7 @@ def _from_tagged(alarm: Dict[str, Any]) -> LinkedAlert:
         backing_metric_task_id=tags.get("logan_backing_metric_task_id"),
         metric_namespace=alarm.get("namespace"), metric_name=metric,
         query=tags.get("logan_query", ""), schedule=tags.get("logan_schedule", ""),
-        schedule_format="logan",
+        schedule_format="logan", alert_group=tags.get("logan_group_id"),
     )
 
 
