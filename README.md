@@ -117,7 +117,7 @@ Start a new MCP session and call `test_connection`, then use `get_log_summary` o
 | **Triage diffs** | `diff_time_windows`, `pivot_on_entity`, `ingestion_health`, `parser_failure_triage`, `investigate_incident`, `investigate_and_generate_report`, `why_did_this_fire`, `find_rare_events`, `trace_request_id`, `related_dashboards_and_searches` | Compare a query across two time windows; pull all events for an entity across sources; probe per-source ingestion freshness; surface top parser failures; one-call first-cut investigation orchestrator; run investigation plus report generation; replay a Logan-managed alarm's historical fire window; surface low-frequency field values for a source; search common request-id / trace-id fields across sources; find existing dashboards and saved searches related to a source, entity, or field |
 | **Investigation playbooks** | `record_investigation`, `list_playbooks`, `get_playbook`, `delete_playbook` | Save the current session's audited tool calls as a named playbook, then list, fetch, or delete recorded playbooks |
 | **Reports** | `generate_incident_report`, `get_report_delivery_options`, `list_notification_topics`, `deliver_report` | Convert an investigation result into deterministic Markdown/HTML, then generate a PDF and deliver it through Telegram, ONS email-topic summary, or optional Slack summary |
-| **Explore schema** | `list_log_sources`, `list_fields`, `list_entities`, `list_parsers`, `list_labels` | Discover what log data is available |
+| **Explore schema** | `list_log_sources`, `list_fields`, `list_entities`, `list_parsers`, `list_labels` | Discover what log data is available; the listing tools take `keyword` and `limit` (default 50) and say how many rows were left out |
 | **Onboard sources** | `create_log_source_from_sample` | Generate a JSON/NDJSON, CSV, or regex-text parser and source from sample logs, upload the sample workload, and verify parse failures |
 | **Visualize** | `visualize` | Generate pie, bar, line, area, table, tile, treemap, heatmap, histogram charts |
 | **Dashboards** | `create_dashboard`, `add_dashboard_tile`, `list_dashboards`, `delete_dashboard` | Create OCI Management Dashboards with LA widgets, grid layout, and scope filters |
@@ -818,6 +818,9 @@ python run_tests.py
 - Mark saved searches used by detection rules and refuse deletion until those rules are removed, with a fresh dependency check before each delete.
 - Preserve untagged console alarm conditions, recognise every metric in a compound condition, and confirm missing detection rules through OCI inventory.
 - Preflight linked alerts before saved-search writes, report partial refreshes, and reuse listing markers with bounded reads during each catalog refresh.
+- Serve the schema resource as a read-time digest (counts, top 20 sources by volume, pointers) instead of the full catalog.
+- Search log sources, fields, entities and saved searches by keyword with a default limit of 50 rows, ranking sources with recent data first.
+- Send every tool result as compact JSON.
 - Fetch entity inventories with larger pages outside the event loop, and use the SDK's supported source filter for field discovery.
 - Preserve OCI's native metric units while accepting capitalization variants of percent.
 - Report aggregate log counts accurately in connection diagnostics, including zero.
