@@ -92,6 +92,28 @@ async def test_slow_path_matches_console_alarm_by_namespace_and_metric_token():
 
 
 @pytest.mark.asyncio
+async def test_console_rule_on_a_fixed_frequency_schedule_reports_its_interval():
+    fixed = {**CONSOLE_TASK, "cron": None, "interval": "PT5M"}
+    client = make_client([CONSOLE_ALARM], tasks_for_search=[{"id": "ocid1.task.console"}],
+                         task_details={"ocid1.task.console": fixed})
+
+    [alert] = await find_alerts_for_saved_search(client, cache(), "ocid1.mss.console")
+
+    assert (alert.schedule, alert.schedule_format) == ("PT5M", "interval")
+
+
+@pytest.mark.asyncio
+async def test_console_rule_without_a_readable_schedule_says_so():
+    bare = {**CONSOLE_TASK, "cron": None, "interval": None}
+    client = make_client([CONSOLE_ALARM], tasks_for_search=[{"id": "ocid1.task.console"}],
+                         task_details={"ocid1.task.console": bare})
+
+    [alert] = await find_alerts_for_saved_search(client, cache(), "ocid1.mss.console")
+
+    assert (alert.schedule, alert.schedule_format) == ("", "unknown")
+
+
+@pytest.mark.asyncio
 async def test_same_metric_token_in_other_namespace_is_not_a_log_alert():
     client = make_client([LOOKALIKE_ALARM, CONSOLE_ALARM], tasks_for_search=[{"id": "ocid1.task.console"}],
                          task_details={"ocid1.task.console": CONSOLE_TASK})

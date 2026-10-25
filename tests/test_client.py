@@ -1311,6 +1311,24 @@ class TestAlertClientMethods:
         )
 
     @pytest.mark.asyncio
+    async def test_get_scheduled_task_details_reads_a_fixed_frequency_interval(self, mock_client):
+        """Console-made detection rules usually run "every N minutes", which OCI stores as an
+        ISO interval on a FIXED_FREQUENCY schedule, not as a cron expression."""
+        from types import SimpleNamespace
+        mock_client._la_client = MagicMock()
+        mock_client._la_client.get_scheduled_task.return_value = SimpleNamespace(data=SimpleNamespace(
+            id="ocid1.task.1", display_name="rule", lifecycle_state="ACTIVE", freeform_tags={},
+            schedules=[SimpleNamespace(type="FIXED_FREQUENCY", recurring_interval="PT5M")],
+            action=SimpleNamespace(saved_search_id="ocid1.mss.1", metric_extraction=SimpleNamespace(
+                namespace="ns", metric_name="m", resource_group=None)),
+        ))
+
+        details = await mock_client.get_scheduled_task_details("ocid1.task.1")
+
+        assert details["cron"] is None
+        assert details["interval"] == "PT5M"
+
+    @pytest.mark.asyncio
     async def test_get_alarm_includes_pending_duration(self, mock_client):
         mock_client._monitoring_client = MagicMock()
         mock_client._monitoring_client.get_alarm.return_value = MagicMock(

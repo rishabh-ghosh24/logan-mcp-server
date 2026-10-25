@@ -1045,6 +1045,7 @@ class OCILogAnalyticsClient:
             "lifecycle_state": getattr(task, "lifecycle_state", ""),
             "saved_search_id": getattr(action, "saved_search_id", None),
             "cron": getattr(schedule, "expression", None),
+            "interval": getattr(schedule, "recurring_interval", None),
             "metric_namespace": getattr(extraction, "namespace", None),
             "metric_name": getattr(extraction, "metric_name", None),
             "metric_resource_group": getattr(extraction, "resource_group", None),

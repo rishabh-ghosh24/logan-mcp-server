@@ -87,6 +87,15 @@ def _watches(alarm: Dict[str, Any], task: Dict[str, Any]) -> bool:
     return not (alarm_group and task_group and alarm_group != task_group)
 
 
+def _task_schedule(task: Dict[str, Any]) -> Tuple[str, str]:
+    """A detection rule runs on an OCI cron expression or on a fixed interval (ISO duration)."""
+    if task.get("cron"):
+        return task["cron"], "oci"
+    if task.get("interval"):
+        return task["interval"], "interval"
+    return "", "unknown"
+
+
 async def _console_matches(client, alarms: List[Dict[str, Any]], task: Dict[str, Any]) -> List[LinkedAlert]:
     if not task.get("metric_name") or not task.get("metric_namespace"):
         return []
@@ -96,6 +105,7 @@ async def _console_matches(client, alarms: List[Dict[str, Any]], task: Dict[str,
     query = ""
     if task.get("saved_search_id"):
         query = (await client.get_saved_search(task["saved_search_id"])).get("query", "") or ""
+    schedule, schedule_format = _task_schedule(task)
     results = []
     for alarm in watching:
         _, operator, threshold = parse_condition(alarm.get("query"))
@@ -107,7 +117,7 @@ async def _console_matches(client, alarms: List[Dict[str, Any]], task: Dict[str,
             threshold_operator=operator, threshold_value=threshold,
             backing_saved_search_id=task.get("saved_search_id"), backing_metric_task_id=task["id"],
             metric_namespace=task.get("metric_namespace"), metric_name=task.get("metric_name"),
-            query=query, schedule=task.get("cron") or "", schedule_format="oci",
+            query=query, schedule=schedule, schedule_format=schedule_format,
         ))
     return results
 
