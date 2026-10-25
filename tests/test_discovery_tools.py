@@ -127,6 +127,24 @@ async def test_fields_keyword_and_compact_rows(tmp_path):
 
 
 @pytest.mark.asyncio
+async def test_field_hints_that_repeat_the_description_are_left_out(tmp_path):
+    handlers, client, _ = make_handlers(tmp_path)
+    long_text = "Destination IP address of the flow record. " * 10
+    client.list_fields = AsyncMock(return_value=[
+        {"name": "dstip", "display_name": "Destination IP", "data_type": "STRING", "description": long_text},
+        {"name": "Severity", "display_name": "Severity", "data_type": "STRING", "description": "Log severity."},
+    ])
+
+    out = await call(handlers, "list_fields", {})
+
+    by_name = {f["name"]: f for f in out["fields"]}
+    dst, severity = by_name["dstip"], by_name["Severity"]
+    assert "hint" not in dst and dst["data_type"] == "STRING" and dst["description"].endswith("...")
+    assert severity["hint"] == handlers.schema_manager.FIELD_HINTS["Severity"]  # curated guidance kept
+    assert severity["possible_values"] == ["Critical", "Error", "Warning", "Info", "Debug"]
+
+
+@pytest.mark.asyncio
 async def test_entities_keyword_matches_name_type_and_hostname(tmp_path):
     handlers, client, _ = make_handlers(tmp_path)
 

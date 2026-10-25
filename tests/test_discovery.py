@@ -60,6 +60,7 @@ class TestRankSources:
         assert top("Oracle Alert Logs", volume={"OCI PostgreSQL Database Logs": 5})[0] == "Oracle Alert Logs"
 
     def test_every_token_must_hit(self):
+        assert top("audit tenancy") == ["OCI Audit Logs"]  # both tokens hit one source
         assert top("audit kubernetes") == []
 
     def test_no_keyword_returns_everything_with_data_first(self):

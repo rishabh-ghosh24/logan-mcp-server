@@ -1020,6 +1020,13 @@ class TestSerializeEntityTypes:
     def test_entity_types_as_strings(self, client):
         assert client._serialize_entity_types(["Host", "VM"]) == ["Host", "VM"]
 
+    def test_sdk_entity_types_give_their_display_name(self, client):
+        from oci.log_analytics.models import LogAnalyticsSourceEntityType
+        et = LogAnalyticsSourceEntityType(entity_type="oci_vcn_vnic", entity_type_category="OCI",
+                                          entity_type_display_name="OCI VCN VNIC", source_id=1)
+        bare = LogAnalyticsSourceEntityType(entity_type="oci_vcn_vnic")
+        assert client._serialize_entity_types([et, bare]) == ["OCI VCN VNIC", "oci_vcn_vnic"]
+
     def test_entity_types_mixed(self, client):
         et1 = MagicMock()
         et1.name = "Host"

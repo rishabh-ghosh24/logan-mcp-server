@@ -2,7 +2,6 @@
 import json
 
 import pytest
-from unittest.mock import AsyncMock, MagicMock
 
 from oci_logan_mcp.handlers import MCPHandlers, _dumps
 from tests.test_discovery_tools import make_handlers
@@ -21,7 +20,9 @@ def test_compact_is_materially_smaller_than_pretty():
     payload = {"sources": [{"display_name": f"Source {i}", "name": f"src{i}", "records_in_window": i} for i in range(50)],
                "total": 50, "returned": 50, "truncated": False}
     pretty = json.dumps(payload, indent=2)
-    assert len(_dumps(payload)) <= 0.7 * len(pretty)
+    text = _dumps(payload)
+    assert json.loads(text) == payload  # same content, so the size win is not from dropping it
+    assert len(text) <= 0.7 * len(pretty)
 
 
 @pytest.mark.asyncio
@@ -35,7 +36,8 @@ async def test_tool_results_carry_no_indentation(tmp_path):
 
 @pytest.mark.asyncio
 async def test_error_results_are_compact_too(tmp_path):
-    handlers, client, _ = make_handlers(tmp_path)
-    client.list_fields = AsyncMock(side_effect=ValueError("MARKER"))
-    [response] = await handlers.handle_tool_call("list_fields", {})
+    handlers, _, _ = make_handlers(tmp_path)
+    [response] = await handlers.handle_tool_call("get_incident_report", {"report_id": "../not-a-report"})
+    assert response.get("is_error") is True
     assert "\n" not in response["text"]
+    assert json.loads(response["text"])["error_code"] == "invalid_report_id"

@@ -87,6 +87,105 @@ async def test_volume_map_is_shared_for_five_minutes():
     assert engine.execute.await_count == 2 and other == first
 
 
+@pytest.mark.asyncio
+async def test_a_failed_volume_query_leaves_the_no_data_count_unknown():
+    client, engine = make_client(), make_engine(VOLUME_ROWS)
+    engine.execute = AsyncMock(side_effect=TimeoutError("query timed out"))
+
+    digest = await SchemaManager(client, CacheManager(CacheConfig(enabled=True))).get_schema_digest(engine, SCOPE)
+
+    assert digest["more_sources"]["defined_without_data_in_window"] is None
+    assert digest["more_sources"]["with_data_not_shown"] is None
+
+
+@pytest.mark.parametrize("data", [
+    {"rows": VOLUME_ROWS, "is_partial": True},
+    {"rows": [[f"Source {i}", 1000 - i] for i in range(500)]},  # the row cap was reached: more may exist
+])
+@pytest.mark.asyncio
+async def test_an_incomplete_volume_map_gives_lower_bounds_not_exact_counts(data):
+    client, engine = make_client(n_sources=600), make_engine([])
+    engine.execute = AsyncMock(return_value={"data": {"columns": [{"name": "Log Source"}, {"name": "count"}], **data}})
+
+    digest = await SchemaManager(client, CacheManager(CacheConfig(enabled=True))).get_schema_digest(engine, SCOPE)
+
+    rows = len(data["rows"])
+    assert "log_sources_with_data_in_window" not in digest["counts"]
+    assert digest["counts"]["log_sources_with_data_in_window_at_least"] == rows
+    more = digest["more_sources"]
+    assert more["defined_without_data_in_window"] is None
+    assert more["with_data_not_shown_at_least"] == rows - 20 and "with_data_not_shown" not in more
+    assert more["incomplete"]
+
+
+@pytest.mark.asyncio
+async def test_a_complete_empty_volume_map_is_an_exact_zero():
+    client, engine = make_client(), make_engine([])
+
+    digest = await SchemaManager(client, CacheManager(CacheConfig(enabled=True))).get_schema_digest(engine, SCOPE)
+
+    assert digest["counts"]["log_sources_with_data_in_window"] == 0
+    assert digest["more_sources"]["defined_without_data_in_window"] == 30
+    assert "incomplete" not in digest["more_sources"]
+
+
+@pytest.mark.asyncio
+async def test_the_default_compartment_and_its_explicit_id_share_one_volume_map():
+    client, engine = make_client(), make_engine(VOLUME_ROWS)
+    client.compartment_id = SCOPE["compartment_id"]
+    manager = SchemaManager(client, CacheManager(CacheConfig(enabled=True)))
+
+    await manager.get_volume_by_source(engine, None, True)
+    await manager.get_volume_by_source(engine, SCOPE["compartment_id"], True)
+
+    engine.execute.assert_awaited_once()
+
+
+@pytest.mark.asyncio
+async def test_concurrent_cold_reads_run_one_volume_query():
+    import asyncio
+    client, engine = make_client(), make_engine(VOLUME_ROWS)
+    gate, result = asyncio.Event(), await engine.execute()
+    engine.execute.reset_mock()
+
+    async def slow(**kwargs):
+        await gate.wait()
+        return result
+    engine.execute = AsyncMock(side_effect=slow)
+    manager = SchemaManager(client, CacheManager(CacheConfig(enabled=True)))
+
+    tasks = [asyncio.create_task(manager.get_volume_by_source(engine, SCOPE["compartment_id"], True)) for _ in range(2)]
+    await asyncio.sleep(0)
+    gate.set()
+    first, second = await asyncio.gather(*tasks)
+
+    assert first == second == {f"Source {i}": 1000 - i for i in range(25)}
+    engine.execute.assert_awaited_once()
+
+
+@pytest.mark.asyncio
+async def test_the_volume_map_expires_after_five_minutes_whatever_the_query_ttl():
+    import time
+    client, engine = make_client(), make_engine(VOLUME_ROWS)
+    manager = SchemaManager(client, CacheManager(CacheConfig(enabled=True, query_ttl_minutes=60)))
+
+    await manager.get_volume_by_source(engine, SCOPE["compartment_id"], True)
+    with patch("time.time", return_value=time.time() + 301):
+        await manager.get_volume_by_source(engine, SCOPE["compartment_id"], True)
+
+    assert engine.execute.await_count == 2
+
+
+@pytest.mark.parametrize("enabled, phrase", [(True, "five minutes"), (False, "every read")])
+@pytest.mark.asyncio
+async def test_freshness_describes_the_real_reuse(enabled, phrase):
+    client, engine = make_client(), make_engine(VOLUME_ROWS)
+
+    digest = await SchemaManager(client, CacheManager(CacheConfig(enabled=enabled))).get_schema_digest(engine, SCOPE)
+
+    assert phrase in digest["freshness"]
+
+
 class TestClientWrappers:
     @pytest.fixture
     def client(self):

@@ -983,6 +983,27 @@ class TestResourceRead:
         assert result == {"namespace": "testns"}
 
     @pytest.mark.asyncio
+    async def test_schema_read_is_audited_with_actor_scope_and_trace(self, handlers, mock_audit_logger):
+        handlers.schema_manager.get_schema_digest = AsyncMock(return_value={"counts": {}, "errors": {"volume_by_source": "x"}})
+        await handlers.handle_resource_read("loganalytics://schema")
+        events = list(mock_audit_logger.iter_entries())
+        assert [e["outcome"] for e in events] == ["invoked", "executed"]
+        assert {e["tool"] for e in events} == {"resource:loganalytics://schema"}
+        assert {e["user"] for e in events} == {handlers.user_store.user_id}
+        assert len({e["trace_id"] for e in events}) == 1
+        assert {"compartment_id", "include_subcompartments", "namespace"} <= set(events[0]["args_redacted"])
+        assert events[1]["result_summary"]["errors"] == ["volume_by_source"]
+
+    @pytest.mark.asyncio
+    async def test_a_failed_schema_read_is_audited(self, handlers, mock_audit_logger):
+        handlers.schema_manager.get_schema_digest = AsyncMock(side_effect=RuntimeError("boom"))
+        with pytest.raises(RuntimeError):
+            await handlers.handle_resource_read("loganalytics://schema")
+        events = list(mock_audit_logger.iter_entries())
+        assert [e["outcome"] for e in events] == ["invoked", "execution_failed"]
+        assert events[1]["result_summary"]["error_type"] == "RuntimeError"
+
+    @pytest.mark.asyncio
     async def test_unknown_resource_raises(self, handlers):
         """Should raise ValueError for unknown resource URI."""
         with pytest.raises(ValueError, match="Unknown resource"):

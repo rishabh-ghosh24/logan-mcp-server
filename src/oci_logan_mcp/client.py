@@ -455,12 +455,15 @@ class OCILogAnalyticsClient:
 
         result = []
         for et in entity_types:
-            if hasattr(et, "name"):
-                result.append(et.name)
-            elif hasattr(et, "entity_type_name"):
-                result.append(et.entity_type_name)
-            elif isinstance(et, str):
+            if isinstance(et, str):
                 result.append(et)
+                continue
+            # SDK objects carry entity_type_display_name (human) and entity_type (internal)
+            for attr in ("entity_type_display_name", "entity_type", "name", "entity_type_name"):
+                value = getattr(et, attr, None)
+                if isinstance(value, str) and value:
+                    result.append(value)
+                    break
             else:
                 result.append(str(et))
         return result

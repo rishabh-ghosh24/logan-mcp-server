@@ -906,8 +906,7 @@ class MCPHandlers:
         if uri in ('monitoring://syntax-guide', 'monitoring://query-templates'):
             return read_monitoring_resource(uri)
         if uri == "loganalytics://schema":
-            return await self.schema_manager.get_schema_digest(
-                query_engine=self.query_engine, scope=self._effective_scope({}))
+            return await self._read_schema_digest(uri)
         elif uri == "loganalytics://query-templates":
             entries = self.catalog.for_templates_resource()
             return {"templates": [self._catalog_entry_to_dict(e) for e in entries]}
@@ -921,6 +920,26 @@ class MCPHandlers:
             return get_reference_docs()
         else:
             raise ValueError(f"Unknown resource: {uri}")
+
+    async def _read_schema_digest(self, uri: str) -> Dict[str, Any]:
+        """The schema digest runs a budgeted query, so its read is audited like a tool call."""
+        scope = self._effective_scope({})
+        audit = {"user": self.user_store.user_id, "tool": f"resource:{uri}", "args": scope,
+                 "trace_id": f"trace_{secrets.token_hex(16)}", "audit_ref": None, "audit_strictness": "best_effort"}
+        self._write_audit_event(outcome="invoked", **audit)
+        start = time.perf_counter()
+        try:
+            digest = await self.schema_manager.get_schema_digest(query_engine=self.query_engine, scope=scope)
+        except Exception as e:
+            self._write_audit_event(outcome="execution_failed", error=str(e), error_type=type(e).__name__,
+                                    result_summary={"success": False, "error_type": type(e).__name__,
+                                                    "execution_ms": int((time.perf_counter() - start) * 1000)},
+                                    **audit)
+            raise
+        self._write_audit_event(outcome="executed", **audit, result_summary={
+            "success": True, "execution_ms": int((time.perf_counter() - start) * 1000),
+            "errors": sorted(digest.get("errors", {}))})
+        return digest
 
     def _catalog_entry_to_dict(self, entry: "CatalogEntry") -> Dict[str, Any]:
         """Serialize a CatalogEntry to the query-templates resource wire format.
@@ -988,7 +1007,11 @@ class MCPHandlers:
         if not self.settings.read_only:
             self.context_manager.update_confirmed_fields(field_dicts)
         keyword = args.get("keyword")
-        rows = [compact_row(row) for row in filter_rows(field_dicts, keyword, ("name", "display_name", "description"))]
+        # An uncurated hint is the full description again; send it only when it says something else
+        curated = self.schema_manager.FIELD_HINTS
+        rows = [compact_row({**row, "hint": None if row["name"] not in curated and row["hint"] == row["description"]
+                             else row["hint"]})
+                for row in filter_rows(field_dicts, keyword, ("name", "display_name", "description"))]
         out = envelope("fields", rows, keyword=keyword, limit=args.get("limit", DEFAULT_LIMIT),
                        names=[f["name"] for f in field_dicts])
         if source_name:

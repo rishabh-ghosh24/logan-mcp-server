@@ -1,5 +1,6 @@
 """Schema management service for Log Analytics."""
 
+import asyncio
 from typing import Optional, List, Dict, Any
 from dataclasses import dataclass
 
@@ -41,6 +42,7 @@ class SchemaManager:
         """Initialize schema manager."""
         self.oci_client = oci_client
         self.cache = cache
+        self._volume_locks: Dict[str, asyncio.Lock] = {}
 
     async def get_log_sources(
         self, compartment_id: Optional[str] = None
@@ -128,29 +130,47 @@ class SchemaManager:
     DIGEST_TOP = 20
     VOLUME_QUERY = "* | stats count by 'Log Source' | sort -count"
 
+    VOLUME_ROW_CAP = 500
+    VOLUME_TTL_SECONDS = 300
+
     async def get_volume_by_source(self, query_engine, compartment_id: Optional[str],
                                    include_subcompartments: bool = True,
                                    window: str = DIGEST_WINDOW) -> Dict[str, int]:
-        """Records per source over the window, in volume order. One query, kept for the query
-        cache's five minutes so the digest and every ranked listing share it."""
+        """Records per source over the window, in volume order. One query, kept for five minutes
+        so the digest and every ranked listing share it."""
+        return (await self._volume_entry(query_engine, compartment_id, include_subcompartments, window))["volume"]
+
+    async def _volume_entry(self, query_engine, compartment_id: Optional[str],
+                            include_subcompartments: bool, window: str) -> Dict[str, Any]:
+        """The volume map plus why it may be incomplete (None when it is complete). Keyed by the
+        compartment the query really runs in, and one query per key even when reads race."""
+        compartment_id = compartment_id or self.oci_client.compartment_id
         cache_key = f"volume:{compartment_id or 'default'}:{include_subcompartments}:{window}"
-        cached = self.cache.get(cache_key, category="query")
-        if cached is not None:
-            return dict(cached)
-        result = await query_engine.execute(
-            query=self.VOLUME_QUERY, time_range=window, compartment_id=compartment_id,
-            include_subcompartments=include_subcompartments, max_results=500, use_cache=False,
-        )
-        data = result.get("data", {}) or {}
-        columns = [c.get("name") for c in data.get("columns", [])]
-        source_idx = columns.index("Log Source") if "Log Source" in columns else 0
-        count_idx = columns.index("count") if "count" in columns else 1
-        volume: Dict[str, int] = {}
-        for row in data.get("rows", []):
-            if len(row) > max(source_idx, count_idx) and row[source_idx]:
-                volume[str(row[source_idx])] = int(row[count_idx] or 0)
-        self.cache.set(cache_key, volume, category="query")
-        return volume
+        async with self._volume_locks.setdefault(cache_key, asyncio.Lock()):
+            cached = self.cache.get(cache_key, category="query")
+            if cached is not None:
+                return {"volume": dict(cached["volume"]), "incomplete": cached["incomplete"]}
+            result = await query_engine.execute(
+                query=self.VOLUME_QUERY, time_range=window, compartment_id=compartment_id,
+                include_subcompartments=include_subcompartments, max_results=self.VOLUME_ROW_CAP, use_cache=False,
+            )
+            data = result.get("data", {}) or {}
+            columns = [c.get("name") for c in data.get("columns", [])]
+            source_idx = columns.index("Log Source") if "Log Source" in columns else 0
+            count_idx = columns.index("count") if "count" in columns else 1
+            rows = data.get("rows", [])
+            volume: Dict[str, int] = {}
+            for row in rows:
+                if len(row) > max(source_idx, count_idx) and row[source_idx]:
+                    volume[str(row[source_idx])] = int(row[count_idx] or 0)
+            incomplete = None
+            if data.get("is_partial"):
+                incomplete = "OCI returned a partial result."
+            elif len(rows) >= self.VOLUME_ROW_CAP:
+                incomplete = f"The volume query stopped at its {self.VOLUME_ROW_CAP}-row cap; more sources may have data."
+            entry = {"volume": volume, "incomplete": incomplete}
+            self.cache.set(cache_key, entry, category="query", ttl_seconds=self.VOLUME_TTL_SECONDS)
+            return {"volume": dict(volume), "incomplete": incomplete}
 
     async def get_schema_digest(self, query_engine, scope: Dict[str, Any]) -> Dict[str, Any]:
         """A read-time digest for the schema resource: counts, the top sources by volume and where
@@ -160,15 +180,17 @@ class SchemaManager:
         errors: Dict[str, str] = {}
         counts: Dict[str, int] = {}
         sources: List[Dict[str, Any]] = []
-        volume: Dict[str, int] = {}
+        volume: Optional[Dict[str, int]] = None
+        incomplete: Optional[str] = None
         try:
             sources = await self.get_log_sources(compartment_id)
             counts["log_sources_defined"] = len(sources)
         except Exception as error:  # fail soft, part by part
             errors["log_sources"] = f"{type(error).__name__}: {error}"[:200]
         try:
-            volume = await self.get_volume_by_source(query_engine, compartment_id, include_subs)
-            counts["log_sources_with_data_in_window"] = len(volume)
+            entry = await self._volume_entry(query_engine, compartment_id, include_subs, self.DIGEST_WINDOW)
+            volume, incomplete = entry["volume"], entry["incomplete"]
+            counts["log_sources_with_data_in_window" + ("_at_least" if incomplete else "")] = len(volume)
         except Exception as error:
             errors["volume_by_source"] = f"{type(error).__name__}: {error}"[:200]
         try:
@@ -183,15 +205,17 @@ class SchemaManager:
 
         internal = {s.get("display_name") or s.get("name"): s.get("name") for s in sources}
         top = [{"display_name": name, "name": internal.get(name), "records": records}
-               for name, records in list(volume.items())[:self.DIGEST_TOP]]
+               for name, records in list((volume or {}).items())[:self.DIGEST_TOP]]
+        exact = volume is not None and not incomplete
         digest: Dict[str, Any] = {
             "scope": {"namespace": scope.get("namespace"), "compartment_id": compartment_id,
                       "include_subcompartments": include_subs, "window": self.DIGEST_WINDOW},
             "counts": counts,
             "top_sources_by_volume": top,
             "more_sources": {
-                "with_data_not_shown": max(0, len(volume) - len(top)),
-                "defined_without_data_in_window": max(0, len(sources) - len(volume)) if sources else None,
+                "with_data_not_shown" + ("_at_least" if incomplete else ""):
+                    max(0, len(volume) - len(top)) if volume is not None else None,
+                "defined_without_data_in_window": max(0, len(sources) - len(volume)) if sources and exact else None,
                 "note": ("Only sources with records in the window are listed. A source absent here may still "
                          "exist and hold older data: use list_log_sources(keyword) to find it by name, or "
                          "get_log_summary with a wider time_range."),
@@ -204,8 +228,12 @@ class SchemaManager:
                 "parsers": "list_parsers", "labels": "list_labels",
                 "volume_by_source_over_any_window": "get_log_summary or run_query",
             },
-            "freshness": "Built at read time; the volume query is reused for five minutes.",
+            "freshness": ("Built at read time; the volume query is reused for five minutes."
+                          if self.cache.config.enabled else
+                          "Built at read time; caching is off, so the volume query runs on every read."),
         }
+        if incomplete:
+            digest["more_sources"]["incomplete"] = incomplete
         if errors:
             digest["errors"] = errors
         return digest
