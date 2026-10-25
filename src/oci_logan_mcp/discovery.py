@@ -1,6 +1,6 @@
 """Keyword discovery over catalog rows: users describe sources in words, not exact names.
 
-Token rules were verified live on testtenancy (eight phrases, the live source ranked first each
+Token rules were verified live on a real tenancy (eight phrases, the live source ranked first each
 time). A token hits a word by equality or prefix; substring matches need five or more characters so
 that "ebs" never matches "webserver". Every token of the keyword must hit.
 """

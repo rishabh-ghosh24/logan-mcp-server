@@ -8,7 +8,7 @@ from oci_logan_mcp.cache import CacheManager
 from oci_logan_mcp.config import CacheConfig
 from oci_logan_mcp.schema_manager import SchemaManager
 
-SCOPE = {"namespace": "testtenancy", "compartment_id": "ocid1.compartment.scp", "include_subcompartments": True}
+SCOPE = {"namespace": "testns", "compartment_id": "ocid1.compartment.test", "include_subcompartments": True}
 
 
 def make_client(n_sources=30):
