@@ -323,7 +323,7 @@ async def test_scope_setter_waits_for_running_tool_or_resource(handlers, mock_oc
         seen.append(mock_oci_client.namespace)
         return {"fields": []} if resource else []
 
-    handlers.schema_manager.get_full_schema = slow
+    handlers.schema_manager.get_schema_digest = slow
     handlers.schema_manager.get_log_sources = slow
     async with asyncio.timeout(2):
         op = asyncio.create_task(handlers.handle_resource_read("loganalytics://schema") if resource

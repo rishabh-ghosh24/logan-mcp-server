@@ -97,16 +97,7 @@ class TestSchemaManager:
         sources = await schema_manager.get_log_sources()
         assert sources[0]["name"] == "cached"
 
-    @pytest.mark.asyncio
-    async def test_get_full_schema(self, schema_manager):
-        """Test getting full schema."""
-        schema = await schema_manager.get_full_schema()
-
-        assert "log_sources" in schema
-        assert "fields" in schema
-        assert "entities" in schema
-        assert "parsers" in schema
-        assert "labels" in schema
+    # The schema resource is a read-time digest now; see tests/test_schema_digest.py.
 
     def test_generate_semantic_hint(self, schema_manager):
         """Test semantic hint generation."""

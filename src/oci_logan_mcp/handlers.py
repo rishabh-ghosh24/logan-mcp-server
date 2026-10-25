@@ -896,7 +896,8 @@ class MCPHandlers:
         if uri in ('monitoring://syntax-guide', 'monitoring://query-templates'):
             return read_monitoring_resource(uri)
         if uri == "loganalytics://schema":
-            return await self.schema_manager.get_full_schema()
+            return await self.schema_manager.get_schema_digest(
+                query_engine=self.query_engine, scope=self._effective_scope({}))
         elif uri == "loganalytics://query-templates":
             entries = self.catalog.for_templates_resource()
             return {"templates": [self._catalog_entry_to_dict(e) for e in entries]}

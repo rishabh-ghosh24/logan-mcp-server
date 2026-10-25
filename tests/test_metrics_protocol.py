@@ -83,7 +83,8 @@ async def test_stdio_all_resources_and_offline_monitoring_help(tmp_path):
         assert 'MQL' in contents['monitoring://syntax-guide']
         assert json.loads(contents['monitoring://query-templates'])['query_language']=='mql'
         assert 'stats' in contents['loganalytics://syntax-guide']
-        assert json.loads(contents['loganalytics://schema'])['log_sources']==[]
+        digest=json.loads(contents['loganalytics://schema'])
+        assert digest['scope']['window']=='last_24_hours' and 'log_sources' not in digest
     offline=tmp_path/'offline';offline.mkdir()
     async with metrics_session(offline,auth=False) as (session,barrier):
         for name,args in [('query_metrics',None),('search_metric_catalog',{'query':'cpu'})]:

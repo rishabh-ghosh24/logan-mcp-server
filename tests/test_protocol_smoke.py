@@ -92,7 +92,9 @@ async def test_stdio_server_succeeds_against_fake_oci(tmp_path):
         assert "stats" in contents["loganalytics://syntax-guide"]
         templates = json.loads(contents["loganalytics://query-templates"])["templates"]
         assert any(item["name"] == "log_volume_by_source" for item in templates)
-        assert json.loads(contents["loganalytics://schema"])["log_sources"] == []
+        digest = json.loads(contents["loganalytics://schema"])
+        assert digest["scope"]["window"] == "last_24_hours" and "top_sources_by_volume" in digest
+        assert "log_sources" not in digest  # the resource is a digest, not the catalog
         response = await session.call_tool("run_query", {
             "query": "* | stats count", "time_range": "last_15_min",
         })

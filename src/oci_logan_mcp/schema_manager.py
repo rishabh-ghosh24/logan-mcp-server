@@ -122,30 +122,91 @@ class SchemaManager:
         self.cache.set(cache_key, labels, category="schema")
         return labels
 
-    async def get_full_schema(self) -> Dict[str, Any]:
-        """Get complete schema for AI context."""
-        sources = await self.get_log_sources()
-        fields = await self.get_fields()
-        entities = await self.get_entities()
-        parsers = await self.get_parsers()
-        labels = await self.get_labels()
+    DIGEST_WINDOW = "last_24_hours"
+    DIGEST_TOP = 20
+    VOLUME_QUERY = "* | stats count by 'Log Source' | sort -count"
 
-        return {
-            "log_sources": sources,
-            "fields": [
-                {
-                    "name": f.name,
-                    "data_type": f.data_type,
-                    "description": f.description,
-                    "possible_values": f.possible_values,
-                    "hint": f.hint,
-                }
-                for f in fields
-            ],
-            "entities": entities,
-            "parsers": parsers,
-            "labels": labels,
+    async def get_volume_by_source(self, query_engine, compartment_id: Optional[str],
+                                   include_subcompartments: bool = True,
+                                   window: str = DIGEST_WINDOW) -> Dict[str, int]:
+        """Records per source over the window, in volume order. One query, kept for the query
+        cache's five minutes so the digest and every ranked listing share it."""
+        cache_key = f"volume:{compartment_id or 'default'}:{include_subcompartments}:{window}"
+        cached = self.cache.get(cache_key, category="query")
+        if cached is not None:
+            return dict(cached)
+        result = await query_engine.execute(
+            query=self.VOLUME_QUERY, time_range=window, compartment_id=compartment_id,
+            include_subcompartments=include_subcompartments, max_results=500, use_cache=False,
+        )
+        data = result.get("data", {}) or {}
+        columns = [c.get("name") for c in data.get("columns", [])]
+        source_idx = columns.index("Log Source") if "Log Source" in columns else 0
+        count_idx = columns.index("count") if "count" in columns else 1
+        volume: Dict[str, int] = {}
+        for row in data.get("rows", []):
+            if len(row) > max(source_idx, count_idx) and row[source_idx]:
+                volume[str(row[source_idx])] = int(row[count_idx] or 0)
+        self.cache.set(cache_key, volume, category="query")
+        return volume
+
+    async def get_schema_digest(self, query_engine, scope: Dict[str, Any]) -> Dict[str, Any]:
+        """A read-time digest for the schema resource: counts, the top sources by volume and where
+        to find the rest. Nothing is stored; a failing part is reported under errors."""
+        compartment_id = scope.get("compartment_id")
+        include_subs = bool(scope.get("include_subcompartments", True))
+        errors: Dict[str, str] = {}
+        counts: Dict[str, int] = {}
+        sources: List[Dict[str, Any]] = []
+        volume: Dict[str, int] = {}
+        try:
+            sources = await self.get_log_sources(compartment_id)
+            counts["log_sources_defined"] = len(sources)
+        except Exception as error:  # fail soft, part by part
+            errors["log_sources"] = f"{type(error).__name__}: {error}"[:200]
+        try:
+            volume = await self.get_volume_by_source(query_engine, compartment_id, include_subs)
+            counts["log_sources_with_data_in_window"] = len(volume)
+        except Exception as error:
+            errors["volume_by_source"] = f"{type(error).__name__}: {error}"[:200]
+        try:
+            counts.update({k: v for k, v in (await self.oci_client.get_entities_summary(compartment_id)).items()
+                           if k in ("active_entities", "entities_with_logs_collected")})
+        except Exception as error:
+            errors["entities_summary"] = f"{type(error).__name__}: {error}"[:200]
+        try:
+            counts["entity_types"] = len(await self.oci_client.list_entity_types())
+        except Exception as error:
+            errors["entity_types"] = f"{type(error).__name__}: {error}"[:200]
+
+        internal = {s.get("display_name") or s.get("name"): s.get("name") for s in sources}
+        top = [{"display_name": name, "name": internal.get(name), "records": records}
+               for name, records in list(volume.items())[:self.DIGEST_TOP]]
+        digest: Dict[str, Any] = {
+            "scope": {"namespace": scope.get("namespace"), "compartment_id": compartment_id,
+                      "include_subcompartments": include_subs, "window": self.DIGEST_WINDOW},
+            "counts": counts,
+            "top_sources_by_volume": top,
+            "more_sources": {
+                "with_data_not_shown": max(0, len(volume) - len(top)),
+                "defined_without_data_in_window": max(0, len(sources) - len(volume)) if sources else None,
+                "note": ("Only sources with records in the window are listed. A source absent here may still "
+                         "exist and hold older data: use list_log_sources(keyword) to find it by name, or "
+                         "get_log_summary with a wider time_range."),
+            },
+            "how_to_get_more": {
+                "fields_of_a_source": "list_fields(source_name, keyword)",
+                "entities": "list_entities(entity_type, keyword)",
+                "sources_by_name": "list_log_sources(keyword)",
+                "saved_searches": "list_saved_searches(keyword)",
+                "parsers": "list_parsers", "labels": "list_labels",
+                "volume_by_source_over_any_window": "get_log_summary or run_query",
+            },
+            "freshness": "Built at read time; the volume query is reused for five minutes.",
         }
+        if errors:
+            digest["errors"] = errors
+        return digest
 
     def _generate_semantic_hint(self, field_name: str, description: str) -> str:
         """Generate a semantic hint for a field."""

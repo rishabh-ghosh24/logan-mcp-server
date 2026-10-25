@@ -797,6 +797,30 @@ class OCILogAnalyticsClient:
             for f in _get_items(response.data)
         ]
 
+    async def get_entities_summary(self, compartment_id: Optional[str] = None) -> Dict[str, int]:
+        """Entity counts for a compartment from OCI's summary call (no entity listing)."""
+        await self._rate_limiter.acquire()
+        response = await asyncio.to_thread(
+            self._la_client.get_log_analytics_entities_summary,
+            namespace_name=self._namespace, compartment_id=compartment_id or self._compartment_id,
+        )
+        self._rate_limiter.reset()
+        data = response.data
+        return {"active_entities": getattr(data, "active_entities_count", 0) or 0,
+                "entities_with_logs_collected": getattr(data, "entities_with_has_logs_collected_count", 0) or 0,
+                "entities_with_management_agent": getattr(data, "entities_with_management_agent_count", 0) or 0}
+
+    async def list_entity_types(self) -> List[Dict[str, Any]]:
+        """Entity type definitions (names only; no entities)."""
+        await self._rate_limiter.acquire()
+        response = await asyncio.to_thread(
+            list_call_get_all_results, self._la_client.list_log_analytics_entity_types,
+            namespace_name=self._namespace,
+        )
+        self._rate_limiter.reset()
+        return [{"name": getattr(item, "name", ""), "internal_name": getattr(item, "internal_name", None),
+                 "category": getattr(item, "category", None)} for item in response.data]
+
     async def list_entities(self, entity_type: Optional[str] = None) -> List[Dict[str, Any]]:
         """List monitored entities (auto-paginates across all pages)."""
         await self._rate_limiter.acquire()

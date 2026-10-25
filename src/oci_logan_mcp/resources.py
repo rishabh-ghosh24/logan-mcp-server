@@ -15,8 +15,9 @@ def get_resources() -> List[Dict[str, Any]]:
             "uri": "loganalytics://schema",
             "name": "Log Analytics Schema",
             "description": (
-                "Complete schema information including log sources, fields, "
-                "entities, parsers, and labels."
+                "Digest of the active scope, built at read time: counts of sources, entities and "
+                "entity types, the top 20 log sources by record volume in the last 24 hours with "
+                "display and internal names, and which tool lists the rest."
             ),
             "mimeType": "application/json",
         },
