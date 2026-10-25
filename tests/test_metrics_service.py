@@ -399,4 +399,3 @@ async def test_probe_does_not_reuse_read_permission_from_a_different_scope(tmp_p
     assert not error and probe['scope']['compartment_id']=='scope-B'
     assert probe['inspect_authorized'] is True and probe['read_authorized'] is None
     assert len(sdk.calls)==2
-
