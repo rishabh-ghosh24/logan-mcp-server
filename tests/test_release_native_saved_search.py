@@ -18,6 +18,9 @@ async def test_listing_includes_native_searches_and_legacy_tasks():
 @pytest.mark.asyncio
 async def test_native_delete_never_addresses_scheduled_tasks():
     client=SimpleNamespace(delete_management_saved_search=AsyncMock(),delete_scheduled_task=AsyncMock(),get_saved_search=AsyncMock(return_value={}))
+    client.namespace='testns'
+    client.compartment_id='ocid1.compartment.test'
+    client.list_scheduled_tasks_for_saved_search=AsyncMock(return_value=[])
     await SavedSearchService(client,CacheManager()).delete_search(NATIVE)
     client.delete_management_saved_search.assert_awaited_once_with(NATIVE)
     client.delete_scheduled_task.assert_not_called()

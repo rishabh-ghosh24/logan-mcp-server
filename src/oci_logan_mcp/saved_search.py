@@ -7,6 +7,9 @@ from .client import OCILogAnalyticsClient
 from .cache import CacheManager
 from .saved_search_config import build_scope_filters, build_ui_config
 from .alert_links import CONSOLE_STAMP, find_alerts_for_saved_search
+from .saved_search_dependencies import (
+    DependencyInspectionError, dependency_snapshot, inspect_dependencies, require_unused,
+)
 
 PROVIDER_ID = "log-analytics"
 PROVIDER_NAME = "Log Analytics"
@@ -50,20 +53,21 @@ class SavedSearchService:
         """List all saved searches."""
         cache_key = "saved_searches"
         cached = self.cache.get(cache_key)
-        if cached:
-            return cached
-
-        searches = [
-            *await self.oci_client.list_management_saved_searches(),
-            *await self.oci_client.list_saved_searches(),
-        ]
-        # Exclude Logan-managed backing resources (alert tasks, etc.)
-        searches = [
-            s for s in searches
-            if s.get("freeform_tags", {}).get("logan_managed") != "true"
-        ]
-        self.cache.set(cache_key, searches)
-        return searches
+        if cached is None:
+            searches = [
+                *await self.oci_client.list_management_saved_searches(),
+                *await self.oci_client.list_saved_searches(),
+            ]
+            # Exclude Logan-managed backing resources (alert tasks, etc.).
+            cached = [s for s in searches
+                      if s.get("freeform_tags", {}).get("logan_managed") != "true"]
+            self.cache.set(cache_key, cached)
+        try:
+            snapshot = await dependency_snapshot(self.oci_client)
+        except DependencyInspectionError:
+            return [{**row, 'usage': 'unknown', 'dependent_rules': None,
+                     'dependent_alerts': None, 'dependency_status': 'unknown'} for row in cached]
+        return [{**row, **snapshot.markers(row['id'])} for row in cached]
 
     async def get_search_by_name(self, name: str) -> Optional[Dict[str, Any]]:
         """Find a saved search by display name."""
@@ -209,14 +213,20 @@ class SavedSearchService:
                 result["linked_alerts_updated"] = linked
         return result
 
-    async def delete_search(self, search_id: str) -> None:
-        """Delete a saved search and its backing ManagementSavedSearch."""
+    async def deletion_dependencies(self, search_id: str, compartment_id: Optional[str] = None) -> Dict:
+        """Read current dependencies without relying on the base catalog cache."""
+        return await inspect_dependencies(self.oci_client, search_id, compartment_id)
+
+    async def delete_search(self, search_id: str, compartment_id: Optional[str] = None) -> None:
+        """Delete only after a fresh dependency check, including after confirmation."""
+        report = await self.deletion_dependencies(search_id, compartment_id)
+        require_unused(report)
         if search_id.startswith("ocid1.managementsavedsearch."):
             await self.oci_client.delete_management_saved_search(search_id)
             self.cache.delete("saved_searches")
             self.cache.delete(f"saved_search:{search_id}")
             return
-        backing_mss_id = await self._get_backing_mss_id(search_id)
+        backing_mss_id = report['saved_search_id']
         await self.oci_client.delete_scheduled_task(search_id)
         if backing_mss_id:
             try:

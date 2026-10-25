@@ -113,6 +113,7 @@ async def test_query_deadline_bounds_rate_limit_waits(client, wait_at):
 @pytest.mark.asyncio
 async def test_query_retry_keeps_the_original_deadline(client):
     import oci
+    from oci.log_analytics.models import QueryDetails, TimeRange
     from oci_logan_mcp.client import QueryTimeoutError
 
     client.settings.query.timeout_seconds = 0.07

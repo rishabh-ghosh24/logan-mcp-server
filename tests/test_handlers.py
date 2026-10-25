@@ -1463,6 +1463,7 @@ class TestConfirmationIntegration:
         h.alarm_service.delete_alert = AsyncMock(return_value={"deleted": True})
         h.alarm_service.update_alert = AsyncMock(return_value={"alarm_id": "a", "updated": []})
         h.saved_search.delete_search = AsyncMock(return_value=None)
+        h.saved_search.deletion_dependencies = AsyncMock(return_value={"rules": []})
         h.saved_search.update_search = AsyncMock(return_value={"id": "s"})
         h.dashboard_service.delete_dashboard = AsyncMock(return_value={"deleted": True})
         h.dashboard_service.add_tile = AsyncMock(return_value={"dashboard_id": "d"})

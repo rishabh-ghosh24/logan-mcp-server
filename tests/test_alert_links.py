@@ -68,7 +68,7 @@ async def test_fast_path_uses_backing_tag_without_listing_tasks():
     assert found[0].created_by == "logan"
     assert found[0].query == LOGAN_ALARM["freeform_tags"]["logan_query"]
     assert found[0].schedule == "*/15 * * * *" and found[0].schedule_format == "logan"
-    client.list_scheduled_tasks_for_saved_search.assert_not_called()
+    client.list_scheduled_tasks_for_saved_search.assert_awaited_once_with("ocid1.mss.logan")
 
 
 @pytest.mark.asyncio
@@ -317,7 +317,7 @@ class TestSavedSearchUpdate:
 
         assert [(a.alarm_id, a.created_by, a.query) for a in found] == [
             ("ocid1.alarm.console", "console", self.NEW_QUERY)]
-        client.list_scheduled_tasks_for_saved_search.assert_not_called()
+        client.list_scheduled_tasks_for_saved_search.assert_awaited_once_with(self.SEARCH_ID)
 
     @pytest.mark.asyncio
     async def test_no_linked_alert_means_no_alarm_calls_and_no_key(self):

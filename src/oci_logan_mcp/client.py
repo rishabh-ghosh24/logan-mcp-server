@@ -912,6 +912,7 @@ class OCILogAnalyticsClient:
                               if isinstance(item, dict) and item.get("query")), "")
             return {"id": data.id, "display_name": data.display_name,
                     "query": query, "ui_config": ui_config,
+                    "compartment_id": getattr(data, "compartment_id", None),
                     "lifecycle_state": getattr(data, "lifecycle_state", "")}
 
         response = self._la_client.get_scheduled_task(
@@ -1015,13 +1016,16 @@ class OCILogAnalyticsClient:
                 return await self.create_scheduled_task(details)
             raise
 
-    async def list_scheduled_tasks_for_saved_search(self, saved_search_id: str) -> List[Dict[str, Any]]:
-        """List the saved-search scheduled tasks that run one ManagementSavedSearch."""
+    async def list_scheduled_tasks_for_saved_search(
+        self, saved_search_id: Optional[str] = None, compartment_id: Optional[str] = None,
+    ) -> List[Dict[str, Any]]:
+        """Read all saved-search rules in a compartment, optionally filtered by search."""
         await self._rate_limiter.acquire()
+        filters = {"saved_search_id": saved_search_id} if saved_search_id is not None else {}
         response = await asyncio.to_thread(
             list_call_get_all_results, self._la_client.list_scheduled_tasks,
-            namespace_name=self._namespace, compartment_id=self._compartment_id,
-            task_type="SAVED_SEARCH", saved_search_id=saved_search_id,
+            namespace_name=self._namespace, compartment_id=compartment_id or self._compartment_id,
+            task_type="SAVED_SEARCH", **filters,
         )
         self._rate_limiter.reset()
         return [{"id": item.id, "display_name": getattr(item, "display_name", ""),
@@ -1048,6 +1052,7 @@ class OCILogAnalyticsClient:
             "interval": getattr(schedule, "recurring_interval", None),
             "metric_namespace": getattr(extraction, "namespace", None),
             "metric_name": getattr(extraction, "metric_name", None),
+            "metric_compartment_id": getattr(extraction, "compartment_id", None),
             "metric_resource_group": getattr(extraction, "resource_group", None),
             "freeform_tags": getattr(task, "freeform_tags", {}) or {},
         }
@@ -1119,6 +1124,7 @@ class OCILogAnalyticsClient:
                     "pending_duration": getattr(data, "pending_duration", None),
                     "compartment_id": getattr(data, "compartment_id", None),
                     "namespace": getattr(data, "namespace", None),
+                    "metric_compartment_id": getattr(data, "metric_compartment_id", None),
                     "resource_group": getattr(data, "resource_group", None),
                     "freeform_tags": getattr(data, "freeform_tags", {}) or {},
                     "defined_tags": getattr(data, "defined_tags", {}) or {}}
@@ -1143,6 +1149,7 @@ class OCILogAnalyticsClient:
                  "lifecycle_state": getattr(a, "lifecycle_state", ""),
                  "severity": getattr(a, "severity", ""),
                  "namespace": getattr(a, "namespace", None),
+                 "metric_compartment_id": getattr(a, "metric_compartment_id", None),
                  "resource_group": getattr(a, "resource_group", None),
                  "query": getattr(a, "query", "") or "",
                  "freeform_tags": getattr(a, "freeform_tags", {}) or {},

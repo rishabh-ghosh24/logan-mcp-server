@@ -16,6 +16,7 @@ from .schema_manager import SchemaManager
 from .visualization import VisualizationEngine, ChartType
 from .validator import QueryValidator
 from .saved_search import SavedSearchService
+from .saved_search_dependencies import DependencyInspectionError, SavedSearchInUse, require_unused
 from .export import ExportService
 from .client import OCILogAnalyticsClient
 from .cache import CacheManager
@@ -421,6 +422,28 @@ class MCPHandlers:
                 "error": str(e),
             }, indent=2)}]
 
+        dependency_extras = None
+        if (name == "delete_saved_search" and arguments.get("saved_search_id")
+                and not arguments.get("confirmation_token")):
+            try:
+                report = await self.saved_search.deletion_dependencies(
+                    arguments["saved_search_id"], effective_scope["compartment_id"],
+                )
+                require_unused(report)
+            except (DependencyInspectionError, SavedSearchInUse) as error:
+                self._write_audit_event(
+                    user=user_id, tool=name, args=self._clean_args_for_audit(name, arguments),
+                    outcome="dependency_blocked", trace_id=trace_id, audit_ref=audit_ref,
+                    audit_strictness=audit_strictness, client_metadata=client_metadata,
+                    result_summary={"success": False, "error_type": type(error).__name__},
+                    blocked=True, block_reason="saved_search_dependencies",
+                )
+                return self._saved_search_dependency_error(error)
+            dependency_extras = {"dependencies": (
+                "No detection rules found in the selected compartment. "
+                "Dependencies will be checked again before deletion; other compartments are not inspected."
+            )}
+
         # --- Confirmation gate for guarded operations ---
         guarded_call = self.confirmation_manager.is_guarded_call(name, arguments)
         if guarded_call:
@@ -451,7 +474,7 @@ class MCPHandlers:
             secret = arguments.get("confirmation_secret", "")
 
             if not token:
-                summary_extras = None
+                summary_extras = dependency_extras
                 if name == "run_query" and self._query_estimator is not None:
                     try:
                         est = await self._query_estimator.estimate(
@@ -562,6 +585,15 @@ class MCPHandlers:
                     if safe_diagnostics else self._summarize_tool_result(result, elapsed_ms)),
             )
             return result
+        except (DependencyInspectionError, SavedSearchInUse) as error:
+            self._write_audit_event(
+                user=user_id, tool=name, args=self._clean_args_for_audit(name, arguments),
+                outcome="dependency_blocked", trace_id=trace_id, audit_ref=audit_ref,
+                audit_strictness=audit_strictness, client_metadata=client_metadata,
+                result_summary={"success": False, "error_type": type(error).__name__},
+                blocked=True, block_reason="saved_search_dependencies",
+            )
+            return self._saved_search_dependency_error(error)
         except asyncio.CancelledError:
             if safe_diagnostics:
                 self._write_audit_event(
@@ -630,6 +662,11 @@ class MCPHandlers:
         payload = {"status": "error", "error_code": error_code, "error": message}
         payload.update(extra)
         return [{**item, "is_error": True} for item in self._json_response(payload)]
+
+    def _saved_search_dependency_error(self, error: RuntimeError) -> List[Dict]:
+        if isinstance(error, SavedSearchInUse):
+            return self._error_response('saved_search_in_use', str(error), dependencies=error.report)
+        return self._error_response('dependency_inspection_failed', str(error))
 
     def _audit_strictness(self, tool_name: str, arguments: Dict[str, Any]) -> str:
         if self.confirmation_manager.is_guarded_call(tool_name, arguments):
@@ -2758,7 +2795,7 @@ class MCPHandlers:
         return [{"type": "text", "text": json.dumps(result, indent=2)}]
 
     async def _delete_saved_search(self, args: Dict) -> List[Dict]:
-        await self.saved_search.delete_search(args["saved_search_id"])
+        await self.saved_search.delete_search(args["saved_search_id"], compartment_id=args.get("compartment_id"))
         return [{"type": "text", "text": json.dumps({"deleted": args["saved_search_id"]}, indent=2)}]
 
     # ── Dashboard handlers ─────────────────────────────────────────────

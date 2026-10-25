@@ -4,7 +4,7 @@ Our freeform tags are only a cache: an alert built in the console has none, but 
 stores the links (the task's savedSearchId, the task's metric extraction, the alarm's query).
 """
 import re
-from dataclasses import dataclass
+from dataclasses import dataclass, replace
 from typing import Any, Dict, List, Optional, Tuple
 
 _METRIC_RE = re.compile(r"^\s*([A-Za-z_][A-Za-z0-9_.-]*)\s*\[")
@@ -117,6 +117,10 @@ def _watches(alarm: Dict[str, Any], task: Dict[str, Any]) -> bool:
     metric, _, _ = parse_condition(alarm.get("query"))
     if metric != task.get("metric_name") or alarm.get("namespace") != task.get("metric_namespace"):
         return False
+    alarm_compartment = alarm.get("metric_compartment_id")
+    task_compartment = task.get("metric_compartment_id")
+    if alarm_compartment and task_compartment and alarm_compartment != task_compartment:
+        return False
     alarm_group, task_group = alarm.get("resource_group"), task.get("metric_resource_group")
     return not (alarm_group and task_group and alarm_group != task_group)
 
@@ -146,7 +150,7 @@ async def _console_matches(client, alarms: List[Dict[str, Any]], task: Dict[str,
         results.append(LinkedAlert(
             alarm_id=alarm["id"], display_name=alarm.get("display_name", ""),
             severity=alarm.get("severity", ""), lifecycle_state=alarm.get("lifecycle_state", ""),
-            created_by="logan" if _is_logan_alarm(alarm) else "console",
+            created_by=origin_of(alarm),
             condition=alarm.get("query", "") or "",
             threshold_operator=operator, threshold_value=threshold,
             backing_saved_search_id=task.get("saved_search_id"), backing_metric_task_id=task["id"],
@@ -159,17 +163,33 @@ async def _console_matches(client, alarms: List[Dict[str, Any]], task: Dict[str,
 
 async def find_alerts_for_saved_search(client, saved_search_id: str,
                                        compartment_id: Optional[str] = None) -> List[LinkedAlert]:
-    """Alarms that depend on one saved search: our tags first, then OCI's own links."""
+    """Merge tagged alarms with every alarm found through OCI's current rule links."""
     alarms = await client.list_alarms(compartment_id)
-    tagged = [_from_tagged(a) for a in alarms
+    tasks = await client.list_scheduled_tasks_for_saved_search(saved_search_id)
+    details = [await client.get_scheduled_task_details(task["id"]) for task in tasks]
+    eligible = []
+    for alarm in alarms:
+        metric, _, _ = parse_condition(alarm.get("query"))
+        producers = [task for task in details if task.get("metric_name") == metric
+                     and task.get("metric_namespace") == alarm.get("namespace")]
+        cid = alarm.get("metric_compartment_id")
+        if cid and producers and all(task.get("metric_compartment_id")
+                and task["metric_compartment_id"] != cid for task in producers):
+            continue
+        eligible.append(alarm)
+    tagged = [_from_tagged(a) for a in eligible
               if (a.get("freeform_tags") or {}).get("logan_backing_saved_search_id") == saved_search_id]
-    if tagged:
-        return tagged
-    results: List[LinkedAlert] = []
-    for task in await client.list_scheduled_tasks_for_saved_search(saved_search_id):
-        details = await client.get_scheduled_task_details(task["id"])
-        results.extend(await _console_matches(client, alarms, details))
-    return results
+    results = {alert.alarm_id: alert for alert in tagged}
+    for task in details:
+        for alert in await _console_matches(client, eligible, task):
+            previous = results.get(alert.alarm_id)
+            if previous and previous.created_by == "logan":
+                # Keep the public five-field schedule and grouping on our alarms.
+                alert = replace(alert, schedule=previous.schedule,
+                                schedule_format=previous.schedule_format,
+                                alert_group=previous.alert_group)
+            results[alert.alarm_id] = alert
+    return list(results.values())
 
 
 async def find_log_alerts(client, compartment_id: Optional[str] = None) -> List[LinkedAlert]:

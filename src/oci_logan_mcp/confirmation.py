@@ -53,7 +53,7 @@ NON_DESTRUCTIVE_MUTATION_EXEMPTIONS: dict[str, str] = {
 
 _SUMMARY_KEYS: Dict[str, list] = {
     "delete_alert": ["alert_id", "origin", "deletion"],
-    "delete_saved_search": ["saved_search_id"],
+    "delete_saved_search": ["saved_search_id", "dependencies"],
     "delete_dashboard": ["dashboard_id"],
     "delete_playbook": ["playbook_id"],
     "update_alert": ["alert_id", "display_name", "severity", "query", "linked_alerts", "origin"],
