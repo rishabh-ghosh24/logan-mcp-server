@@ -209,3 +209,29 @@ class TestDefaultSchedule:
         assert DEFAULT_ALERT_SCHEDULE in schedule_doc
         assert "0 */15 * * *" not in schedule_doc
         assert "24/7" not in description["description"]
+
+
+class TestQueryUpdate:
+    """A query change rewrites the saved search and refreshes the alarm's stored text."""
+
+    @pytest.mark.asyncio
+    async def test_query_update_refreshes_tag_body_and_repairs(self):
+        client = make_client()
+        client.get_alarm.return_value = {
+            **existing_alarm("logan_alert_abc[1m].count() > 0", "0 */15 * * *"), "display_name": "VCN flow spike"}
+        client.get_saved_search.return_value = {"id": "ocid1.mss.1", "ui_config": {"queryString": "old"}}
+        client.update_management_saved_search.return_value = {"id": "ocid1.mss.1"}
+        client.update_alarm.return_value = {"id": "ocid1.alarm.1"}
+        new_query = "'Log Source' = 'OCI VCN Flow Unified Schema Logs' and Action = 'REJECT' | stats count"
+
+        result = await make_svc(client).update_alert("ocid1.alarm.1", query=new_query)
+
+        client.update_alarm.assert_called_once()
+        alarm = client.update_alarm.call_args[0][1]
+        assert alarm.freeform_tags["logan_query"] == new_query
+        assert alarm.freeform_tags["logan_backing_saved_search_id"] == "ocid1.mss.1"
+        assert alarm.body == f"Logan alert: VCN flow spike\nQuery: {new_query}"
+        assert alarm.query == "logan_alert_abc[15h].last() > 0"
+        assert alarm.resource_group == "logan_alerts"
+        assert alarm.pending_duration == "PT1M"
+        assert "query" in result["updated"]

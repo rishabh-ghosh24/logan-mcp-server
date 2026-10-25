@@ -65,6 +65,42 @@ class AlarmService:
         would keep an old breach alive after a newer clean run on a sparse schedule."""
         return f"{metric_name}[{interval}].last() {cls._OPERATORS.get(operator, '>')} {threshold}"
 
+    def _repair_fields(self, alarm: Dict[str, Any], *, schedule: Optional[str] = None,
+                       threshold_value=None, threshold_operator: Optional[str] = None) -> Dict[str, Any]:
+        """Rebuild the condition from the current operator and threshold, and set the
+        resource group and pending duration that alarms from earlier releases lack."""
+        tags = alarm.get("freeform_tags", {}) or {}
+        current_mql = alarm.get("query", "") or ""
+        metric_name = current_mql.split("[")[0].strip()
+        if not metric_name:
+            raise ValueError(
+                "Cannot update threshold: alarm query is missing or not in Logan MQL format. "
+                "Retrieve the alarm with get_alarm to inspect its current query."
+            )
+        current = re.search(r"\)\s*(>=|<=|==|>|<)\s*(-?\d+(?:\.\d+)?)\s*$", current_mql)
+        symbols = {symbol: name for name, symbol in self._OPERATORS.items()}
+        operator = threshold_operator or (symbols[current.group(1)] if current else "gt")
+        tv = threshold_value if threshold_value is not None else (current.group(2) if current else 0)
+        effective_schedule = schedule or tags.get("logan_schedule") or DEFAULT_ALERT_SCHEDULE
+        return {
+            "query": self._condition(metric_name, self.alarm_interval(effective_schedule), operator, tv),
+            "resource_group": METRIC_RESOURCE_GROUP,
+            "pending_duration": ALERT_PENDING_DURATION,
+        }
+
+    def refresh_alarm_for_query(self, alarm: Dict[str, Any], query: str, *,
+                                stamp: Optional[Dict[str, str]] = None) -> Dict[str, Any]:
+        """Alarm fields to write when the query behind an alert changes: the stored query
+        text (tag and notification body), optional ownership tags, and the repair."""
+        tags = dict(alarm.get("freeform_tags", {}) or {})
+        tags.update(stamp or {})
+        tags["logan_query"] = query
+        return {
+            "freeform_tags": tags,
+            "body": f"Logan alert: {alarm.get('display_name', '')}\nQuery: {query}",
+            **self._repair_fields(alarm),
+        }
+
     @classmethod
     def _parse_cron(cls, expr: str):
         if not _CRON_RE.match(expr.strip()):
@@ -347,26 +383,15 @@ class AlarmService:
             await self.oci_client.update_scheduled_task(task_id, task_update)
 
         alarm_update_fields = {}
-        current_mql = alarm.get("query", "")
+        if query:
+            # The alarm keeps a copy of the query for list_alerts and the notification body;
+            # refresh both and repair the alarm in the same update.
+            alarm_update_fields.update(self.refresh_alarm_for_query(alarm, query))
         if threshold_value is not None or threshold_operator is not None or schedule:
-            metric_name = current_mql.split("[")[0].strip()
-            if not metric_name:
-                raise ValueError(
-                    "Cannot update threshold: alarm query is missing or not in Logan MQL format. "
-                    "Retrieve the alarm with get_alarm to inspect its current query."
-                )
-            current = re.search(r"\)\s*(>=|<=|==|>|<)\s*(-?\d+(?:\.\d+)?)\s*$", current_mql)
-            symbols = {symbol: name for name, symbol in self._OPERATORS.items()}
-            operator = threshold_operator or (symbols[current.group(1)] if current else "gt")
-            tv = threshold_value if threshold_value is not None else (current.group(2) if current else 0)
-            effective_schedule = schedule or tags.get("logan_schedule") or DEFAULT_ALERT_SCHEDULE
-            alarm_update_fields["query"] = self._condition(
-                metric_name, self.alarm_interval(effective_schedule), operator, tv,
-            )
-            # Repairs alarms created before the resource group and the one-minute pending
-            # duration were set on the alarm.
-            alarm_update_fields["resource_group"] = METRIC_RESOURCE_GROUP
-            alarm_update_fields["pending_duration"] = ALERT_PENDING_DURATION
+            alarm_update_fields.update(self._repair_fields(
+                alarm, schedule=schedule, threshold_value=threshold_value,
+                threshold_operator=threshold_operator,
+            ))
         if severity:
             alarm_update_fields["severity"] = severity
         if destination_topic_id:
@@ -375,7 +400,7 @@ class AlarmService:
             alarm_update_fields["display_name"] = display_name
 
         if schedule:
-            new_tags = dict(tags)
+            new_tags = dict(alarm_update_fields.get("freeform_tags") or tags)
             new_tags["logan_schedule"] = schedule
             alarm_update_fields["freeform_tags"] = new_tags
 

@@ -224,7 +224,16 @@ class TestUpdateAlert:
 
         assert client.update_management_saved_search.called
         assert not client.update_scheduled_task.called
-        assert not client.update_alarm.called
+        # Rishabh's exception, 2026-10-25: a query change also refreshes the alarm's stored
+        # query text and repairs the alarm, in one update, so list_alerts and notifications
+        # stop quoting the old query.
+        client.update_alarm.assert_called_once()
+        alarm = client.update_alarm.call_args[0][1]
+        assert alarm.freeform_tags["logan_query"] == "* | stats avg(duration)"
+        assert alarm.body.endswith("Query: * | stats avg(duration)")
+        assert alarm.query == "logan_alert_abc123[15h].last() > 0"
+        assert alarm.resource_group == "logan_alerts"
+        assert alarm.pending_duration == "PT1M"
 
     @pytest.mark.asyncio
     async def test_display_name_updates_all_three(self):
