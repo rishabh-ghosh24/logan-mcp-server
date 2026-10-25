@@ -57,11 +57,19 @@ async def test_warm_catalog_cache_still_sees_new_rules_without_mutating_cached_r
     rules.append(rule())
     client.list_scheduled_tasks_for_saved_search.return_value = [{'id': RULE}]
     second = await service.list_searches()
-    assert second[0]['dependent_rules'] == 1
+    assert second[0]['dependent_rules'] == 0
     assert first[0]['dependent_rules'] == 0
+    with pytest.raises(RuntimeError, match='detection rule'):
+        await service.delete_search(SEARCH)
+    client.delete_management_saved_search.assert_not_awaited()
+    await service.delete_search(FREE)
+    client.delete_management_saved_search.assert_awaited_once_with(FREE)
+    service.cache.delete('saved_searches')
+    refreshed = await service.list_searches()
+    assert refreshed[0]['dependent_rules'] == 1
     assert 'dependent_rules' not in service.cache.get('saved_searches')[0]
-    client.list_management_saved_searches.assert_awaited_once()
-    assert client.list_scheduled_tasks_for_saved_search.await_count == 2
+    assert client.list_management_saved_searches.await_count == 2
+    assert client.list_scheduled_tasks_for_saved_search.await_count == 4
 
 
 @pytest.mark.asyncio

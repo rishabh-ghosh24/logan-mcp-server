@@ -9,7 +9,7 @@ import oci
 from .client import OCILogAnalyticsClient
 from .cache import CacheManager
 from .saved_search_config import build_scope_filters, build_ui_config
-from .alert_links import alarms_watching, find_log_alerts, is_console_origin
+from .alert_links import CONSOLE_STAMP, alarms_watching, find_log_alerts, origin_of
 
 # OCI Management Dashboard API requires crossService in featuresConfig
 FEATURES_CONFIG = {"crossService": {"shared": True}}
@@ -81,7 +81,7 @@ class AlarmService:
         symbols = {symbol: name for name, symbol in self._OPERATORS.items()}
         operator = threshold_operator or (symbols[current.group(1)] if current else "gt")
         tv = threshold_value if threshold_value is not None else (current.group(2) if current else 0)
-        if is_console_origin(alarm):
+        if origin_of(alarm) == "console":
             # Not ours: keep the author's interval and statistic, change only the comparison.
             if current is None or "&&" in current_mql or "||" in current_mql:
                 raise ValueError(
@@ -105,7 +105,7 @@ class AlarmService:
         tags = dict(alarm.get("freeform_tags", {}) or {})
         tags.update(stamp or {})
         tags["logan_query"] = query
-        if tags.get("logan_origin") == "console":
+        if origin_of(alarm) == "console" or tags.get("logan_origin") == "console":
             # Not ours: record the query and ownership, leave the author's condition and text.
             return {"freeform_tags": tags}
         return {
@@ -170,6 +170,7 @@ class AlarmService:
         compartment_id: Optional[str] = None,
     ) -> Dict[str, Any]:
         cid = compartment_id or self.oci_client.compartment_id
+        self.cache.delete('saved_searches')
 
         native_schedule = self._validate_cron(schedule)
         interval = self.alarm_interval(schedule)
@@ -314,6 +315,7 @@ class AlarmService:
     async def delete_alert(self, alert_id: str) -> Dict[str, Any]:
         """Remove the alarm and its detection rule. The saved search is never deleted here, and
         the rule is kept while another alarm still reads the metric it posts."""
+        self.cache.delete('saved_searches')
         alarm = await self.oci_client.get_alarm(alert_id)
         tags = alarm.get("freeform_tags", {}) or {}
         task_id = tags.get("logan_backing_metric_task_id")
@@ -332,7 +334,9 @@ class AlarmService:
                                    "if it is no longer wanted"})
         if task_id:
             others = await self._other_alerts_on_rule(task_id, alert_id, alarm.get("compartment_id"))
-            if others:
+            if others is None:
+                task_id = None
+            elif others:
                 kept.append({"resource": "detection_rule", "id": task_id,
                              "reason": "still used by alert(s) " + ", ".join(f"'{name}'" for name in others)})
                 task_id = None
@@ -359,18 +363,26 @@ class AlarmService:
             result.update(partial_failure=True, remaining=[r["id"] for r in remaining], details=remaining)
         return result
 
-    async def _other_alerts_on_rule(self, task_id: str, alert_id: str, compartment_id: Optional[str]) -> List[str]:
-        """Display names of the other alarms that read the metric this rule posts."""
+    async def _other_alerts_on_rule(self, task_id: str, alert_id: str,
+                                    compartment_id: Optional[str]) -> Optional[List[str]]:
+        """Return other consumers, or None only when inventory confirms the rule is gone."""
         try:
             rule = await self.oci_client.get_scheduled_task_details(task_id)
         except oci.exceptions.ServiceError as e:
-            if e.status == 404:
-                return []
+            if e.status in (400, 404):
+                tasks = await self.oci_client.list_scheduled_tasks_for_saved_search(
+                    compartment_id=compartment_id or self.oci_client.compartment_id,
+                )
+                if not isinstance(tasks, list) or any(not row.get('id') for row in tasks):
+                    raise RuntimeError('Could not verify detection-rule absence.') from None
+                if not any(row['id'] == task_id and row.get('lifecycle_state') != 'DELETED' for row in tasks):
+                    return None
             raise
         alarms = await self.oci_client.list_alarms(compartment_id)
         return [a.get("display_name") or a["id"] for a in alarms_watching(alarms, rule) if a["id"] != alert_id]
 
     async def update_alert(self, alert_id: str, **kwargs) -> Dict[str, Any]:
+        self.cache.delete('saved_searches')
         alarm = await self.oci_client.get_alarm(alert_id)
         tags = alarm.get("freeform_tags", {})
         task_id = tags.get("logan_backing_metric_task_id")
@@ -383,6 +395,16 @@ class AlarmService:
         threshold_operator = kwargs.get("threshold_operator")
         severity = kwargs.get("severity")
         destination_topic_id = kwargs.get("destination_topic_id")
+
+        console_origin = origin_of(alarm) == "console"
+        if console_origin and (query or schedule or display_name) and not (saved_search_id and task_id):
+            links = await find_log_alerts(self.oci_client, alarm.get("compartment_id"))
+            linked = next((row for row in links if row.alarm_id == alert_id), None)
+            if linked:
+                saved_search_id, task_id = linked.backing_saved_search_id, linked.backing_metric_task_id
+            if not (saved_search_id and task_id):
+                raise ValueError("Cannot resolve this console alert's backing resources. "
+                                 "Inspect its rule in OCI before retrying; no changes were made.")
 
         if query and saved_search_id:
             self._validate_metric_query(query)
@@ -426,7 +448,9 @@ class AlarmService:
         if query:
             # The alarm keeps a copy of the query for list_alerts and the notification body;
             # refresh both and repair the alarm in the same update.
-            alarm_update_fields.update(self.refresh_alarm_for_query(alarm, query))
+            stamp = {**CONSOLE_STAMP, "logan_backing_saved_search_id": saved_search_id,
+                     "logan_backing_metric_task_id": task_id} if console_origin else None
+            alarm_update_fields.update(self.refresh_alarm_for_query(alarm, query, stamp=stamp))
         if threshold_value is not None or threshold_operator is not None or schedule:
             alarm_update_fields.update(self._repair_fields(
                 alarm, schedule=schedule, threshold_value=threshold_value,

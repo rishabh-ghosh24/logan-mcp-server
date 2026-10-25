@@ -247,6 +247,7 @@ class TestUpdateAlert:
         client.get_alarm.return_value = {
             "id": "ocid1.alarm.1",
             "freeform_tags": {
+                "logan_managed": "true", "logan_kind": "monitoring_alarm",
                 "logan_backing_saved_search_id": "ocid1.mss.1",
                 "logan_backing_metric_task_id": "ocid1.task.1",
                 "logan_query": "* | stats count",
@@ -280,6 +281,7 @@ class TestUpdateAlert:
         client.get_alarm.return_value = {
             "id": "ocid1.alarm.1",
             "freeform_tags": {
+                "logan_managed": "true", "logan_kind": "monitoring_alarm",
                 "logan_backing_saved_search_id": "ocid1.mss.1",
                 "logan_backing_metric_task_id": "ocid1.task.1",
                 "logan_query": "* | stats count",

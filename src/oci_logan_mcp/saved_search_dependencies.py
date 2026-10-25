@@ -1,4 +1,5 @@
 """Live detection-rule references used to protect reusable saved searches."""
+import asyncio
 from dataclasses import dataclass
 from .alert_links import alarms_watching, creator, origin_of
 
@@ -55,21 +56,30 @@ class DependencySnapshot:
                 'dependency_status': 'checked' if report['alerts_complete'] else 'unknown'}
 
 
-async def dependency_snapshot(client, compartment_id: str | None = None) -> DependencySnapshot:
+async def dependency_snapshot(client, compartment_id: str | None = None, *,
+                              detail_concurrency: int = 1) -> DependencySnapshot:
     """Read every rule in this compartment; a partial inventory is an error."""
     try:
         cid = compartment_id or client.compartment_id
         summaries = await client.list_scheduled_tasks_for_saved_search(compartment_id=cid)
-        rules = []
-        for summary in summaries:
+        if not 1 <= detail_concurrency <= 4:
+            raise ValueError('Detail concurrency must be between one and four.')
+        slots = asyncio.Semaphore(detail_concurrency)
+
+        async def read_rule(summary):
             if summary.get('lifecycle_state') == 'DELETED':
-                continue
-            details = await client.get_scheduled_task_details(summary['id'])
+                return None
+            async with slots:
+                details = await client.get_scheduled_task_details(summary['id'])
             if details.get('lifecycle_state') == 'DELETED':
-                continue
+                return None
             if not isinstance(details.get('saved_search_id'), str) or not details['saved_search_id']:
                 raise DependencyInspectionError()
-            rules.append(details)
+            return details
+
+        async with asyncio.TaskGroup() as group:
+            tasks = [group.create_task(read_rule(summary)) for summary in summaries]
+        rules = [task.result() for task in tasks if task.result() is not None]
         alarms = await client.list_alarms(cid) if rules else []
         alarms = [alarm for alarm in alarms if alarm.get('lifecycle_state') != 'DELETED']
         return DependencySnapshot({'namespace': client.namespace, 'compartment_id': cid,

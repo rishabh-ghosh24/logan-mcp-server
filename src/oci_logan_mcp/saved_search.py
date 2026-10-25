@@ -1,5 +1,6 @@
 """Saved search operations service."""
 
+import asyncio
 import oci
 from typing import Optional, List, Dict, Any
 
@@ -27,13 +28,17 @@ class SavedSearchService:
         self.oci_client = oci_client
         self.cache = cache
         self.alarm_service = alarm_service
+        self._listing_lock = asyncio.Lock()
+        self._catalog_scope = None
+        self._markers_catalog = None
+        self._catalog_markers = {}
 
-    async def _refresh_linked_alerts(self, saved_search_id: str, query: str) -> List[Dict[str, Any]]:
-        """After a query change, refresh every alarm that depends on this search."""
+    async def _prepare_linked_alerts(self, saved_search_id: str, query: str) -> list:
+        """Resolve and prepare every alarm update before changing the saved search."""
         if self.alarm_service is None:
             return []
         linked = await find_alerts_for_saved_search(self.oci_client, saved_search_id)
-        updated = []
+        prepared = []
         for alert in linked:
             alarm = await self.oci_client.get_alarm(alert.alarm_id)
             stamp = None
@@ -42,16 +47,40 @@ class SavedSearchService:
                          "logan_backing_saved_search_id": alert.backing_saved_search_id or saved_search_id,
                          "logan_backing_metric_task_id": alert.backing_metric_task_id or ""}
             fields = self.alarm_service.refresh_alarm_for_query(alarm, query, stamp=stamp)
-            await self.oci_client.update_alarm(
-                alert.alarm_id, oci.monitoring.models.UpdateAlarmDetails(**fields),
-            )
-            updated.append({"alarm_id": alert.alarm_id, "display_name": alert.display_name,
-                            "created_by": alert.created_by})
-        return updated
+            prepared.append(({"alarm_id": alert.alarm_id, "display_name": alert.display_name,
+                              "created_by": alert.created_by},
+                             oci.monitoring.models.UpdateAlarmDetails(**fields)))
+        return prepared
+
+    async def _finish_linked_alerts(self, result: dict, prepared: list) -> dict:
+        """Report completed and pending refreshes after a successful saved-search write."""
+        updated, failed = [], []
+        for info, details in prepared:
+            try:
+                await self.oci_client.update_alarm(info['alarm_id'], details)
+                updated.append(info)
+            except Exception as error:
+                failed.append({**info, 'error_type': type(error).__name__,
+                               'error': 'Alarm refresh failed. Review this alert before retrying explicitly.'})
+        if updated or failed:
+            result['linked_alerts_updated'] = updated
+        if failed:
+            result.update(status='partial_failure', partial_failure=True,
+                          saved_search_updated=True, remaining=[row['alarm_id'] for row in failed],
+                          details=failed, warning='The search was updated, but some linked alerts were not refreshed.')
+        return result
 
     async def list_searches(self) -> List[Dict[str, Any]]:
-        """List all saved searches."""
+        """Reuse display markers for the lifetime of the scoped catalog entry."""
+        async with self._listing_lock:
+            return await self._list_searches_snapshot()
+
+    async def _list_searches_snapshot(self) -> List[Dict[str, Any]]:
         cache_key = "saved_searches"
+        scope = (getattr(self.oci_client, 'namespace', None), getattr(self.oci_client, 'compartment_id', None))
+        if self._catalog_scope is not None and self._catalog_scope != scope:
+            self.cache.delete(cache_key)
+        self._catalog_scope = scope
         cached = self.cache.get(cache_key)
         if cached is None:
             searches = [
@@ -62,12 +91,16 @@ class SavedSearchService:
             cached = [s for s in searches
                       if s.get("freeform_tags", {}).get("logan_managed") != "true"]
             self.cache.set(cache_key, cached)
-        try:
-            snapshot = await dependency_snapshot(self.oci_client)
-        except DependencyInspectionError:
-            return [{**row, 'usage': 'unknown', 'dependent_rules': None,
-                     'dependent_alerts': None, 'dependency_status': 'unknown'} for row in cached]
-        return [{**row, **snapshot.markers(row['id'])} for row in cached]
+        if self._markers_catalog is not cached:
+            try:
+                snapshot = await dependency_snapshot(self.oci_client, detail_concurrency=4)
+            except DependencyInspectionError:
+                return [{**row, 'usage': 'unknown', 'dependent_rules': None,
+                         'dependent_alerts': None, 'dependency_status': 'unknown'} for row in cached]
+            # Retain only compact markers, never cached alarm records or delete decisions.
+            self._catalog_markers = {row['id']: snapshot.markers(row['id']) for row in cached}
+            self._markers_catalog = cached
+        return [{**row, **self._catalog_markers[row['id']]} for row in cached]
 
     async def get_search_by_name(self, name: str) -> Optional[Dict[str, Any]]:
         """Find a saved search by display name."""
@@ -157,6 +190,7 @@ class SavedSearchService:
     async def update_search(self, search_id: str, **kwargs) -> Dict[str, Any]:
         """Update display_name and/or query of an existing saved search."""
         if search_id.startswith("ocid1.managementsavedsearch."):
+            prepared = await self._prepare_linked_alerts(search_id, kwargs['query']) if 'query' in kwargs else []
             mss_update_kwargs = {}
             if "display_name" in kwargs:
                 mss_update_kwargs["display_name"] = kwargs["display_name"]
@@ -178,13 +212,11 @@ class SavedSearchService:
                 "updated": list(kwargs.keys()),
                 **{k: v for k, v in kwargs.items()},
             }
-            if "query" in kwargs:
-                linked = await self._refresh_linked_alerts(search_id, kwargs["query"])
-                if linked:
-                    result["linked_alerts_updated"] = linked
-            return result
+            return await self._finish_linked_alerts(result, prepared)
 
         backing_mss_id = await self._get_backing_mss_id(search_id)
+        prepared = (await self._prepare_linked_alerts(backing_mss_id, kwargs['query'])
+                    if 'query' in kwargs and backing_mss_id else [])
 
         if "query" in kwargs and backing_mss_id:
             mss_update = oci.management_dashboard.models.UpdateManagementSavedSearchDetails(
@@ -207,11 +239,7 @@ class SavedSearchService:
         self.cache.delete("saved_searches")
         self.cache.delete(f"saved_search:{search_id}")
         result = {"id": search_id, "updated": list(kwargs.keys()), **{k: v for k, v in kwargs.items()}}
-        if "query" in kwargs and backing_mss_id:
-            linked = await self._refresh_linked_alerts(backing_mss_id, kwargs["query"])
-            if linked:
-                result["linked_alerts_updated"] = linked
-        return result
+        return await self._finish_linked_alerts(result, prepared)
 
     async def deletion_dependencies(self, search_id: str, compartment_id: Optional[str] = None) -> Dict:
         """Read current dependencies without relying on the base catalog cache."""

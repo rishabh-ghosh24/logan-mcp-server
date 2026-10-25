@@ -7,7 +7,8 @@ import re
 from dataclasses import dataclass, replace
 from typing import Any, Dict, List, Optional, Tuple
 
-_METRIC_RE = re.compile(r"^\s*([A-Za-z_][A-Za-z0-9_.-]*)\s*\[")
+_METRIC_REFERENCE_RE = re.compile(r"(?<![A-Za-z0-9_.-])([A-Za-z_][A-Za-z0-9_.-]*)\s*\[")
+_QUOTED_TEXT_RE = re.compile(r'''"(?:\\.|[^"\\])*"|'(?:\\.|[^'\\])*' ''', re.VERBOSE)
 _COMPARISON_RE = re.compile(r"\)\s*(>=|<=|==|>|<)\s*(-?\d+(?:\.\d+)?)\s*$")
 _OPERATOR_NAMES = {">": "gt", ">=": "gte", "==": "eq", "<": "lt", "<=": "lte"}
 
@@ -41,7 +42,7 @@ def parse_condition(mql: Optional[str]) -> Tuple[Optional[str], Optional[str], O
     are read only from a single simple comparison; a compound condition (&&, ||) or an absence
     test has no one threshold, so both come back None and the condition is never rewritten.
     """
-    metric = _METRIC_RE.match(mql or "")
+    metric = _METRIC_REFERENCE_RE.search(_QUOTED_TEXT_RE.sub(' ', mql or ''))
     if not metric:
         return (None, None, None)
     if "&&" in mql or "||" in mql:
@@ -91,6 +92,12 @@ def alarms_watching(alarms: List[Dict[str, Any]], task: Dict[str, Any]) -> List[
     return [a for a in alarms if _watches(a, task)]
 
 
+def metric_references(condition: Optional[str]) -> set[str]:
+    """Read every metric operand, excluding names inside quoted dimension values."""
+    unquoted = _QUOTED_TEXT_RE.sub(' ', condition or '')
+    return {match.group(1) for match in _METRIC_REFERENCE_RE.finditer(unquoted)}
+
+
 def _is_logan_alarm(alarm: Dict[str, Any]) -> bool:
     tags = alarm.get("freeform_tags") or {}
     return tags.get("logan_managed") == "true" and tags.get("logan_kind") == "monitoring_alarm"
@@ -114,8 +121,8 @@ def _from_tagged(alarm: Dict[str, Any]) -> LinkedAlert:
 
 
 def _watches(alarm: Dict[str, Any], task: Dict[str, Any]) -> bool:
-    metric, _, _ = parse_condition(alarm.get("query"))
-    if metric != task.get("metric_name") or alarm.get("namespace") != task.get("metric_namespace"):
+    if (task.get("metric_name") not in metric_references(alarm.get("query"))
+            or alarm.get("namespace") != task.get("metric_namespace")):
         return False
     alarm_compartment = alarm.get("metric_compartment_id")
     task_compartment = task.get("metric_compartment_id")
@@ -169,8 +176,8 @@ async def find_alerts_for_saved_search(client, saved_search_id: str,
     details = [await client.get_scheduled_task_details(task["id"]) for task in tasks]
     eligible = []
     for alarm in alarms:
-        metric, _, _ = parse_condition(alarm.get("query"))
-        producers = [task for task in details if task.get("metric_name") == metric
+        metrics = metric_references(alarm.get("query"))
+        producers = [task for task in details if task.get("metric_name") in metrics
                      and task.get("metric_namespace") == alarm.get("namespace")]
         cid = alarm.get("metric_compartment_id")
         if cid and producers and all(task.get("metric_compartment_id")

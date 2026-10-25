@@ -129,6 +129,14 @@ Start a new MCP session and call `test_connection`, then use `get_log_summary` o
 | **Remember** | `save_learned_query`, `get_preferences`, `remember_preference` | Save queries for improved future suggestions, learn field preferences and time ranges per log source |
 | **Monitor** | `test_connection`, `get_current_context`, `get_log_summary` | Check connectivity, see current config, view log volume |
 
+Saved-search usage markers follow the catalog cache, which lasts five minutes by
+default. They help you browse the catalog. Deletion checks always read current OCI
+dependencies and refuse while a rule still uses the search. Alert reads remain live.
+
+A saved-search query update checks linked alerts before writing. If a later alert
+refresh fails, the result reports `partial_failure`, the successful updates and
+the remaining alert IDs. Review those alerts before retrying.
+
 ## Monitoring metrics
 
 Logs and metrics use one server and the same OCI identity. Each service initializes
@@ -808,6 +816,8 @@ python run_tests.py
 - Refresh an alert's stored query and repair it whenever its query or backing saved search changes, and warn before the change about the alerts that depend on it.
 - Delete an alert without deleting its saved search, keep a detection rule that other alerts still use, and show who created a console-made alert before changing or deleting it.
 - Mark saved searches used by detection rules and refuse deletion until those rules are removed, with a fresh dependency check before each delete.
+- Preserve untagged console alarm conditions, recognise every metric in a compound condition, and confirm missing detection rules through OCI inventory.
+- Preflight linked alerts before saved-search writes, report partial refreshes, and reuse listing markers with bounded reads during each catalog refresh.
 - Fetch entity inventories with larger pages outside the event loop, and use the SDK's supported source filter for field discovery.
 - Preserve OCI's native metric units while accepting capitalization variants of percent.
 - Report aggregate log counts accurately in connection diagnostics, including zero.

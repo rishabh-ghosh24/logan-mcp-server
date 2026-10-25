@@ -21,7 +21,7 @@ async def test_legacy_task_query_is_read_from_its_native_backing_search():
 
 @pytest.mark.asyncio
 async def test_alert_query_update_keeps_widget_options_and_updates_ui_query():
-    client=SimpleNamespace(get_alarm=AsyncMock(return_value={'freeform_tags':{'logan_backing_saved_search_id':'ocid1.managementsavedsearch.qa'},'query':'metric[1m].count() > 0'}),
+    client=SimpleNamespace(get_alarm=AsyncMock(return_value={'freeform_tags':{'logan_managed':'true','logan_kind':'monitoring_alarm','logan_backing_saved_search_id':'ocid1.managementsavedsearch.qa'},'query':'metric[1m].count() > 0'}),
         get_saved_search=AsyncMock(return_value={'ui_config':{'queryString':'old','visualizationType':'tile'}}),
         update_management_saved_search=AsyncMock(),update_alarm=AsyncMock(return_value={'id':'alarm-id'}))
     result=await AlarmService(client,CacheManager()).update_alert('alarm-id',query='* | stats count')

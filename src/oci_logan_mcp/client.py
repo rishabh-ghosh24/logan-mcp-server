@@ -94,6 +94,7 @@ class OCILogAnalyticsClient:
         self._regional_monitoring_clients = {}
 
         self._rate_limiter = RateLimiter()
+        self._scheduled_task_rate_lock = asyncio.Lock()
         self._auth_type = settings.oci.auth_type
 
         # Runtime context (can be changed)
@@ -1034,7 +1035,8 @@ class OCILogAnalyticsClient:
 
     async def get_scheduled_task_details(self, task_id: str) -> Dict[str, Any]:
         """Read the ids a scheduled task links: its saved search and the metric it posts."""
-        await self._rate_limiter.acquire()
+        async with self._scheduled_task_rate_lock:
+            await self._rate_limiter.acquire()
         response = await asyncio.to_thread(
             self._la_client.get_scheduled_task, namespace_name=self._namespace, scheduled_task_id=task_id,
         )
