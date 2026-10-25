@@ -130,12 +130,32 @@ async def test_find_log_alerts_merges_tagged_and_console_and_caches():
     client.get_scheduled_task_details.reset_mock()
     again = await find_log_alerts(client, store)
     assert [a.alarm_id for a in again] == [a.alarm_id for a in found]
-    client.list_alarms.assert_not_called()
-    client.get_scheduled_task_details.assert_not_called()
+    client.list_alarms.assert_awaited_once()  # alarms are always read live
+    client.get_scheduled_task_details.assert_not_called()  # task details come from the cache
 
     invalidate(store, COMPARTMENT)
+    client.get_scheduled_task_details.reset_mock()
     await find_log_alerts(client, store)
-    client.list_alarms.assert_awaited_once()
+    assert client.get_scheduled_task_details.await_count == 2
+
+
+@pytest.mark.asyncio
+async def test_find_log_alerts_reflects_alarm_changes_made_anywhere_at_once():
+    """An alarm deleted in the console or created a second ago must not wait for the cache."""
+    client = make_client([LOGAN_ALARM, CONSOLE_ALARM], all_tasks=[{"id": "ocid1.task.console"}],
+                         task_details={"ocid1.task.console": CONSOLE_TASK})
+    store = cache()
+    first = await find_log_alerts(client, store)
+    assert {a.alarm_id for a in first} == {"ocid1.alarm.logan", "ocid1.alarm.console"}
+
+    client.list_alarms.return_value = [LOGAN_ALARM]  # console alarm deleted outside the server
+    second = await find_log_alerts(client, store)
+    assert {a.alarm_id for a in second} == {"ocid1.alarm.logan"}
+
+    client.list_alarms.return_value = [CONSOLE_ALARM]  # logan alarm deleted, console one recreated
+    third = await find_log_alerts(client, store)
+    assert {a.alarm_id for a in third} == {"ocid1.alarm.console"}
+    client.list_scheduled_tasks_for_saved_search.assert_not_called()
 
 
 class TestListAlerts:

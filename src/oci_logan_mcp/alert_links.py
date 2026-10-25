@@ -4,7 +4,7 @@ Our freeform tags are only a cache: an alert built in the console has none, but 
 stores the links (the task's savedSearchId, the task's metric extraction, the alarm's query).
 """
 import re
-from dataclasses import asdict, dataclass
+from dataclasses import dataclass
 from typing import Any, Dict, List, Optional, Tuple
 
 _CONDITION_RE = re.compile(
@@ -127,21 +127,29 @@ async def find_alerts_for_saved_search(client, cache, saved_search_id: str,
     return results
 
 
-async def find_log_alerts(client, cache, compartment_id: Optional[str] = None) -> List[LinkedAlert]:
-    """Every alarm backed by a Log Analytics scheduled search, ours or console-made (cached)."""
+async def _detection_rule_details(client, cache, compartment_id: Optional[str]) -> List[Dict[str, Any]]:
+    """Details of every SAVED_SEARCH task in the compartment; the one slow, cacheable read."""
     key = _cache_key(client, compartment_id)
     cached = cache.get(key, category=CACHE_CATEGORY)
     if cached is not None:
-        return [LinkedAlert(**row) for row in cached]
+        return cached
+    details = [await client.get_scheduled_task_details(task["id"]) for task in await client.list_saved_searches()]
+    cache.set(key, details, category=CACHE_CATEGORY)
+    return details
+
+
+async def find_log_alerts(client, cache, compartment_id: Optional[str] = None) -> List[LinkedAlert]:
+    """Every alarm backed by a Log Analytics scheduled search, ours or console-made.
+
+    Alarms are read live on every call so an alarm created or deleted anywhere, in the console or
+    through this server, shows at once; only the task details behind console chains are cached.
+    """
     alarms = await client.list_alarms(compartment_id)
     found: Dict[str, LinkedAlert] = {a.alarm_id: a for a in (_from_tagged(x) for x in alarms if _is_logan_alarm(x))}
-    for task in await client.list_saved_searches():
-        details = await client.get_scheduled_task_details(task["id"])
+    for details in await _detection_rule_details(client, cache, compartment_id):
         for alert in await _console_matches(client, alarms, details):
             found.setdefault(alert.alarm_id, alert)
-    results = list(found.values())
-    cache.set(key, [asdict(a) for a in results], category=CACHE_CATEGORY)
-    return results
+    return list(found.values())
 
 _SYMBOLS = {"gt": ">", "gte": ">=", "eq": "=", "lt": "<", "lte": "<="}
 
