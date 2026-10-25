@@ -277,7 +277,7 @@ class AlarmService:
             "display_name": display_name,
             "query": query,
             "schedule": schedule,
-            "threshold": f"count {threshold_operator} {threshold_value}",
+            "threshold": f"value {threshold_operator} {threshold_value}",
             "severity": severity,
             "metric_name": metric_name,
             "status": "ACTIVE",
@@ -415,4 +415,7 @@ class AlarmService:
             alarm_details = oci.monitoring.models.UpdateAlarmDetails(**alarm_update_fields)
             await self.oci_client.update_alarm(alert_id, alarm_details)
 
-        return {"alarm_id": alert_id, "updated": list(kwargs.keys())}
+        changed = [field for field in ("display_name", "query", "schedule", "threshold_value",
+                                     "threshold_operator", "severity", "destination_topic_id")
+                   if kwargs.get(field) is not None]
+        return {"alarm_id": alert_id, "updated": changed}

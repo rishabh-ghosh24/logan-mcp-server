@@ -273,3 +273,33 @@ class TestConsoleOriginAlarm:
         alarm = client.update_alarm.call_args[0][1]
         assert alarm.freeform_tags["logan_query"] == "* | stats count as n"
         assert alarm.query is None and alarm.body is None and alarm.pending_duration is None
+
+
+class TestResultWording:
+    """Results describe what the alarm really does and list only the fields the user changed."""
+
+    @pytest.mark.asyncio
+    async def test_create_result_describes_the_value_comparison(self):
+        client = make_client()
+
+        result = await make_svc(client).create_alert(
+            display_name="t", query="* | stats count", destination_topic_id="ocid1.topic.1",
+            threshold_operator="lt", threshold_value=5,
+        )
+
+        assert result["threshold"] == "value lt 5"
+        assert "count" not in result["threshold"]
+
+    @pytest.mark.asyncio
+    async def test_update_result_lists_only_the_changed_alert_fields(self):
+        client = make_client()
+        client.get_alarm.return_value = existing_alarm("logan_alert_abc[15m].last() > 0")
+        client.update_alarm.return_value = {"id": "ocid1.alarm.1"}
+
+        # The handler passes the effective scope along with the user's arguments.
+        result = await make_svc(client).update_alert(
+            "ocid1.alarm.1", severity="WARNING",
+            compartment_id="ocid1.compartment.test", include_subcompartments=True,
+        )
+
+        assert result["updated"] == ["severity"]
