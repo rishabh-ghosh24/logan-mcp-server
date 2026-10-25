@@ -806,6 +806,7 @@ python run_tests.py
 - Compare alert thresholds with the value each scheduled run extracts, over a window that spans the schedule, and run every 15 minutes by default.
 - List console-made log alerts next to Logan's, with each alert's live condition and threshold.
 - Refresh an alert's stored query and repair it whenever its query or backing saved search changes, and warn before the change about the alerts that depend on it.
+- Delete an alert without deleting its saved search, keep a detection rule that other alerts still use, and show who created a console-made alert before changing or deleting it.
 - Fetch entity inventories with larger pages outside the event loop, and use the SDK's supported source filter for field discovery.
 - Preserve OCI's native metric units while accepting capitalization variants of percent.
 - Report aggregate log counts accurately in connection diagnostics, including zero.
