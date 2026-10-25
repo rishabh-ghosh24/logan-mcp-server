@@ -1,12 +1,12 @@
 {
   "commit": "2accd691d0ccdde580e3f35c00a57c9bdf918093",
   "tools": {
-    "list_log_sources": "39bb98f2f591bb434146e3280649e21021fd06e54f33161ef793c15699dbb3fa",
-    "list_fields": "b5ea3a51044d908a927a9172c40f0bcf8b74209d61af85807d91aa7276935c65",
-    "list_entities": "e3d19c61c8074c6e870dad725d15e6a754e9e031b2dc5677d8f245ae2d0b7a1f",
+    "list_log_sources": "8e9482e5cf048622df40646980138c39680f1e20500ba19eb6d5d1798f075329",
+    "list_fields": "424dcd31d13a3a5168885d5ffce341277bea38498ac499c9eb7c4dddc0749fd9",
+    "list_entities": "6f1db88ade5e938928f23abbebee233fddebbdd231f7805f268ec85ec85c0d76",
     "list_parsers": "57c89acdddd984870a3dba69081b35d2d7fe6f5ce99c033fd375dadfb9969f69",
     "list_labels": "3be9b677afc1c195c1dde12db4b47cdaa6dbf6ce0bb4999925a3c9682ea3d3c5",
-    "list_saved_searches": "3b199e2b4afee9c2454e6b413eb7e4ba7bfcc80a73fe692dc88eaff9a99c532f",
+    "list_saved_searches": "d2c727b7f3a46cf210d3cb60b9955642c41266f1213c373243c2c63ff543cb48",
     "list_log_groups": "e6fe98ee60b381b67149704fda476855835d891d2dd554d3abc0f42399034336",
     "create_log_source_from_sample": "737810deb1fe295d19edfcbd6434dee3c19ec775118166750b5f67fee129fbe3",
     "validate_query": "9a0c89ac8430b9451477a75ee66ba417280092ef3f98e9a6e7717367d03df77c",
@@ -67,7 +67,7 @@
     "delete_playbook": "499398de429adc7bbbfe10c7b162ea28fce6bed70ba407a4d92378edb81177aa"
   },
   "resources": {
-    "loganalytics://schema": "d55e7dc4a224fd536ad81c6234c6e55a29fc1f03c101c0d8ea03fd9ab9500f9c",
+    "loganalytics://schema": "be48230fb4aac8e0a0818aaf15bad7c1d390b72ed56cbfb1089d00f924393401",
     "loganalytics://query-templates": "7ae9ffb6b474365593debc2210996b166e5de18832b1cb9e69565254649a6860",
     "loganalytics://syntax-guide": "b79cfdd556522fb86e508817d5ce3cfda0fa392af6024ba881fb3cdeae94e0db",
     "loganalytics://recent-queries": "1d84134f69f20775bf3ec216705e7a1a4cb5ccba7c5bd500c1179fbf963bddd3",

@@ -17,6 +17,7 @@ from .visualization import VisualizationEngine, ChartType
 from .validator import QueryValidator
 from .saved_search import SavedSearchService
 from .saved_search_dependencies import DependencyInspectionError, SavedSearchInUse, require_unused
+from .discovery import DEFAULT_LIMIT, compact_row, envelope, filter_rows, rank_sources
 from .export import ExportService
 from .client import OCILogAnalyticsClient
 from .cache import CacheManager
@@ -924,21 +925,31 @@ class MCPHandlers:
     # Tool implementations
 
     async def _list_log_sources(self, args: Dict) -> List[Dict]:
-        """List log sources."""
-        sources = await self.schema_manager.get_log_sources(
-            compartment_id=args.get("compartment_id")
-        )
-        # Auto-capture to tenancy context (suppressed in read-only mode)
+        """List log sources: keyword-ranked, sources with recent data first, bounded."""
+        compartment_id, include_subs = self._resolve_scope(args)
+        sources = await self.schema_manager.get_log_sources(compartment_id=compartment_id)
+        # Auto-capture the whole catalog to tenancy context (suppressed in read-only mode)
         if not self.settings.read_only:
             self.context_manager.update_log_sources(sources)
-        return [{"type": "text", "text": json.dumps(sources, indent=2)}]
+        try:
+            volume = await self.schema_manager.get_volume_by_source(self.query_engine, compartment_id, include_subs)
+        except Exception as error:  # ranking by name alone is still a useful answer
+            logger.warning("Volume by source unavailable for ranking: %s", error)
+            volume = {}
+        keyword = args.get("keyword")
+        ranked = rank_sources(sources, keyword, volume)
+        rows = [compact_row({**row, "records_in_window": volume.get(row.get("display_name") or "") or None})
+                for row in ranked]
+        return self._json_response(envelope("sources", rows, keyword=keyword, limit=args.get("limit", DEFAULT_LIMIT),
+                                            names=[r.get("display_name") or r.get("name") for r in sources]))
 
     async def _list_fields(self, args: Dict) -> List[Dict]:
-        """List fields."""
+        """List fields: optional source filter (server side), keyword filter, bounded."""
         fields = await self.schema_manager.get_fields(source_name=args.get("source_name"))
         field_dicts = [
             {
                 "name": f.name,
+                "display_name": getattr(f, "display_name", None),
                 "data_type": f.data_type,
                 "description": f.description,
                 "possible_values": f.possible_values,
@@ -949,14 +960,18 @@ class MCPHandlers:
         # Auto-capture to tenancy context (suppressed in read-only mode)
         if not self.settings.read_only:
             self.context_manager.update_confirmed_fields(field_dicts)
-        return [{"type": "text", "text": json.dumps(field_dicts, indent=2)}]
+        keyword = args.get("keyword")
+        rows = [compact_row(row) for row in filter_rows(field_dicts, keyword, ("name", "display_name", "description"))]
+        return self._json_response(envelope("fields", rows, keyword=keyword, limit=args.get("limit", DEFAULT_LIMIT),
+                                            names=[f["name"] for f in field_dicts]))
 
     async def _list_entities(self, args: Dict) -> List[Dict]:
-        """List entities."""
-        entities = await self.schema_manager.get_entities(
-            entity_type=args.get("entity_type")
-        )
-        return [{"type": "text", "text": json.dumps(entities, indent=2)}]
+        """List entities: optional type filter (server side), keyword filter, bounded."""
+        entities = await self.schema_manager.get_entities(entity_type=args.get("entity_type"))
+        keyword = args.get("keyword")
+        rows = [compact_row(row) for row in filter_rows(entities, keyword, ("name", "entity_type", "hostname"))]
+        return self._json_response(envelope("entities", rows, keyword=keyword, limit=args.get("limit", DEFAULT_LIMIT),
+                                            names=[e.get("name", "") for e in entities]))
 
     async def _list_parsers(self, args: Dict) -> List[Dict]:
         """List parsers."""
@@ -969,9 +984,12 @@ class MCPHandlers:
         return [{"type": "text", "text": json.dumps(labels, indent=2)}]
 
     async def _list_saved_searches(self, args: Dict) -> List[Dict]:
-        """List saved searches."""
+        """List saved searches: keyword filter on name and description, bounded; rows unchanged."""
         searches = await self.saved_search.list_searches()
-        return [{"type": "text", "text": json.dumps(searches, indent=2)}]
+        keyword = args.get("keyword")
+        rows = filter_rows(searches, keyword, ("display_name", "description"))
+        return self._json_response(envelope("saved_searches", rows, keyword=keyword, limit=args.get("limit", DEFAULT_LIMIT),
+                                            names=[r.get("display_name", "") for r in searches]))
 
     async def _list_log_groups(self, args: Dict) -> List[Dict]:
         """List log groups."""

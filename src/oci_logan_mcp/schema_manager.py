@@ -16,6 +16,7 @@ class FieldInfo:
     description: Optional[str] = None
     possible_values: Optional[List[str]] = None
     hint: Optional[str] = None
+    display_name: Optional[str] = None
 
 
 class SchemaManager:
@@ -75,6 +76,7 @@ class SchemaManager:
                     description=f.get("description"),
                     possible_values=self.KNOWN_VALUES.get(field_name),
                     hint=hint,
+                    display_name=f.get("display_name") or None,
                 )
             )
 

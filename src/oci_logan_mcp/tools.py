@@ -27,17 +27,24 @@ def get_tools() -> List[Dict[str, Any]]:
         {
             "name": "list_log_sources",
             "description": (
-                (
-                    "List available Log Analytics source definitions.\n"
-                    "Use when: discover source names before building a query; get_log_summary shows which have recent data.\n"
-                    "Parameters: optional compartment_id; otherwise uses the active compartment.\n"
-                    "Limits: returns all discovered definitions with no tool-level row cap; cached metadata may be reused. Listing definitions does not prove that a source has ingested logs.\n"
-                    "Example: list_log_sources() before filtering on a returned source name."
-                )
+                "Find log sources by keyword, ranked with sources that have recent data first.\n"
+                "Use when: the user names a kind of log ('VCN flow logs', 'kubernetes') and you need the exact source name.\n"
+                "Parameters: keyword (words, not an exact name), limit, optional compartment_id.\n"
+                "Limits: default 50 rows, max 500; total and truncated say what was left out; did_you_mean when nothing matches. "
+                "records_in_window counts the last 24 h; a defined source may hold older data.\n"
+                "Example: list_log_sources(keyword=\"vcn flow\") then query 'Log Source' = <display_name>."
             ),
             "inputSchema": {
                 "type": "object",
                 "properties": {
+                    "keyword": {
+                        "type": "string",
+                        "description": "Words to match, not an exact name.",
+                    },
+                    "limit": {
+                        "type": "integer",
+                        "description": "Max rows (default 50, max 500).",
+                    },
                     "compartment_id": {
                         "type": "string",
                         "description": "Optional compartment OCID. Uses default if not specified.",
@@ -48,13 +55,11 @@ def get_tools() -> List[Dict[str, Any]]:
         {
             "name": "list_fields",
             "description": (
-                (
-                    "List queryable field definitions.\n"
-                    "Use when: identify exact field names and types before filtering, grouping or plotting logs.\n"
-                    "Parameters: optional source_name limits discovery to a named log source.\n"
-                    "Limits: no tool-level row cap; returns metadata, not log rows. Cached definitions do not prove a field is populated in the requested window.\n"
-                    "Example: list_fields(source_name=\"Linux Secure Logs\")."
-                )
+                "List queryable field definitions, filtered by source and keyword.\n"
+                "Use when: you need exact field names and types before filtering, grouping or plotting.\n"
+                "Parameters: optional source_name (exact source), keyword, limit.\n"
+                "Limits: metadata only, not log rows; default 50 rows, max 500, with total and truncated.\n"
+                "Example: list_fields(source_name=\"Linux Secure Logs\", keyword=\"host\")."
             ),
             "inputSchema": {
                 "type": "object",
@@ -62,20 +67,36 @@ def get_tools() -> List[Dict[str, Any]]:
                     "source_name": {
                         "type": "string",
                         "description": "Optional log source name to filter fields.",
-                    }
+                    },
+                    "keyword": {
+                        "type": "string",
+                        "description": "Words to match, not an exact name.",
+                    },
+                    "limit": {
+                        "type": "integer",
+                        "description": "Max rows (default 50, max 500).",
+                    },
                 },
             },
         },
         {
             "name": "list_entities",
-            "description": "List monitored entities (hosts, applications, databases, etc.)",
+            "description": "List monitored entities (hosts, databases, ...) by type and keyword; default 50 rows with total and truncated.",
             "inputSchema": {
                 "type": "object",
                 "properties": {
                     "entity_type": {
                         "type": "string",
                         "description": "Optional entity type filter (e.g., 'Host', 'Database')",
-                    }
+                    },
+                    "keyword": {
+                        "type": "string",
+                        "description": "Words to match, not an exact name.",
+                    },
+                    "limit": {
+                        "type": "integer",
+                        "description": "Max rows (default 50, max 500).",
+                    },
                 },
             },
         },
@@ -91,8 +112,20 @@ def get_tools() -> List[Dict[str, Any]]:
         },
         {
             "name": "list_saved_searches",
-            "description": "List all saved searches available in Log Analytics.",
-            "inputSchema": {"type": "object", "properties": {}},
+            "description": "List saved searches by keyword (name, description); default 50 rows with total and truncated.",
+            "inputSchema": {
+                "type": "object",
+                "properties": {
+                    "keyword": {
+                        "type": "string",
+                        "description": "Words to match, not an exact name.",
+                    },
+                    "limit": {
+                        "type": "integer",
+                        "description": "Max rows (default 50, max 500).",
+                    },
+                },
+            },
         },
         {
             "name": "list_log_groups",
