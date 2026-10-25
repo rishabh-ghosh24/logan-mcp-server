@@ -56,8 +56,8 @@ _SUMMARY_KEYS: Dict[str, list] = {
     "delete_saved_search": ["saved_search_id"],
     "delete_dashboard": ["dashboard_id"],
     "delete_playbook": ["playbook_id"],
-    "update_alert": ["alert_id", "display_name", "severity", "query"],
-    "update_saved_search": ["saved_search_id", "display_name", "query"],
+    "update_alert": ["alert_id", "display_name", "severity", "query", "linked_alerts"],
+    "update_saved_search": ["saved_search_id", "display_name", "query", "linked_alerts"],
     "add_dashboard_tile": ["dashboard_id", "title", "query", "visualization_type"],
     "create_alert": [
         "display_name", "query", "destination_topic_id",
@@ -237,7 +237,7 @@ class ConfirmationManager:
         for key in summary_keys:
             if key in arguments:
                 val = str(arguments[key])
-                if key != "data_warning" and len(val) > 120:
+                if key not in ("data_warning", "linked_alerts") and len(val) > 120:
                     val = val[:120] + "..."
                 parts.append(f"  {key}: {val}")
         return "\n".join(parts)

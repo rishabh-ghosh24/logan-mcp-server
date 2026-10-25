@@ -142,3 +142,32 @@ async def find_log_alerts(client, cache, compartment_id: Optional[str] = None) -
     results = list(found.values())
     cache.set(key, [asdict(a) for a in results], category=CACHE_CATEGORY)
     return results
+
+_SYMBOLS = {"gt": ">", "gte": ">=", "eq": "=", "lt": "<", "lte": "<="}
+
+
+def linked_alert_from_alarm(alarm: Dict[str, Any]) -> LinkedAlert:
+    """A LinkedAlert built from one alarm record and its tags (no OCI lookups)."""
+    return _from_tagged(alarm)
+
+
+def _fires_when(alert: LinkedAlert) -> str:
+    if alert.threshold_operator and alert.threshold_value is not None:
+        return f"fires when value {_SYMBOLS[alert.threshold_operator]} {alert.threshold_value}"
+    return "fires on its current condition"
+
+
+def describe_linked_alerts(alerts: List[LinkedAlert], *, via: str) -> Optional[str]:
+    """The sentence shown in a confirmation summary before a query change is confirmed."""
+    if not alerts:
+        return None
+    if via == "alert":
+        alert = alerts[0]
+        return (f"Alert '{alert.display_name}' {_fires_when(alert)}. It will use the new query from "
+                "its next run. Its threshold stays unless you also pass threshold_value.")
+    named = ", ".join(f"'{a.display_name}' ({a.created_by}-made; {_fires_when(a)})" for a in alerts)
+    if len(alerts) == 1:
+        return (f"This search feeds alert {named}. The alert will use the new query from its next run. "
+                "Its threshold stays unless you change it with update_alert.")
+    return (f"This search feeds alerts {named}. These alerts will use the new query from their next "
+            "runs. Their thresholds stay unless you change them with update_alert.")

@@ -27,6 +27,7 @@ from .query_auto_saver import QueryAutoSaver
 from .config import Settings
 from .resources import get_syntax_guide, get_reference_docs
 from .alarm_service import AlarmService, DEFAULT_ALERT_SCHEDULE
+from .alert_links import describe_linked_alerts, find_alerts_for_saved_search, linked_alert_from_alarm
 from .dashboard_service import DashboardService
 from .notification_service import NotificationService
 from .confirmation import ConfirmationManager
@@ -476,6 +477,13 @@ class MCPHandlers:
                         "data_warning": DATA_WARNING,
                         "sample_line_count": sample_line_count,
                     }
+                elif name in ("update_saved_search", "update_alert") and arguments.get("query"):
+                    try:
+                        line = await self._linked_alert_warning(name, arguments)
+                    except Exception:
+                        logger.warning("Linked-alert lookup failed for %s; confirming without it", name)
+                        line = None
+                    summary_extras = {"linked_alerts": line} if line else None
                 if not self._write_audit_event(
                     user=user_id,
                     tool=name,
@@ -589,6 +597,14 @@ class MCPHandlers:
             if safe_diagnostics:
                 return self._error_response('service_unavailable', 'The service operation could not complete. Check configuration and retry explicitly.')
             return [{"type": "text", "text": f"Error executing {name}: {str(e)}", "is_error": True}]
+
+    async def _linked_alert_warning(self, name: str, arguments: Dict) -> Optional[str]:
+        """Which alerts a query change will affect, computed before the write is confirmed."""
+        if name == "update_saved_search":
+            alerts = await find_alerts_for_saved_search(self.oci_client, self.cache, arguments["saved_search_id"])
+            return describe_linked_alerts(alerts, via="saved_search")
+        alarm = await self.oci_client.get_alarm(arguments["alert_id"])
+        return describe_linked_alerts([linked_alert_from_alarm(alarm)], via="alert")
 
     async def _metric_tool(self, name: str, arguments: Dict) -> List[Dict]:
         result = await self.metrics_service.call(name, arguments, shared_compartment_id=self._shared_compartment_id)
