@@ -235,3 +235,41 @@ class TestQueryUpdate:
         assert alarm.resource_group == "logan_alerts"
         assert alarm.pending_duration == "PT1M"
         assert "query" in result["updated"]
+
+
+class TestConsoleOriginAlarm:
+    """A console-made alarm keeps its own interval and statistic; we change only what was asked."""
+
+    @pytest.mark.asyncio
+    async def test_threshold_update_keeps_console_condition_shape(self):
+        client = make_client()
+        client.get_alarm.return_value = {
+            **existing_alarm("test_metric[5m].max() > 0", "*/15 * * * *"),
+            "freeform_tags": {"logan_origin": "console", "logan_managed": "true",
+                              "logan_kind": "monitoring_alarm", "logan_schedule": ""},
+        }
+        client.update_alarm.return_value = {"id": "ocid1.alarm.1"}
+
+        await make_svc(client).update_alert("ocid1.alarm.1", threshold_value=3, threshold_operator="gte")
+
+        alarm = client.update_alarm.call_args[0][1]
+        assert alarm.query == "test_metric[5m].max() >= 3"
+        assert alarm.resource_group is None and alarm.pending_duration is None
+
+    @pytest.mark.asyncio
+    async def test_query_update_on_console_alarm_refreshes_tags_only(self):
+        client = make_client()
+        client.get_alarm.return_value = {
+            **existing_alarm("test_metric[5m].max() > 0", ""),
+            "freeform_tags": {"logan_origin": "console", "logan_managed": "true", "logan_kind": "monitoring_alarm",
+                              "logan_backing_saved_search_id": "ocid1.mss.1", "logan_backing_metric_task_id": "ocid1.task.1"},
+        }
+        client.get_saved_search.return_value = {"id": "ocid1.mss.1", "ui_config": {}}
+        client.update_management_saved_search.return_value = {"id": "ocid1.mss.1"}
+        client.update_alarm.return_value = {"id": "ocid1.alarm.1"}
+
+        await make_svc(client).update_alert("ocid1.alarm.1", query="* | stats count as n")
+
+        alarm = client.update_alarm.call_args[0][1]
+        assert alarm.freeform_tags["logan_query"] == "* | stats count as n"
+        assert alarm.query is None and alarm.body is None and alarm.pending_duration is None

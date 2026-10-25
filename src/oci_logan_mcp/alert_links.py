@@ -51,6 +51,13 @@ def invalidate(cache, compartment_id: Optional[str], client=None) -> None:
     cache.delete(key, category=CACHE_CATEGORY)
 
 
+CONSOLE_STAMP = {"logan_managed": "true", "logan_kind": "monitoring_alarm", "logan_origin": "console"}
+
+
+def is_console_origin(alarm: Dict[str, Any]) -> bool:
+    return (alarm.get("freeform_tags") or {}).get("logan_origin") == "console"
+
+
 def _is_logan_alarm(alarm: Dict[str, Any]) -> bool:
     tags = alarm.get("freeform_tags") or {}
     return tags.get("logan_managed") == "true" and tags.get("logan_kind") == "monitoring_alarm"
@@ -62,7 +69,7 @@ def _from_tagged(alarm: Dict[str, Any]) -> LinkedAlert:
     return LinkedAlert(
         alarm_id=alarm["id"], display_name=alarm.get("display_name", ""),
         severity=alarm.get("severity", ""), lifecycle_state=alarm.get("lifecycle_state", ""),
-        created_by="logan", condition=alarm.get("query", "") or "",
+        created_by=tags.get("logan_origin", "logan"), condition=alarm.get("query", "") or "",
         threshold_operator=operator, threshold_value=threshold,
         backing_saved_search_id=tags.get("logan_backing_saved_search_id"),
         backing_metric_task_id=tags.get("logan_backing_metric_task_id"),

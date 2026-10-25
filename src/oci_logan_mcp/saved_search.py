@@ -6,6 +6,7 @@ from typing import Optional, List, Dict, Any
 from .client import OCILogAnalyticsClient
 from .cache import CacheManager
 from .saved_search_config import build_scope_filters, build_ui_config
+from .alert_links import CONSOLE_STAMP, find_alerts_for_saved_search, invalidate
 
 PROVIDER_ID = "log-analytics"
 PROVIDER_NAME = "Log Analytics"
@@ -18,10 +19,34 @@ FEATURES_CONFIG = {"crossService": {"shared": True}}
 class SavedSearchService:
     """Service for managing saved searches."""
 
-    def __init__(self, oci_client: OCILogAnalyticsClient, cache: CacheManager):
+    def __init__(self, oci_client: OCILogAnalyticsClient, cache: CacheManager, alarm_service=None):
         """Initialize saved search service."""
         self.oci_client = oci_client
         self.cache = cache
+        self.alarm_service = alarm_service
+
+    async def _refresh_linked_alerts(self, saved_search_id: str, query: str) -> List[Dict[str, Any]]:
+        """After a query change, refresh every alarm that depends on this search."""
+        if self.alarm_service is None:
+            return []
+        linked = await find_alerts_for_saved_search(self.oci_client, self.cache, saved_search_id)
+        updated = []
+        for alert in linked:
+            alarm = await self.oci_client.get_alarm(alert.alarm_id)
+            stamp = None
+            if alert.created_by == "console":
+                stamp = {**CONSOLE_STAMP,
+                         "logan_backing_saved_search_id": alert.backing_saved_search_id or saved_search_id,
+                         "logan_backing_metric_task_id": alert.backing_metric_task_id or ""}
+            fields = self.alarm_service.refresh_alarm_for_query(alarm, query, stamp=stamp)
+            await self.oci_client.update_alarm(
+                alert.alarm_id, oci.monitoring.models.UpdateAlarmDetails(**fields),
+            )
+            updated.append({"alarm_id": alert.alarm_id, "display_name": alert.display_name,
+                            "created_by": alert.created_by})
+        if linked:
+            invalidate(self.cache, None, client=self.oci_client)
+        return updated
 
     async def list_searches(self) -> List[Dict[str, Any]]:
         """List all saved searches."""
@@ -146,11 +171,16 @@ class SavedSearchService:
             await self.oci_client.update_management_saved_search(search_id, mss_update)
             self.cache.delete("saved_searches")
             self.cache.delete(f"saved_search:{search_id}")
-            return {
+            result = {
                 "id": search_id,
                 "updated": list(kwargs.keys()),
                 **{k: v for k, v in kwargs.items()},
             }
+            if "query" in kwargs:
+                linked = await self._refresh_linked_alerts(search_id, kwargs["query"])
+                if linked:
+                    result["linked_alerts_updated"] = linked
+            return result
 
         backing_mss_id = await self._get_backing_mss_id(search_id)
 
@@ -174,7 +204,12 @@ class SavedSearchService:
 
         self.cache.delete("saved_searches")
         self.cache.delete(f"saved_search:{search_id}")
-        return {"id": search_id, "updated": list(kwargs.keys()), **{k: v for k, v in kwargs.items()}}
+        result = {"id": search_id, "updated": list(kwargs.keys()), **{k: v for k, v in kwargs.items()}}
+        if "query" in kwargs and backing_mss_id:
+            linked = await self._refresh_linked_alerts(backing_mss_id, kwargs["query"])
+            if linked:
+                result["linked_alerts_updated"] = linked
+        return result
 
     async def delete_search(self, search_id: str) -> None:
         """Delete a saved search and its backing ManagementSavedSearch."""

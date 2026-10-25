@@ -9,7 +9,7 @@ import oci
 from .client import OCILogAnalyticsClient
 from .cache import CacheManager
 from .saved_search_config import build_scope_filters, build_ui_config
-from .alert_links import find_log_alerts
+from .alert_links import find_log_alerts, is_console_origin
 
 # OCI Management Dashboard API requires crossService in featuresConfig
 FEATURES_CONFIG = {"crossService": {"shared": True}}
@@ -81,6 +81,10 @@ class AlarmService:
         symbols = {symbol: name for name, symbol in self._OPERATORS.items()}
         operator = threshold_operator or (symbols[current.group(1)] if current else "gt")
         tv = threshold_value if threshold_value is not None else (current.group(2) if current else 0)
+        if is_console_origin(alarm):
+            # Not ours: keep the author's interval and statistic, change only the comparison.
+            head = current_mql[:current.start() + 1] if current else current_mql
+            return {"query": f"{head.rstrip()} {self._OPERATORS.get(operator, '>')} {tv}"}
         effective_schedule = schedule or tags.get("logan_schedule") or DEFAULT_ALERT_SCHEDULE
         return {
             "query": self._condition(metric_name, self.alarm_interval(effective_schedule), operator, tv),
@@ -95,6 +99,9 @@ class AlarmService:
         tags = dict(alarm.get("freeform_tags", {}) or {})
         tags.update(stamp or {})
         tags["logan_query"] = query
+        if tags.get("logan_origin") == "console":
+            # Not ours: record the query and ownership, leave the author's condition and text.
+            return {"freeform_tags": tags}
         return {
             "freeform_tags": tags,
             "body": f"Logan alert: {alarm.get('display_name', '')}\nQuery: {query}",

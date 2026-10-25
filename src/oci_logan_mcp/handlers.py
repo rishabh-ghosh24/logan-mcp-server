@@ -225,10 +225,10 @@ class MCPHandlers:
         )
         self.validator = QueryValidator(self.schema_manager)
         self.visualization = VisualizationEngine()
-        self.saved_search = SavedSearchService(oci_client, cache)
+        self.alarm_service = AlarmService(oci_client, cache)
+        self.saved_search = SavedSearchService(oci_client, cache, alarm_service=self.alarm_service)
         self.export_service = ExportService()
         self.auto_saver = QueryAutoSaver(context_manager, user_store=user_store)
-        self.alarm_service = AlarmService(oci_client, cache)
         self.dashboard_service = DashboardService(oci_client, cache)
         self.notification_service = NotificationService(settings, oci_client=oci_client)
         self.report_delivery_service = ReportDeliveryService(

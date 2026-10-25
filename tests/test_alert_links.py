@@ -181,3 +181,87 @@ class TestListAlerts:
         for key in ("alarm_id", "display_name", "severity", "lifecycle_state",
                     "backing_saved_search_id", "backing_metric_task_id"):
             assert key in row
+
+
+class TestSavedSearchUpdate:
+    """Editing a search that backs alerts refreshes those alarms inside the same operation."""
+
+    NEW_QUERY = "'Log Source' = 'OCI VCN Flow Unified Schema Logs' and Action = 'REJECT' | stats count"
+    SEARCH_ID = "ocid1.managementsavedsearch.oc1..edited"
+
+    def make_service(self, client):
+        from oci_logan_mcp.alarm_service import AlarmService
+        from oci_logan_mcp.saved_search import SavedSearchService
+        store = cache()
+        return SavedSearchService(client, store, alarm_service=AlarmService(client, store))
+
+    @pytest.mark.asyncio
+    async def test_query_update_refreshes_each_linked_logan_alarm_and_reports_them(self):
+        tagged = {**LOGAN_ALARM, "freeform_tags": {**LOGAN_ALARM["freeform_tags"],
+                                                    "logan_backing_saved_search_id": self.SEARCH_ID}}
+        client = make_client([tagged])
+        client.get_saved_search.return_value = {"id": self.SEARCH_ID, "ui_config": {"queryString": "old"}}
+        client.get_alarm.return_value = tagged
+        client.update_management_saved_search.return_value = {"id": self.SEARCH_ID}
+        client.update_alarm.return_value = {"id": "ocid1.alarm.logan"}
+
+        result = await self.make_service(client).update_search(self.SEARCH_ID, query=self.NEW_QUERY)
+
+        client.update_alarm.assert_called_once()
+        alarm = client.update_alarm.call_args[0][1]
+        assert alarm.freeform_tags["logan_query"] == self.NEW_QUERY
+        assert alarm.query == "logan_alert_abc[15m].last() > 50"
+        assert alarm.resource_group == "logan_alerts" and alarm.pending_duration == "PT1M"
+        assert result["linked_alerts_updated"] == [
+            {"alarm_id": "ocid1.alarm.logan", "display_name": "VCN flow spike", "created_by": "logan"}]
+
+    @pytest.mark.asyncio
+    async def test_console_alarm_is_stamped_with_our_tags_and_keeps_its_own(self):
+        task = {**CONSOLE_TASK, "saved_search_id": self.SEARCH_ID}
+        client = make_client([CONSOLE_ALARM], tasks_for_search=[{"id": "ocid1.task.console"}],
+                             task_details={"ocid1.task.console": task})
+        client.get_saved_search.return_value = {"id": self.SEARCH_ID, "query": "* | stats count",
+                                                "ui_config": {"queryString": "old"}}
+        client.get_alarm.return_value = CONSOLE_ALARM
+        client.update_management_saved_search.return_value = {"id": self.SEARCH_ID}
+        client.update_alarm.return_value = {"id": "ocid1.alarm.console"}
+
+        result = await self.make_service(client).update_search(self.SEARCH_ID, query=self.NEW_QUERY)
+
+        client.update_alarm.assert_called_once()
+        alarm = client.update_alarm.call_args[0][1]
+        tags = alarm.freeform_tags
+        assert tags["team"] == "x"
+        assert tags["logan_managed"] == "true" and tags["logan_kind"] == "monitoring_alarm"
+        assert tags["logan_origin"] == "console"
+        assert tags["logan_backing_saved_search_id"] == self.SEARCH_ID
+        assert tags["logan_backing_metric_task_id"] == "ocid1.task.console"
+        assert tags["logan_query"] == self.NEW_QUERY
+        assert alarm.query is None and alarm.body is None and alarm.pending_duration is None
+        assert result["linked_alerts_updated"] == [
+            {"alarm_id": "ocid1.alarm.console", "display_name": "Console VCN", "created_by": "console"}]
+
+    @pytest.mark.asyncio
+    async def test_stamped_console_alarm_keeps_its_provenance_in_list_alerts(self):
+        stamped = {**CONSOLE_ALARM, "freeform_tags": {
+            "team": "x", "logan_managed": "true", "logan_kind": "monitoring_alarm", "logan_origin": "console",
+            "logan_backing_saved_search_id": self.SEARCH_ID, "logan_backing_metric_task_id": "ocid1.task.console",
+            "logan_query": self.NEW_QUERY}}
+        client = make_client([stamped])
+
+        found = await find_alerts_for_saved_search(client, cache(), self.SEARCH_ID)
+
+        assert [(a.alarm_id, a.created_by, a.query) for a in found] == [
+            ("ocid1.alarm.console", "console", self.NEW_QUERY)]
+        client.list_scheduled_tasks_for_saved_search.assert_not_called()
+
+    @pytest.mark.asyncio
+    async def test_no_linked_alert_means_no_alarm_calls_and_no_key(self):
+        client = make_client([LOOKALIKE_ALARM])
+        client.get_saved_search.return_value = {"id": self.SEARCH_ID, "ui_config": {}}
+        client.update_management_saved_search.return_value = {"id": self.SEARCH_ID}
+
+        result = await self.make_service(client).update_search(self.SEARCH_ID, query=self.NEW_QUERY)
+
+        client.update_alarm.assert_not_called()
+        assert "linked_alerts_updated" not in result
