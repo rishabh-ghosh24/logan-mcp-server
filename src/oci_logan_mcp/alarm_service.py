@@ -83,7 +83,13 @@ class AlarmService:
         tv = threshold_value if threshold_value is not None else (current.group(2) if current else 0)
         if is_console_origin(alarm):
             # Not ours: keep the author's interval and statistic, change only the comparison.
-            head = current_mql[:current.start() + 1] if current else current_mql
+            if current is None or "&&" in current_mql or "||" in current_mql:
+                raise ValueError(
+                    f"Cannot change the threshold of alert '{alarm.get('display_name', '')}': its "
+                    f"condition '{current_mql}' combines several comparisons or has no simple "
+                    "threshold. Change it in the OCI Console."
+                )
+            head = current_mql[:current.start() + 1]
             return {"query": f"{head.rstrip()} {self._OPERATORS.get(operator, '>')} {tv}"}
         effective_schedule = schedule or tags.get("logan_schedule") or DEFAULT_ALERT_SCHEDULE
         return {
@@ -285,7 +291,7 @@ class AlarmService:
 
     async def list_alerts(self, compartment_id: Optional[str] = None) -> List[Dict[str, Any]]:
         """Every alarm backed by a Log Analytics scheduled search, ours or console-made."""
-        alerts = await find_log_alerts(self.oci_client, self.cache, compartment_id)
+        alerts = await find_log_alerts(self.oci_client, compartment_id)
         return [{
             "alarm_id": a.alarm_id,
             "display_name": a.display_name,

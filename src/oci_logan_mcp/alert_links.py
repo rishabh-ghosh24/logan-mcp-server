@@ -7,11 +7,9 @@ import re
 from dataclasses import dataclass
 from typing import Any, Dict, List, Optional, Tuple
 
-_CONDITION_RE = re.compile(
-    r"^\s*([A-Za-z_][A-Za-z0-9_.-]*)\s*\[[^\]]*\].*\)\s*(>=|<=|==|>|<)\s*(-?\d+(?:\.\d+)?)\s*$"
-)
+_METRIC_RE = re.compile(r"^\s*([A-Za-z_][A-Za-z0-9_.-]*)\s*\[")
+_COMPARISON_RE = re.compile(r"\)\s*(>=|<=|==|>|<)\s*(-?\d+(?:\.\d+)?)\s*$")
 _OPERATOR_NAMES = {">": "gt", ">=": "gte", "==": "eq", "<": "lt", "<=": "lte"}
-CACHE_CATEGORY = "schema"
 
 
 @dataclass(frozen=True)
@@ -35,20 +33,21 @@ class LinkedAlert:
 
 
 def parse_condition(mql: Optional[str]) -> Tuple[Optional[str], Optional[str], Optional[str]]:
-    """Return (metric token, operator name, threshold text) from an alarm condition."""
-    match = _CONDITION_RE.match(mql or "")
-    if not match:
+    """Return (metric token, operator name, threshold text) from an alarm condition.
+
+    The metric token links an alarm to the rule that posts its metric. The operator and threshold
+    are read only from a single simple comparison; a compound condition (&&, ||) or an absence
+    test has no one threshold, so both come back None and the condition is never rewritten.
+    """
+    metric = _METRIC_RE.match(mql or "")
+    if not metric:
         return (None, None, None)
-    return (match.group(1), _OPERATOR_NAMES[match.group(2)], match.group(3))
-
-
-def _cache_key(client, compartment_id: Optional[str]) -> str:
-    return f"alert_links:{compartment_id or client.compartment_id}"
-
-
-def invalidate(cache, compartment_id: Optional[str], client=None) -> None:
-    key = f"alert_links:{compartment_id}" if compartment_id else _cache_key(client, None)
-    cache.delete(key, category=CACHE_CATEGORY)
+    if "&&" in mql or "||" in mql:
+        return (metric.group(1), None, None)
+    comparison = _COMPARISON_RE.search(mql)
+    if not comparison:
+        return (metric.group(1), None, None)
+    return (metric.group(1), _OPERATOR_NAMES[comparison.group(1)], comparison.group(2))
 
 
 CONSOLE_STAMP = {"logan_managed": "true", "logan_kind": "monitoring_alarm", "logan_origin": "console"}
@@ -122,7 +121,7 @@ async def _console_matches(client, alarms: List[Dict[str, Any]], task: Dict[str,
     return results
 
 
-async def find_alerts_for_saved_search(client, cache, saved_search_id: str,
+async def find_alerts_for_saved_search(client, saved_search_id: str,
                                        compartment_id: Optional[str] = None) -> List[LinkedAlert]:
     """Alarms that depend on one saved search: our tags first, then OCI's own links."""
     alarms = await client.list_alarms(compartment_id)
@@ -137,29 +136,20 @@ async def find_alerts_for_saved_search(client, cache, saved_search_id: str,
     return results
 
 
-async def _detection_rule_details(client, cache, compartment_id: Optional[str]) -> List[Dict[str, Any]]:
-    """Details of every SAVED_SEARCH task in the compartment; the one slow, cacheable read."""
-    key = _cache_key(client, compartment_id)
-    cached = cache.get(key, category=CACHE_CATEGORY)
-    if cached is not None:
-        return cached
-    details = [await client.get_scheduled_task_details(task["id"]) for task in await client.list_saved_searches()]
-    cache.set(key, details, category=CACHE_CATEGORY)
-    return details
-
-
-async def find_log_alerts(client, cache, compartment_id: Optional[str] = None) -> List[LinkedAlert]:
+async def find_log_alerts(client, compartment_id: Optional[str] = None) -> List[LinkedAlert]:
     """Every alarm backed by a Log Analytics scheduled search, ours or console-made.
 
-    Alarms are read live on every call so an alarm created or deleted anywhere, in the console or
-    through this server, shows at once; only the task details behind console chains are cached.
+    Nothing here is cached: alarms and detection rules are read as they are now, so a change
+    made in the console or through this server shows on the next call.
     """
     alarms = await client.list_alarms(compartment_id)
     found: Dict[str, LinkedAlert] = {a.alarm_id: a for a in (_from_tagged(x) for x in alarms if _is_logan_alarm(x))}
-    for details in await _detection_rule_details(client, cache, compartment_id):
+    for task in await client.list_saved_searches():
+        details = await client.get_scheduled_task_details(task["id"])
         for alert in await _console_matches(client, alarms, details):
             found.setdefault(alert.alarm_id, alert)
     return list(found.values())
+
 
 _SYMBOLS = {"gt": ">", "gte": ">=", "eq": "=", "lt": "<", "lte": "<="}
 

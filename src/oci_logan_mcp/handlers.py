@@ -601,7 +601,7 @@ class MCPHandlers:
     async def _linked_alert_warning(self, name: str, arguments: Dict) -> Optional[str]:
         """Which alerts a query change will affect, computed before the write is confirmed."""
         if name == "update_saved_search":
-            alerts = await find_alerts_for_saved_search(self.oci_client, self.cache, arguments["saved_search_id"])
+            alerts = await find_alerts_for_saved_search(self.oci_client, arguments["saved_search_id"])
             return describe_linked_alerts(alerts, via="saved_search")
         alarm = await self.oci_client.get_alarm(arguments["alert_id"])
         return describe_linked_alerts([linked_alert_from_alarm(alarm)], via="alert")

@@ -6,7 +6,7 @@ from typing import Optional, List, Dict, Any
 from .client import OCILogAnalyticsClient
 from .cache import CacheManager
 from .saved_search_config import build_scope_filters, build_ui_config
-from .alert_links import CONSOLE_STAMP, find_alerts_for_saved_search, invalidate
+from .alert_links import CONSOLE_STAMP, find_alerts_for_saved_search
 
 PROVIDER_ID = "log-analytics"
 PROVIDER_NAME = "Log Analytics"
@@ -29,7 +29,7 @@ class SavedSearchService:
         """After a query change, refresh every alarm that depends on this search."""
         if self.alarm_service is None:
             return []
-        linked = await find_alerts_for_saved_search(self.oci_client, self.cache, saved_search_id)
+        linked = await find_alerts_for_saved_search(self.oci_client, saved_search_id)
         updated = []
         for alert in linked:
             alarm = await self.oci_client.get_alarm(alert.alarm_id)
@@ -44,8 +44,6 @@ class SavedSearchService:
             )
             updated.append({"alarm_id": alert.alarm_id, "display_name": alert.display_name,
                             "created_by": alert.created_by})
-        if linked:
-            invalidate(self.cache, None, client=self.oci_client)
         return updated
 
     async def list_searches(self) -> List[Dict[str, Any]]:

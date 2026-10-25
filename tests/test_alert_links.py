@@ -3,7 +3,7 @@ import pytest
 from unittest.mock import AsyncMock
 
 from oci_logan_mcp.alert_links import (
-    find_alerts_for_saved_search, find_log_alerts, invalidate, parse_condition,
+    find_alerts_for_saved_search, find_log_alerts, parse_condition,
 )
 from oci_logan_mcp.cache import CacheManager
 from oci_logan_mcp.config import CacheConfig
@@ -62,7 +62,7 @@ def test_parse_condition_reads_metric_operator_and_threshold():
 async def test_fast_path_uses_backing_tag_without_listing_tasks():
     client = make_client([LOGAN_ALARM, CONSOLE_ALARM])
 
-    found = await find_alerts_for_saved_search(client, cache(), "ocid1.mss.logan")
+    found = await find_alerts_for_saved_search(client, "ocid1.mss.logan")
 
     assert [a.alarm_id for a in found] == ["ocid1.alarm.logan"]
     assert found[0].created_by == "logan"
@@ -76,7 +76,7 @@ async def test_slow_path_matches_console_alarm_by_namespace_and_metric_token():
     client = make_client([CONSOLE_ALARM, LOOKALIKE_ALARM], tasks_for_search=[{"id": "ocid1.task.console"}],
                          task_details={"ocid1.task.console": CONSOLE_TASK})
 
-    found = await find_alerts_for_saved_search(client, cache(), "ocid1.mss.console")
+    found = await find_alerts_for_saved_search(client, "ocid1.mss.console")
 
     assert [a.alarm_id for a in found] == ["ocid1.alarm.console"]
     alert = found[0]
@@ -97,7 +97,7 @@ async def test_console_rule_on_a_fixed_frequency_schedule_reports_its_interval()
     client = make_client([CONSOLE_ALARM], tasks_for_search=[{"id": "ocid1.task.console"}],
                          task_details={"ocid1.task.console": fixed})
 
-    [alert] = await find_alerts_for_saved_search(client, cache(), "ocid1.mss.console")
+    [alert] = await find_alerts_for_saved_search(client, "ocid1.mss.console")
 
     assert (alert.schedule, alert.schedule_format) == ("PT5M", "interval")
 
@@ -108,7 +108,7 @@ async def test_console_rule_without_a_readable_schedule_says_so():
     client = make_client([CONSOLE_ALARM], tasks_for_search=[{"id": "ocid1.task.console"}],
                          task_details={"ocid1.task.console": bare})
 
-    [alert] = await find_alerts_for_saved_search(client, cache(), "ocid1.mss.console")
+    [alert] = await find_alerts_for_saved_search(client, "ocid1.mss.console")
 
     assert (alert.schedule, alert.schedule_format) == ("", "unknown")
 
@@ -118,7 +118,7 @@ async def test_same_metric_token_in_other_namespace_is_not_a_log_alert():
     client = make_client([LOOKALIKE_ALARM, CONSOLE_ALARM], tasks_for_search=[{"id": "ocid1.task.console"}],
                          task_details={"ocid1.task.console": CONSOLE_TASK})
 
-    found = await find_alerts_for_saved_search(client, cache(), "ocid1.mss.console")
+    found = await find_alerts_for_saved_search(client, "ocid1.mss.console")
 
     assert [a.alarm_id for a in found] == ["ocid1.alarm.console"]
 
@@ -129,55 +129,57 @@ async def test_task_without_metric_extraction_is_ignored():
     client = make_client([CONSOLE_ALARM], tasks_for_search=[{"id": "ocid1.task.plain"}, {"id": "ocid1.task.console"}],
                          task_details={"ocid1.task.plain": plain, "ocid1.task.console": CONSOLE_TASK})
 
-    found = await find_alerts_for_saved_search(client, cache(), "ocid1.mss.console")
+    found = await find_alerts_for_saved_search(client, "ocid1.mss.console")
 
     assert [a.backing_metric_task_id for a in found] == ["ocid1.task.console"]
 
 
 @pytest.mark.asyncio
-async def test_find_log_alerts_merges_tagged_and_console_and_caches():
+async def test_find_log_alerts_merges_tagged_and_console_and_reads_live_every_time():
+    """Nothing about alerts is cached: every call sees the alarms and rules as they are now."""
     logan_task = {**CONSOLE_TASK, "id": "ocid1.task.logan", "saved_search_id": "ocid1.mss.logan",
                   "metric_namespace": "logan_custom_metrics", "metric_name": "logan_alert_abc",
                   "metric_resource_group": "logan_alerts"}
     client = make_client([LOGAN_ALARM, CONSOLE_ALARM, LOOKALIKE_ALARM],
                          all_tasks=[{"id": "ocid1.task.console"}, {"id": "ocid1.task.logan"}],
                          task_details={"ocid1.task.console": CONSOLE_TASK, "ocid1.task.logan": logan_task})
-    store = cache()
 
-    found = await find_log_alerts(client, store)
+    found = await find_log_alerts(client)
 
     assert {a.alarm_id: a.created_by for a in found} == {
         "ocid1.alarm.logan": "logan", "ocid1.alarm.console": "console"}
-    client.list_alarms.reset_mock()
-    client.get_scheduled_task_details.reset_mock()
-    again = await find_log_alerts(client, store)
+    again = await find_log_alerts(client)
     assert [a.alarm_id for a in again] == [a.alarm_id for a in found]
-    client.list_alarms.assert_awaited_once()  # alarms are always read live
-    client.get_scheduled_task_details.assert_not_called()  # task details come from the cache
-
-    invalidate(store, COMPARTMENT)
-    client.get_scheduled_task_details.reset_mock()
-    await find_log_alerts(client, store)
-    assert client.get_scheduled_task_details.await_count == 2
+    assert client.list_alarms.await_count == 2
+    assert client.list_saved_searches.await_count == 2
+    assert client.get_scheduled_task_details.await_count == 4
 
 
 @pytest.mark.asyncio
-async def test_find_log_alerts_reflects_alarm_changes_made_anywhere_at_once():
-    """An alarm deleted in the console or created a second ago must not wait for the cache."""
+async def test_find_log_alerts_reflects_alarm_and_rule_changes_made_anywhere_at_once():
+    """An alarm or rule deleted in the console, or created a second ago, shows on the next call."""
     client = make_client([LOGAN_ALARM, CONSOLE_ALARM], all_tasks=[{"id": "ocid1.task.console"}],
                          task_details={"ocid1.task.console": CONSOLE_TASK})
-    store = cache()
-    first = await find_log_alerts(client, store)
+    first = await find_log_alerts(client)
     assert {a.alarm_id for a in first} == {"ocid1.alarm.logan", "ocid1.alarm.console"}
 
     client.list_alarms.return_value = [LOGAN_ALARM]  # console alarm deleted outside the server
-    second = await find_log_alerts(client, store)
+    second = await find_log_alerts(client)
     assert {a.alarm_id for a in second} == {"ocid1.alarm.logan"}
 
     client.list_alarms.return_value = [CONSOLE_ALARM]  # logan alarm deleted, console one recreated
-    third = await find_log_alerts(client, store)
-    assert {a.alarm_id for a in third} == {"ocid1.alarm.console"}
+    client.list_saved_searches.return_value = []  # and its detection rule removed in the console
+    third = await find_log_alerts(client)
+    assert third == []
     client.list_scheduled_tasks_for_saved_search.assert_not_called()
+
+
+def test_parse_condition_gives_no_threshold_for_compound_or_absence_conditions():
+    """A compound condition must not have one half's threshold reported as the whole."""
+    assert parse_condition("m1[1m].mean() > 8 && m2[1m].max() < 3") == ("m1", None, None)
+    assert parse_condition("m1[1m].mean() > 80 || m1[1m].mean() < 5") == ("m1", None, None)
+    assert parse_condition("CpuUtilization[1m].absent(5m)") == ("CpuUtilization", None, None)
+    assert parse_condition("break_in_attempts[5m].groupBy(host).mean() > 8") == ("break_in_attempts", "gt", "8")
 
 
 class TestListAlerts:
@@ -291,7 +293,7 @@ class TestSavedSearchUpdate:
             "logan_query": self.NEW_QUERY}}
         client = make_client([stamped])
 
-        found = await find_alerts_for_saved_search(client, cache(), self.SEARCH_ID)
+        found = await find_alerts_for_saved_search(client, self.SEARCH_ID)
 
         assert [(a.alarm_id, a.created_by, a.query) for a in found] == [
             ("ocid1.alarm.console", "console", self.NEW_QUERY)]

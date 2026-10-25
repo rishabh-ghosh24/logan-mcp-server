@@ -275,6 +275,24 @@ class TestConsoleOriginAlarm:
         assert alarm.query is None and alarm.body is None and alarm.pending_duration is None
 
 
+class TestUnreadableConsoleCondition:
+    @pytest.mark.asyncio
+    async def test_threshold_update_on_a_compound_console_condition_is_refused(self):
+        client = make_client()
+        client.get_alarm.return_value = {
+            "id": "ocid1.alarm.c", "display_name": "Disk and CPU",
+            "query": "disk[5m].mean() > 90 && cpu[5m].mean() > 80",
+            "freeform_tags": {"logan_managed": "true", "logan_kind": "monitoring_alarm",
+                              "logan_origin": "console", "logan_backing_metric_task_id": "ocid1.task.c"},
+        }
+
+        with pytest.raises(ValueError) as error:
+            await make_svc(client).update_alert("ocid1.alarm.c", threshold_value=50)
+
+        assert "Disk and CPU" in str(error.value) and "OCI Console" in str(error.value)
+        client.update_alarm.assert_not_called()
+
+
 class TestResultWording:
     """Results describe what the alarm really does and list only the fields the user changed."""
 
