@@ -2,7 +2,7 @@
 # Setup script for OCI Log Analytics MCP Server on Oracle Enterprise Linux 9.
 #
 # What this script does:
-#   1. Checks for Python 3.10+ (installs Python 3.11 via dnf if missing)
+#   1. Checks for Python 3.11+ (installs Python 3.11 via dnf if missing)
 #   2. Creates a Python virtual environment (venv/)
 #   3. Installs pip and all required dependencies
 #   4. Installs the oci-logan-mcp server package
@@ -19,14 +19,14 @@ echo "================================================"
 echo " OCI Log Analytics MCP Server - OEL 9 Setup"
 echo "================================================"
 
-# Check Python version (3.10+ required)
+# Check Python version (3.11+ required, matching requires-python in pyproject.toml)
 PYTHON_CMD=""
-for cmd in python3.11 python3.12 python3.10 python3; do
+for cmd in python3.14 python3.13 python3.12 python3.11 python3; do
     if command -v "$cmd" &>/dev/null; then
         version=$("$cmd" --version 2>&1 | awk '{print $2}')
         major=$(echo "$version" | cut -d. -f1)
         minor=$(echo "$version" | cut -d. -f2)
-        if [ "$major" -ge 3 ] && [ "$minor" -ge 10 ]; then
+        if [ "$major" -eq 3 ] && [ "$minor" -ge 11 ]; then
             PYTHON_CMD="$cmd"
             break
         fi
@@ -34,7 +34,7 @@ for cmd in python3.11 python3.12 python3.10 python3; do
 done
 
 if [ -z "$PYTHON_CMD" ]; then
-    echo "Python 3.10+ is required. Installing Python 3.11..."
+    echo "Python 3.11+ is required. Installing Python 3.11..."
     sudo dnf install -y python3.11 python3.11-pip
     PYTHON_CMD="python3.11"
 fi

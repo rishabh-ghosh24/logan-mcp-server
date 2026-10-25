@@ -87,3 +87,19 @@ def test_no_dot_venv_in_live_files():
         "leading dot) to match README.md and scripts/. Fix these to `venv/`:\n  "
         + "\n  ".join(offenders)
     )
+
+
+def test_setup_script_python_floor_matches_pyproject():
+    """scripts/setup_oel9.sh must refuse the interpreters the package refuses and try the newer ones.
+
+    Accepting Python 3.10 lets the script build a venv the install then rejects.
+    """
+    import re
+    pyproject = (REPO_ROOT / "pyproject.toml").read_text()
+    floor = int(re.search(r'requires-python\s*=\s*">=3\.(\d+)"', pyproject).group(1))
+    script = (REPO_ROOT / "scripts" / "setup_oel9.sh").read_text()
+
+    assert f"3.{floor - 1}" not in script, f"setup script still mentions Python 3.{floor - 1}"
+    assert f'-ge {floor} ]' in script, f"setup script does not enforce the 3.{floor} floor"
+    for minor in range(floor, 15):
+        assert f"python3.{minor}" in script, f"setup script never tries python3.{minor}"
