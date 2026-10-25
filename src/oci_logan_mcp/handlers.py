@@ -77,6 +77,15 @@ if TYPE_CHECKING:
 
 logger = logging.getLogger(__name__)
 
+
+def _dumps(payload: Any, **kwargs: Any) -> str:
+    """Serialise a tool result for the wire: compact separators, unicode kept, dates as text.
+    Whitespace in JSON is pure token cost for the model, so no indentation is ever sent."""
+    kwargs.pop("indent", None)
+    kwargs.setdefault("default", str)
+    kwargs.setdefault("ensure_ascii", False)
+    return json.dumps(payload, separators=(",", ":"), **kwargs)
+
 REPORT_EMAIL_TOPIC_PREFERENCE_KEY = "report.email_topic"
 COMPARTMENT_PREFERENCE_KEY = "default_compartment_id"
 REQUIRED_AUDIT_TOOLS = frozenset({
@@ -417,7 +426,7 @@ class MCPHandlers:
                 blocked=True,
                 block_reason="read_only",
             )
-            return [{"type": "text", "is_error": True, "text": json.dumps({
+            return [{"type": "text", "is_error": True, "text": _dumps({
                 "status": "read_only_blocked",
                 "tool": name,
                 "error": str(e),
@@ -466,7 +475,7 @@ class MCPHandlers:
                         blocked=True,
                         block_reason="confirmation_unavailable",
                     )
-                return [{"type": "text", "is_error": True, "text": json.dumps(
+                return [{"type": "text", "is_error": True, "text": _dumps(
                     self._build_confirmation_unavailable_response(status),
                     indent=2,
                 )}]
@@ -523,7 +532,7 @@ class MCPHandlers:
                 confirmation = self.confirmation_manager.request_confirmation(
                     name, arguments, summary_extras=summary_extras, scope=effective_scope,
                 )
-                return [{"type": "text", "text": json.dumps(confirmation, indent=2)}]
+                return [{"type": "text", "text": _dumps(confirmation, indent=2)}]
 
             if not self.confirmation_manager.validate_confirmation(
                 token, secret, name, arguments, scope=effective_scope,
@@ -541,7 +550,7 @@ class MCPHandlers:
                     blocked=True,
                     block_reason="confirmation_failed",
                 )
-                return [{"type": "text", "is_error": True, "text": json.dumps({
+                return [{"type": "text", "is_error": True, "text": _dumps({
                     "status": "confirmation_failed",
                     "error": "Invalid/expired token, wrong secret, or arguments changed. "
                              "Request a new confirmation token.",
@@ -657,7 +666,7 @@ class MCPHandlers:
         return metrics_content(result.payload, is_error=result.is_error)
 
     def _json_response(self, payload: Any) -> List[Dict]:
-        return [{"type": "text", "text": json.dumps(payload, indent=2, default=str)}]
+        return [{"type": "text", "text": _dumps(payload, indent=2, default=str)}]
 
     def _error_response(self, error_code: str, message: str, **extra: Any) -> List[Dict]:
         payload = {"status": "error", "error_code": error_code, "error": message}
@@ -976,12 +985,12 @@ class MCPHandlers:
     async def _list_parsers(self, args: Dict) -> List[Dict]:
         """List parsers."""
         parsers = await self.schema_manager.get_parsers()
-        return [{"type": "text", "text": json.dumps(parsers, indent=2)}]
+        return [{"type": "text", "text": _dumps(parsers, indent=2)}]
 
     async def _list_labels(self, args: Dict) -> List[Dict]:
         """List labels."""
         labels = await self.schema_manager.get_labels()
-        return [{"type": "text", "text": json.dumps(labels, indent=2)}]
+        return [{"type": "text", "text": _dumps(labels, indent=2)}]
 
     async def _list_saved_searches(self, args: Dict) -> List[Dict]:
         """List saved searches: keyword filter on name and description, bounded; rows unchanged."""
@@ -994,7 +1003,7 @@ class MCPHandlers:
     async def _list_log_groups(self, args: Dict) -> List[Dict]:
         """List log groups."""
         groups = await self.oci_client.list_log_groups()
-        return [{"type": "text", "text": json.dumps(groups, indent=2)}]
+        return [{"type": "text", "text": _dumps(groups, indent=2)}]
 
     async def _validate_query(self, args: Dict) -> List[Dict]:
         """Validate a query."""
@@ -1011,7 +1020,7 @@ class MCPHandlers:
             "estimated_cost": result.estimated_cost,
             "suggested_fix": result.suggested_fix,
         }
-        return [{"type": "text", "text": json.dumps(result_dict, indent=2)}]
+        return [{"type": "text", "text": _dumps(result_dict, indent=2)}]
 
     def _effective_scope(self, arguments: Dict) -> Dict:
         compartment, include_subs = self._resolve_scope(arguments)
@@ -1098,9 +1107,9 @@ class MCPHandlers:
         # Use compact formatter for cluster queries
         if self._is_cluster_query(query_text):
             formatted = self._format_cluster_result(result)
-            return [{"type": "text", "text": json.dumps(formatted, indent=2, default=str)}]
+            return [{"type": "text", "text": _dumps(formatted, indent=2, default=str)}]
 
-        return [{"type": "text", "text": json.dumps(result, indent=2, default=str)}]
+        return [{"type": "text", "text": _dumps(result, indent=2, default=str)}]
 
     async def _create_log_source_from_sample(self, args: Dict) -> List[Dict]:
         """Create parser/source from sample logs, upload samples, and verify parsing."""
@@ -1128,7 +1137,7 @@ class MCPHandlers:
             poll_attempts=args.get("poll_attempts", 6),
             poll_interval_seconds=args.get("poll_interval_seconds", 10),
         )
-        return [{"type": "text", "text": json.dumps(result, indent=2, default=str)}]
+        return [{"type": "text", "text": _dumps(result, indent=2, default=str)}]
 
     @staticmethod
     def _is_cluster_query(query: str) -> bool:
@@ -1201,7 +1210,7 @@ class MCPHandlers:
         search_name = args.get("name")
 
         if not search_id and not search_name:
-            return [{"is_error": True, "type": "text", "text": json.dumps({
+            return [{"is_error": True, "type": "text", "text": _dumps({
                 "status": "error",
                 "error_code": "MISSING_ARGUMENT",
                 "message": "run_saved_search requires either `name` or `id`.",
@@ -1215,7 +1224,7 @@ class MCPHandlers:
                 search_id = search.get("id")
 
         if not search_id:
-            return [{"is_error": True, "type": "text", "text": json.dumps({
+            return [{"is_error": True, "type": "text", "text": _dumps({
                 "status": "error",
                 "error_code": "NOT_FOUND",
                 "message": f"No saved search found with name={search_name!r}.",
@@ -1232,7 +1241,7 @@ class MCPHandlers:
         result = await self.query_engine.execute(
             query=query, time_range="last_1_hour"
         )
-        return [{"type": "text", "text": json.dumps(result, indent=2, default=str)}]
+        return [{"type": "text", "text": _dumps(result, indent=2, default=str)}]
 
     async def _run_batch_queries(self, args: Dict) -> List[Dict]:
         """Run batch queries."""
@@ -1248,7 +1257,7 @@ class MCPHandlers:
                 if success:
                     self.auto_saver.process_successful_query(q_spec["query"], r["result"])
                 self._record_query_outcome(q_spec["query"], success)
-        return [{"type": "text", "text": json.dumps(results, indent=2, default=str)}]
+        return [{"type": "text", "text": _dumps(results, indent=2, default=str)}]
 
     def _record_query_outcome(self, query: str, success: bool) -> None:
         """Keep personal learning separate from successful tool delivery."""
@@ -1280,8 +1289,8 @@ class MCPHandlers:
                 "partial": None,
                 "budget": self._budget_tracker.snapshot().to_dict(),
             }
-            return [{"type": "text", "is_error": True, "text": json.dumps(payload, indent=2, default=str)}]
-        return [{"type": "text", "text": json.dumps(result, indent=2, default=str)}]
+            return [{"type": "text", "is_error": True, "text": _dumps(payload, indent=2, default=str)}]
+        return [{"type": "text", "text": _dumps(result, indent=2, default=str)}]
 
     async def _pivot_on_entity(self, args: Dict) -> List[Dict]:
         """Run pivot_on_entity. Catches BudgetExceededError and ValueError and
@@ -1305,12 +1314,12 @@ class MCPHandlers:
                 "partial": None,
                 "budget": self._budget_tracker.snapshot().to_dict(),
             }
-            return [{"type": "text", "is_error": True, "text": json.dumps(payload, indent=2, default=str)}]
+            return [{"type": "text", "is_error": True, "text": _dumps(payload, indent=2, default=str)}]
         except ValueError as e:
-            return [{"is_error": True, "type": "text", "text": json.dumps(
+            return [{"is_error": True, "type": "text", "text": _dumps(
                 {"status": "error", "error": str(e)}, indent=2
             )}]
-        return [{"type": "text", "text": json.dumps(result, indent=2, default=str)}]
+        return [{"type": "text", "text": _dumps(result, indent=2, default=str)}]
 
     async def _ingestion_health(self, args: Dict) -> List[Dict]:
         """Run ingestion_health. Catch budget breaches and return them as a
@@ -1329,22 +1338,22 @@ class MCPHandlers:
                 "partial": None,
                 "budget": self._budget_tracker.snapshot().to_dict(),
             }
-            return [{"type": "text", "is_error": True, "text": json.dumps(payload, indent=2, default=str)}]
-        return [{"type": "text", "text": json.dumps(result, indent=2, default=str)}]
+            return [{"type": "text", "is_error": True, "text": _dumps(payload, indent=2, default=str)}]
+        return [{"type": "text", "text": _dumps(result, indent=2, default=str)}]
 
     async def _parser_failure_triage(self, args: Dict) -> List[Dict]:
         """Run parser_failure_triage. BudgetExceededError returns structured payload."""
         try:
             top_n = int(args.get("top_n", 20))
         except (TypeError, ValueError):
-            return [{"is_error": True, "type": "text", "text": json.dumps(
+            return [{"is_error": True, "type": "text", "text": _dumps(
                 {"status": "error", "error": "top_n must be an integer"}, indent=2
             )}]
         # Logan's LIMIT clause accepts 0..50000; zero is valid but useless, so
         # reject anything outside [1, 50000] at the handler rather than let it
         # reach the engine and come back as an opaque 400.
         if top_n < 1 or top_n > 50000:
-            return [{"is_error": True, "type": "text", "text": json.dumps(
+            return [{"is_error": True, "type": "text", "text": _dumps(
                 {"status": "error", "error": "top_n must be between 1 and 50000"},
                 indent=2,
             )}]
@@ -1360,8 +1369,8 @@ class MCPHandlers:
                 "partial": None,
                 "budget": self._budget_tracker.snapshot().to_dict(),
             }
-            return [{"type": "text", "is_error": True, "text": json.dumps(payload, indent=2, default=str)}]
-        return [{"type": "text", "text": json.dumps(result, indent=2, default=str)}]
+            return [{"type": "text", "is_error": True, "text": _dumps(payload, indent=2, default=str)}]
+        return [{"type": "text", "text": _dumps(result, indent=2, default=str)}]
 
     async def _investigate_incident(self, args: Dict) -> List[Dict]:
         """Route to InvestigateIncidentTool. Partial reports forward verbatim;
@@ -1369,8 +1378,8 @@ class MCPHandlers:
         does NOT wrap in the generic {status: "budget_exceeded"} shape."""
         report, error = await self._run_investigation(args)
         if error is not None:
-            return [{"is_error": True, "type": "text", "text": json.dumps(error, indent=2)}]
-        return [{"type": "text", "text": json.dumps(report, indent=2, default=str)}]
+            return [{"is_error": True, "type": "text", "text": _dumps(error, indent=2)}]
+        return [{"type": "text", "text": _dumps(report, indent=2, default=str)}]
 
     async def _run_investigation(self, args: Dict) -> tuple[Optional[Dict[str, Any]], Optional[Dict[str, Any]]]:
         query = args.get("query")
@@ -1416,7 +1425,7 @@ class MCPHandlers:
     async def _investigate_and_generate_report(self, args: Dict) -> List[Dict]:
         investigation, error = await self._run_investigation(args)
         if error is not None:
-            return [{"is_error": True, "type": "text", "text": json.dumps(error, indent=2)}]
+            return [{"is_error": True, "type": "text", "text": _dumps(error, indent=2)}]
 
         try:
             report = self.report_generator.generate(
@@ -1446,7 +1455,7 @@ class MCPHandlers:
             "delivery_options": self._report_delivery_options_payload(),
             "next_required_action": next_required_action,
         }
-        return [{"type": "text", "text": json.dumps(payload, indent=2, default=str)}]
+        return [{"type": "text", "text": _dumps(payload, indent=2, default=str)}]
 
     async def _generate_incident_report(self, args: Dict) -> List[Dict]:
         investigation = args.get("investigation")
@@ -2018,13 +2027,13 @@ class MCPHandlers:
         """Run why_did_this_fire with structured validation and budget errors."""
         alarm_ocid = args.get("alarm_ocid")
         if not alarm_ocid or not isinstance(alarm_ocid, str):
-            return [{"is_error": True, "type": "text", "text": json.dumps(
+            return [{"is_error": True, "type": "text", "text": _dumps(
                 {"status": "error", "error": "alarm_ocid is required and must be a string"},
                 indent=2,
             )}]
         fire_time = args.get("fire_time")
         if not fire_time or not isinstance(fire_time, str):
-            return [{"is_error": True, "type": "text", "text": json.dumps(
+            return [{"is_error": True, "type": "text", "text": _dumps(
                 {"status": "error", "error": "fire_time is required and must be an ISO-8601 string"},
                 indent=2,
             )}]
@@ -2033,24 +2042,24 @@ class MCPHandlers:
             try:
                 window_before_seconds = int(window_before_seconds)
             except (TypeError, ValueError):
-                return [{"is_error": True, "type": "text", "text": json.dumps(
+                return [{"is_error": True, "type": "text", "text": _dumps(
                     {"status": "error", "error": "window_before_seconds must be an integer"},
                     indent=2,
                 )}]
             if window_before_seconds < 1:
-                return [{"is_error": True, "type": "text", "text": json.dumps(
+                return [{"is_error": True, "type": "text", "text": _dumps(
                     {"status": "error", "error": "window_before_seconds must be >= 1"},
                     indent=2,
                 )}]
         try:
             window_after_seconds = int(args.get("window_after_seconds", 60))
         except (TypeError, ValueError):
-            return [{"is_error": True, "type": "text", "text": json.dumps(
+            return [{"is_error": True, "type": "text", "text": _dumps(
                 {"status": "error", "error": "window_after_seconds must be an integer"},
                 indent=2,
             )}]
         if window_after_seconds < 0:
-            return [{"is_error": True, "type": "text", "text": json.dumps(
+            return [{"is_error": True, "type": "text", "text": _dumps(
                 {"status": "error", "error": "window_after_seconds must be >= 0"},
                 indent=2,
             )}]
@@ -2068,18 +2077,18 @@ class MCPHandlers:
                 "partial": None,
                 "budget": self._budget_tracker.snapshot().to_dict(),
             }
-            return [{"type": "text", "is_error": True, "text": json.dumps(payload, indent=2, default=str)}]
+            return [{"type": "text", "is_error": True, "text": _dumps(payload, indent=2, default=str)}]
         except ValueError as e:
-            return [{"is_error": True, "type": "text", "text": json.dumps(
+            return [{"is_error": True, "type": "text", "text": _dumps(
                 {"status": "error", "error": str(e)}, indent=2
             )}]
-        return [{"type": "text", "text": json.dumps(result, indent=2, default=str)}]
+        return [{"type": "text", "text": _dumps(result, indent=2, default=str)}]
 
     async def _trace_request_id(self, args: Dict) -> List[Dict]:
         """Run trace_request_id with structured validation and budget errors."""
         request_id = args.get("request_id")
         if not request_id or not isinstance(request_id, str):
-            return [{"is_error": True, "type": "text", "text": json.dumps(
+            return [{"is_error": True, "type": "text", "text": _dumps(
                 {
                     "status": "error",
                     "error_code": "missing_request_id",
@@ -2090,7 +2099,7 @@ class MCPHandlers:
 
         time_range = args.get("time_range")
         if not isinstance(time_range, dict) or not time_range:
-            return [{"is_error": True, "type": "text", "text": json.dumps(
+            return [{"is_error": True, "type": "text", "text": _dumps(
                 {
                     "status": "error",
                     "error_code": "invalid_time_range",
@@ -2104,7 +2113,7 @@ class MCPHandlers:
             not isinstance(id_fields, list)
             or any(not isinstance(value, str) or not value.strip() for value in id_fields)
         ):
-            return [{"is_error": True, "type": "text", "text": json.dumps(
+            return [{"is_error": True, "type": "text", "text": _dumps(
                 {
                     "status": "error",
                     "error_code": "invalid_id_fields",
@@ -2126,14 +2135,14 @@ class MCPHandlers:
                 "partial": None,
                 "budget": self._budget_tracker.snapshot().to_dict(),
             }
-            return [{"type": "text", "is_error": True, "text": json.dumps(payload, indent=2, default=str)}]
-        return [{"type": "text", "text": json.dumps(result, indent=2, default=str)}]
+            return [{"type": "text", "is_error": True, "text": _dumps(payload, indent=2, default=str)}]
+        return [{"type": "text", "text": _dumps(result, indent=2, default=str)}]
 
     async def _find_rare_events(self, args: Dict) -> List[Dict]:
         """Run find_rare_events with structured validation and budget errors."""
         source = args.get("source")
         if not source or not isinstance(source, str):
-            return [{"is_error": True, "type": "text", "text": json.dumps(
+            return [{"is_error": True, "type": "text", "text": _dumps(
                 {
                     "status": "error",
                     "error_code": "missing_source",
@@ -2144,7 +2153,7 @@ class MCPHandlers:
 
         field = args.get("field")
         if not field or not isinstance(field, str):
-            return [{"is_error": True, "type": "text", "text": json.dumps(
+            return [{"is_error": True, "type": "text", "text": _dumps(
                 {
                     "status": "error",
                     "error_code": "missing_field",
@@ -2155,7 +2164,7 @@ class MCPHandlers:
 
         time_range = args.get("time_range")
         if not isinstance(time_range, dict) or not time_range:
-            return [{"is_error": True, "type": "text", "text": json.dumps(
+            return [{"is_error": True, "type": "text", "text": _dumps(
                 {
                     "status": "error",
                     "error_code": "invalid_time_range",
@@ -2167,7 +2176,7 @@ class MCPHandlers:
         try:
             rarity_threshold_percentile = float(args.get("rarity_threshold_percentile", 5.0))
         except (TypeError, ValueError):
-            return [{"is_error": True, "type": "text", "text": json.dumps(
+            return [{"is_error": True, "type": "text", "text": _dumps(
                 {
                     "status": "error",
                     "error_code": "invalid_rarity_threshold_percentile",
@@ -2176,7 +2185,7 @@ class MCPHandlers:
                 indent=2,
             )}]
         if rarity_threshold_percentile <= 0 or rarity_threshold_percentile > 100:
-            return [{"is_error": True, "type": "text", "text": json.dumps(
+            return [{"is_error": True, "type": "text", "text": _dumps(
                 {
                     "status": "error",
                     "error_code": "invalid_rarity_threshold_percentile",
@@ -2188,7 +2197,7 @@ class MCPHandlers:
         try:
             history_days = int(args.get("history_days", 30))
         except (TypeError, ValueError):
-            return [{"is_error": True, "type": "text", "text": json.dumps(
+            return [{"is_error": True, "type": "text", "text": _dumps(
                 {
                     "status": "error",
                     "error_code": "invalid_history_days",
@@ -2197,7 +2206,7 @@ class MCPHandlers:
                 indent=2,
             )}]
         if history_days <= 0:
-            return [{"is_error": True, "type": "text", "text": json.dumps(
+            return [{"is_error": True, "type": "text", "text": _dumps(
                 {
                     "status": "error",
                     "error_code": "invalid_history_days",
@@ -2221,8 +2230,8 @@ class MCPHandlers:
                 "partial": None,
                 "budget": self._budget_tracker.snapshot().to_dict(),
             }
-            return [{"type": "text", "is_error": True, "text": json.dumps(payload, indent=2, default=str)}]
-        return [{"type": "text", "text": json.dumps(result, indent=2, default=str)}]
+            return [{"type": "text", "is_error": True, "text": _dumps(payload, indent=2, default=str)}]
+        return [{"type": "text", "text": _dumps(result, indent=2, default=str)}]
 
     async def _related_dashboards_and_searches(self, args: Dict) -> List[Dict]:
         """Suggest dashboards, saved searches, and learned queries for a source/entity/field."""
@@ -2236,7 +2245,7 @@ class MCPHandlers:
             field=field,
             user_id=self.user_store.user_id,
         )
-        return [{"type": "text", "text": json.dumps(result, indent=2, default=str)}]
+        return [{"type": "text", "text": _dumps(result, indent=2, default=str)}]
 
     async def _visualize(self, args: Dict) -> List[Dict]:
         """Generate visualization."""
@@ -2281,7 +2290,7 @@ class MCPHandlers:
             {
                 "type": "text",
                 "text": f"Raw data ({len(viz_result['raw_data'])} records): "
-                + json.dumps(viz_result["raw_data"][:10], indent=2, default=str),
+                + _dumps(viz_result["raw_data"][:10], indent=2, default=str),
             },
         ]
 
@@ -2351,7 +2360,7 @@ class MCPHandlers:
                 "monitoring": self.metrics_service.readiness(),
             },
         }
-        return [{"type": "text", "text": json.dumps(context, indent=2)}]
+        return [{"type": "text", "text": _dumps(context, indent=2)}]
 
     async def _list_compartments(self, args: Dict) -> List[Dict]:
         """List compartments."""
@@ -2359,7 +2368,7 @@ class MCPHandlers:
         # Auto-capture to tenancy context (suppressed in read-only mode)
         if not self.settings.read_only:
             self.context_manager.update_compartments(compartments)
-        return [{"type": "text", "text": json.dumps(compartments, indent=2)}]
+        return [{"type": "text", "text": _dumps(compartments, indent=2)}]
 
     async def _test_connection(self, args: Dict) -> List[Dict]:
         """Probe only requested services while retaining the default logs contract."""
@@ -2459,14 +2468,14 @@ class MCPHandlers:
             'at': datetime.now(timezone.utc).isoformat().replace('+00:00', 'Z'),
             'status': 'success' if result['status'] == 'All systems operational' else 'error',
         }
-        return [{"type": "text", "text": json.dumps(result, indent=2)}]
+        return [{"type": "text", "text": _dumps(result, indent=2)}]
 
     async def _find_compartment(self, args: Dict) -> List[Dict]:
         """Find compartment by name using fuzzy matching."""
         search_name = args.get("name", "").lower()
 
         if not search_name:
-            return [{"is_error": True, "type": "text", "text": json.dumps({
+            return [{"is_error": True, "type": "text", "text": _dumps({
                 "error": "Please provide a compartment name to search for"
             }, indent=2)}]
 
@@ -2510,10 +2519,10 @@ class MCPHandlers:
                     "suggestion": f"No compartments matching '{args.get('name')}'. Use list_compartments to see all available compartments.",
                 }
 
-            return [{"type": "text", "text": json.dumps(result, indent=2)}]
+            return [{"type": "text", "text": _dumps(result, indent=2)}]
 
         except Exception as e:
-            return [{"is_error": True, "type": "text", "text": json.dumps({
+            return [{"is_error": True, "type": "text", "text": _dumps({
                 "error": f"Failed to search compartments: {str(e)}"
             }, indent=2)}]
 
@@ -2563,7 +2572,7 @@ class MCPHandlers:
                 "available": list(examples.keys()),
             }
 
-        return [{"type": "text", "text": json.dumps(result, indent=2)}]
+        return [{"type": "text", "text": _dumps(result, indent=2)}]
 
     async def _get_log_summary(self, args: Dict) -> List[Dict]:
         """Get summary of available log data."""
@@ -2615,10 +2624,10 @@ class MCPHandlers:
                 "recommendation": self._get_summary_recommendation(sources_with_data, total_logs),
             }
 
-            return [{"type": "text", "text": json.dumps(summary, indent=2)}]
+            return [{"type": "text", "text": _dumps(summary, indent=2)}]
 
         except Exception as e:
-            return [{"is_error": True, "type": "text", "text": json.dumps({
+            return [{"is_error": True, "type": "text", "text": _dumps({
                 "error": f"Failed to get log summary: {str(e)}",
                 "suggestion": "Try running test_connection first to verify connectivity",
             }, indent=2)}]
@@ -2638,7 +2647,7 @@ class MCPHandlers:
     async def _setup_confirmation_secret(self, args: Dict) -> List[Dict]:
         """Create the current user's confirmation secret for guarded operations."""
         if self.secret_store.has_secret() and self.secret_store.is_valid():
-            return [{"is_error": True, "type": "text", "text": json.dumps({
+            return [{"is_error": True, "type": "text", "text": _dumps({
                 "status": "already_configured",
                 "error": "A confirmation secret is already configured for this user.",
                 "message": "Use --reset-secret from the CLI if you need to replace it.",
@@ -2648,7 +2657,7 @@ class MCPHandlers:
         confirm = args["confirmation_secret_confirm"]
 
         if secret != confirm:
-            return [{"is_error": True, "type": "text", "text": json.dumps({
+            return [{"is_error": True, "type": "text", "text": _dumps({
                 "status": "validation_error",
                 "error": "The secret and confirmation do not match.",
             }, indent=2)}]
@@ -2656,7 +2665,7 @@ class MCPHandlers:
         try:
             self.secret_store.set_secret(secret)
         except ValueError as e:
-            return [{"is_error": True, "type": "text", "text": json.dumps({
+            return [{"is_error": True, "type": "text", "text": _dumps({
                 "status": "validation_error",
                 "error": str(e),
             }, indent=2)}]
@@ -2670,7 +2679,7 @@ class MCPHandlers:
                 outcome="secret_set",
             )
 
-        return [{"type": "text", "text": json.dumps({
+        return [{"type": "text", "text": _dumps({
             "status": "configured",
             "message": (
                 "Confirmation secret saved. You'll use it to approve destructive "
@@ -2699,11 +2708,11 @@ class MCPHandlers:
             origin="manual",
         )
         if "collision_warning" in saved:
-            return [{"type": "text", "text": json.dumps({
+            return [{"type": "text", "text": _dumps({
                 "status": "collision",
                 **saved,
             }, indent=2, default=str)}]
-        return [{"type": "text", "text": json.dumps({
+        return [{"type": "text", "text": _dumps({
             "status": "saved",
             "query": saved,
             "message": f"Query '{saved['name']}' saved. It will be available in future sessions.",
@@ -2722,7 +2731,7 @@ class MCPHandlers:
             summary = self.context_manager.update_confirmed_fields(fields)
             updated.append(f"Updated fields: {summary}")
 
-        return [{"type": "text", "text": json.dumps({
+        return [{"type": "text", "text": _dumps({
             "status": "updated",
             "changes": updated,
             "message": "Tenancy context updated. Changes persist across sessions.",
@@ -2731,7 +2740,7 @@ class MCPHandlers:
     async def _get_preferences(self, args: Dict) -> List[Dict]:
         """Get learned user preferences."""
         if not self.preference_store:
-            return [{"is_error": True, "type": "text", "text": json.dumps({
+            return [{"is_error": True, "type": "text", "text": _dumps({
                 "error": "Preference store not available"
             }, indent=2)}]
 
@@ -2745,12 +2754,12 @@ class MCPHandlers:
         else:
             result["preferences"] = self.preference_store.list_all()
 
-        return [{"type": "text", "text": json.dumps(result, indent=2, default=str)}]
+        return [{"type": "text", "text": _dumps(result, indent=2, default=str)}]
 
     async def _remember_preference(self, args: Dict) -> List[Dict]:
         """Save a disambiguation preference."""
         if not self.preference_store:
-            return [{"is_error": True, "type": "text", "text": json.dumps({
+            return [{"is_error": True, "type": "text", "text": _dumps({
                 "error": "Preference store not available"
             }, indent=2)}]
 
@@ -2758,7 +2767,7 @@ class MCPHandlers:
             intent_key=args["intent_key"],
             resolved_value=args["resolved_value"],
         )
-        return [{"type": "text", "text": json.dumps({
+        return [{"type": "text", "text": _dumps({
             "status": "saved",
             "message": f"Preference '{args['intent_key']}' saved. Will be used in future sessions.",
         }, indent=2)}]
@@ -2777,23 +2786,23 @@ class MCPHandlers:
             severity=args.get("severity", "CRITICAL"),
             compartment_id=args.get("compartment_id"),
         )
-        return [{"type": "text", "text": json.dumps(result, indent=2)}]
+        return [{"type": "text", "text": _dumps(result, indent=2)}]
 
     async def _list_alerts(self, args: Dict) -> List[Dict]:
         result = await self.alarm_service.list_alerts(
             compartment_id=args.get("compartment_id")
         )
-        return [{"type": "text", "text": json.dumps(result, indent=2)}]
+        return [{"type": "text", "text": _dumps(result, indent=2)}]
 
     async def _update_alert(self, args: Dict) -> List[Dict]:
         alert_id = args["alert_id"]
         update_kwargs = {k: v for k, v in args.items() if k != "alert_id"}
         result = await self.alarm_service.update_alert(alert_id, **update_kwargs)
-        return [{"type": "text", "text": json.dumps(result, indent=2)}]
+        return [{"type": "text", "text": _dumps(result, indent=2)}]
 
     async def _delete_alert(self, args: Dict) -> List[Dict]:
         result = await self.alarm_service.delete_alert(args["alert_id"])
-        return [{"type": "text", "text": json.dumps(result, indent=2)}]
+        return [{"type": "text", "text": _dumps(result, indent=2)}]
 
     # ── Saved search CRUD handlers ──────────────────────────────────────
 
@@ -2805,17 +2814,17 @@ class MCPHandlers:
             compartment_id=args.get("compartment_id"),
             category=args.get("category"),
         )
-        return [{"type": "text", "text": json.dumps(result, indent=2)}]
+        return [{"type": "text", "text": _dumps(result, indent=2)}]
 
     async def _update_saved_search(self, args: Dict) -> List[Dict]:
         search_id = args["saved_search_id"]
         update_kwargs = {k: v for k, v in args.items() if k != "saved_search_id"}
         result = await self.saved_search.update_search(search_id, **update_kwargs)
-        return [{"type": "text", "text": json.dumps(result, indent=2)}]
+        return [{"type": "text", "text": _dumps(result, indent=2)}]
 
     async def _delete_saved_search(self, args: Dict) -> List[Dict]:
         await self.saved_search.delete_search(args["saved_search_id"], compartment_id=args.get("compartment_id"))
-        return [{"type": "text", "text": json.dumps({"deleted": args["saved_search_id"]}, indent=2)}]
+        return [{"type": "text", "text": _dumps({"deleted": args["saved_search_id"]}, indent=2)}]
 
     # ── Dashboard handlers ─────────────────────────────────────────────
 
@@ -2826,13 +2835,13 @@ class MCPHandlers:
             description=args.get("description"),
             compartment_id=args.get("compartment_id"),
         )
-        return [{"type": "text", "text": json.dumps(result, indent=2)}]
+        return [{"type": "text", "text": _dumps(result, indent=2)}]
 
     async def _list_dashboards(self, args: Dict) -> List[Dict]:
         result = await self.dashboard_service.list_dashboards(
             compartment_id=args.get("compartment_id")
         )
-        return [{"type": "text", "text": json.dumps(result, indent=2)}]
+        return [{"type": "text", "text": _dumps(result, indent=2)}]
 
     async def _add_dashboard_tile(self, args: Dict) -> List[Dict]:
         result = await self.dashboard_service.add_tile(
@@ -2843,17 +2852,17 @@ class MCPHandlers:
             width=args.get("width"),
             height=args.get("height"),
         )
-        return [{"type": "text", "text": json.dumps(result, indent=2)}]
+        return [{"type": "text", "text": _dumps(result, indent=2)}]
 
     async def _delete_dashboard(self, args: Dict) -> List[Dict]:
         result = await self.dashboard_service.delete_dashboard(args["dashboard_id"])
-        return [{"type": "text", "text": json.dumps(result, indent=2)}]
+        return [{"type": "text", "text": _dumps(result, indent=2)}]
 
     # ── Estimation + Budget handlers ───────────────────────────────────
 
     async def _explain_query(self, args: Dict) -> List[Dict]:
         if self.query_engine.estimator is None:
-            return [{"is_error": True, "type": "text", "text": json.dumps({
+            return [{"is_error": True, "type": "text", "text": _dumps({
                 "error": "Estimator is not configured for this server instance.",
             })}]
         est = await self.query_engine.estimator.estimate(
@@ -2862,12 +2871,12 @@ class MCPHandlers:
             time_start=args.get("time_start"),
             time_end=args.get("time_end"),
         )
-        return [{"type": "text", "text": json.dumps(est.to_dict(), indent=2)}]
+        return [{"type": "text", "text": _dumps(est.to_dict(), indent=2)}]
 
     async def _get_session_budget(self, args: Dict) -> List[Dict]:
         tracker = self.query_engine.budget_tracker
         if tracker is None:
-            return [{"type": "text", "text": json.dumps({
+            return [{"type": "text", "text": _dumps({
                 "enabled": False,
                 "message": "Budget tracking is disabled on this server.",
             })}]
@@ -2879,7 +2888,7 @@ class MCPHandlers:
             "max_bytes_per_session": tracker.limits.max_bytes_per_session,
             "max_cost_usd_per_session": tracker.limits.max_cost_usd_per_session,
         }
-        return [{"type": "text", "text": json.dumps(
+        return [{"type": "text", "text": _dumps(
             {"used": used, "remaining": remaining, "limits": limits}, indent=2
         )}]
 
@@ -2897,7 +2906,7 @@ class MCPHandlers:
             query_result=query_result,
             format_type=args.get("format", "summary"),
         )
-        return [{"type": "text", "text": json.dumps(result, indent=2)}]
+        return [{"type": "text", "text": _dumps(result, indent=2)}]
 
     async def _send_to_telegram(self, args: Dict) -> List[Dict]:
         query_result = None
@@ -2912,11 +2921,11 @@ class MCPHandlers:
             format_type=args.get("format", "summary"),
             chat_id=args.get("chat_id"),
         )
-        return [{"type": "text", "text": json.dumps(result, indent=2)}]
+        return [{"type": "text", "text": _dumps(result, indent=2)}]
 
     async def _export_transcript(self, args: Dict) -> List[Dict]:
         if not self.audit_logger:
-            return [{"is_error": True, "type": "text", "text": json.dumps({
+            return [{"is_error": True, "type": "text", "text": _dumps({
                 "error": "Audit logger unavailable; transcript export disabled.",
             })}]
         sid = args.get("session_id", "current")
@@ -2933,7 +2942,7 @@ class MCPHandlers:
             if entry.get("user") is not None
         }
         if owners - {current_user}:
-            return [{"is_error": True, "type": "text", "text": json.dumps({
+            return [{"is_error": True, "type": "text", "text": _dumps({
                 "error": "Access denied: session belongs to a different user.",
             })}]
         out_dir = self.settings.transcript_dir
@@ -2946,19 +2955,19 @@ class MCPHandlers:
             )
         except Exception as e:
             logger.exception("export_transcript failed")
-            return [{"is_error": True, "type": "text", "text": json.dumps({"error": str(e)})}]
-        return [{"type": "text", "text": json.dumps(result, indent=2)}]
+            return [{"is_error": True, "type": "text", "text": _dumps({"error": str(e)})}]
+        return [{"type": "text", "text": _dumps(result, indent=2)}]
 
     async def _record_investigation(self, args: Dict) -> List[Dict]:
         name = args.get("name")
         if not isinstance(name, str) or not name.strip():
-            return [{"is_error": True, "type": "text", "text": json.dumps({
+            return [{"is_error": True, "type": "text", "text": _dumps({
                 "status": "error",
                 "error_code": "missing_name",
                 "error": "name is required",
             }, indent=2)}]
         if self.playbook_recorder is None:
-            return [{"is_error": True, "type": "text", "text": json.dumps({
+            return [{"is_error": True, "type": "text", "text": _dumps({
                 "status": "error",
                 "error_code": "audit_logger_unavailable",
                 "error": "Audit logger unavailable; investigation recording disabled.",
@@ -2972,22 +2981,22 @@ class MCPHandlers:
                 until=args.get("until"),
             )
         except ValueError as e:
-            return [{"is_error": True, "type": "text", "text": json.dumps({
+            return [{"is_error": True, "type": "text", "text": _dumps({
                 "status": "error",
                 "error_code": "invalid_time_window",
                 "error": str(e),
             }, indent=2)}]
-        return [{"type": "text", "text": json.dumps(result, indent=2)}]
+        return [{"type": "text", "text": _dumps(result, indent=2)}]
 
     async def _list_playbooks(self, args: Dict) -> List[Dict]:
-        return [{"type": "text", "text": json.dumps({
+        return [{"type": "text", "text": _dumps({
             "playbooks": self.playbook_store.list(),
         }, indent=2)}]
 
     async def _get_playbook(self, args: Dict) -> List[Dict]:
         playbook_id = args.get("playbook_id")
         if not isinstance(playbook_id, str) or not playbook_id.strip():
-            return [{"is_error": True, "type": "text", "text": json.dumps({
+            return [{"is_error": True, "type": "text", "text": _dumps({
                 "status": "error",
                 "error_code": "missing_playbook_id",
                 "error": "playbook_id is required",
@@ -2997,17 +3006,17 @@ class MCPHandlers:
         try:
             result = self.playbook_store.get(normalized_id)
         except PlaybookNotFoundError:
-            return [{"is_error": True, "type": "text", "text": json.dumps({
+            return [{"is_error": True, "type": "text", "text": _dumps({
                 "status": "error",
                 "error_code": "playbook_not_found",
                 "error": f"Playbook '{normalized_id}' was not found.",
             }, indent=2)}]
-        return [{"type": "text", "text": json.dumps(result, indent=2)}]
+        return [{"type": "text", "text": _dumps(result, indent=2)}]
 
     async def _delete_playbook(self, args: Dict) -> List[Dict]:
         playbook_id = args.get("playbook_id")
         if not isinstance(playbook_id, str) or not playbook_id.strip():
-            return [{"is_error": True, "type": "text", "text": json.dumps({
+            return [{"is_error": True, "type": "text", "text": _dumps({
                 "status": "error",
                 "error_code": "missing_playbook_id",
                 "error": "playbook_id is required",
@@ -3015,7 +3024,7 @@ class MCPHandlers:
 
         normalized_id = playbook_id.strip()
         deleted = self.playbook_store.delete(normalized_id)
-        return [{"type": "text", "text": json.dumps({
+        return [{"type": "text", "text": _dumps({
             "deleted": deleted,
             "playbook_id": normalized_id,
         }, indent=2)}]
