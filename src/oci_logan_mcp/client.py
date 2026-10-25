@@ -1015,6 +1015,42 @@ class OCILogAnalyticsClient:
                 return await self.create_scheduled_task(details)
             raise
 
+    async def list_scheduled_tasks_for_saved_search(self, saved_search_id: str) -> List[Dict[str, Any]]:
+        """List the saved-search scheduled tasks that run one ManagementSavedSearch."""
+        await self._rate_limiter.acquire()
+        response = await asyncio.to_thread(
+            list_call_get_all_results, self._la_client.list_scheduled_tasks,
+            namespace_name=self._namespace, compartment_id=self._compartment_id,
+            task_type="SAVED_SEARCH", saved_search_id=saved_search_id,
+        )
+        self._rate_limiter.reset()
+        return [{"id": item.id, "display_name": getattr(item, "display_name", ""),
+                 "lifecycle_state": getattr(item, "lifecycle_state", "")}
+                for item in _get_items(response.data)]
+
+    async def get_scheduled_task_details(self, task_id: str) -> Dict[str, Any]:
+        """Read the ids a scheduled task links: its saved search and the metric it posts."""
+        await self._rate_limiter.acquire()
+        response = await asyncio.to_thread(
+            self._la_client.get_scheduled_task, namespace_name=self._namespace, scheduled_task_id=task_id,
+        )
+        self._rate_limiter.reset()
+        task = response.data
+        action = getattr(task, "action", None)
+        extraction = getattr(action, "metric_extraction", None)
+        schedule = (task.schedules or [None])[0] if getattr(task, "schedules", None) else None
+        return {
+            "id": task.id,
+            "display_name": getattr(task, "display_name", ""),
+            "lifecycle_state": getattr(task, "lifecycle_state", ""),
+            "saved_search_id": getattr(action, "saved_search_id", None),
+            "cron": getattr(schedule, "expression", None),
+            "metric_namespace": getattr(extraction, "namespace", None),
+            "metric_name": getattr(extraction, "metric_name", None),
+            "metric_resource_group": getattr(extraction, "resource_group", None),
+            "freeform_tags": getattr(task, "freeform_tags", {}) or {},
+        }
+
     async def update_scheduled_task(self, task_id: str, details) -> Dict[str, Any]:
         """Update a scheduled task in Log Analytics."""
         await self._rate_limiter.acquire()
@@ -1102,6 +1138,9 @@ class OCILogAnalyticsClient:
                 {"id": a.id, "display_name": getattr(a, "display_name", ""),
                  "lifecycle_state": getattr(a, "lifecycle_state", ""),
                  "severity": getattr(a, "severity", ""),
+                 "namespace": getattr(a, "namespace", None),
+                 "resource_group": getattr(a, "resource_group", None),
+                 "query": getattr(a, "query", "") or "",
                  "freeform_tags": getattr(a, "freeform_tags", {}) or {}}
                 for a in _get_items(response.data)
             ]
