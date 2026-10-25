@@ -1329,6 +1329,22 @@ class TestAlertClientMethods:
         assert details["interval"] == "PT5M"
 
     @pytest.mark.asyncio
+    async def test_alarm_records_carry_defined_tags(self, mock_client):
+        from types import SimpleNamespace
+        tags = {"Oracle-Tags": {"CreatedBy": "someone", "CreatedOn": "2026-08-04T16:19:00Z"}}
+        record = SimpleNamespace(id="ocid1.alarm.1", display_name="t", lifecycle_state="ACTIVE", severity="WARNING",
+                                 is_enabled=True, destinations=[], query="m[1m].max() > 0", pending_duration="PT1M",
+                                 compartment_id="c", freeform_tags={}, defined_tags=tags, namespace="ns",
+                                 resource_group=None)
+        mock_client._monitoring_client = MagicMock()
+        mock_client._monitoring_client.get_alarm.return_value = SimpleNamespace(data=record)
+        with patch("oci_logan_mcp.client.list_call_get_all_results",
+                   return_value=_make_paginated_response([record])):
+            [row] = await mock_client.list_alarms()
+        assert row["defined_tags"] == tags
+        assert (await mock_client.get_alarm("ocid1.alarm.1"))["defined_tags"] == tags
+
+    @pytest.mark.asyncio
     async def test_get_alarm_includes_pending_duration(self, mock_client):
         mock_client._monitoring_client = MagicMock()
         mock_client._monitoring_client.get_alarm.return_value = MagicMock(

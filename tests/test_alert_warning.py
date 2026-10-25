@@ -117,3 +117,46 @@ async def test_lookup_failure_never_blocks_the_confirmation(tmp_path):
 
     assert "linked_alerts" not in summary
     client.list_alarms.assert_awaited()
+
+
+CONSOLE_ALARM = {
+    "id": "ocid1.alarm.console", "display_name": "MS-breakins", "severity": "CRITICAL",
+    "lifecycle_state": "ACTIVE", "namespace": "ms_rules", "resource_group": None,
+    "query": "ms_breakin[5m].sum() > 70", "freeform_tags": {"team": "ms"},
+    "defined_tags": {"Oracle-Tags": {"CreatedBy": "example-idcs/test.user@example.invalid",
+                                     "CreatedOn": "2026-08-04T16:19:00.414Z"}},
+}
+
+
+@pytest.mark.asyncio
+async def test_delete_alert_confirmation_says_the_saved_search_stays(tmp_path):
+    handlers, client = make_handlers(tmp_path, [LOGAN_ALARM])
+
+    summary = await first_call_summary(handlers, "delete_alert", {"alert_id": "ocid1.alarm.logan"})
+
+    assert "deletion:" in summary
+    assert "saved search" in summary and "stays" in summary and "delete_saved_search" in summary
+    assert "OCI Console" not in summary
+    client.delete_alarm.assert_not_called()
+
+
+@pytest.mark.asyncio
+async def test_delete_alert_confirmation_names_the_console_creator(tmp_path):
+    handlers, client = make_handlers(tmp_path, [CONSOLE_ALARM])
+
+    summary = await first_call_summary(handlers, "delete_alert", {"alert_id": "ocid1.alarm.console"})
+
+    assert ("origin: Created in the OCI Console by example-idcs/test.user@example.invalid on 2026-08-04, "
+            "not by this server.") in summary
+    assert "deletion:" in summary
+
+
+@pytest.mark.asyncio
+async def test_update_alert_confirmation_names_the_console_creator(tmp_path):
+    handlers, client = make_handlers(tmp_path, [CONSOLE_ALARM])
+
+    summary = await first_call_summary(handlers, "update_alert",
+                                       {"alert_id": "ocid1.alarm.console", "severity": "WARNING"})
+
+    assert "origin: Created in the OCI Console by example-idcs/test.user@example.invalid" in summary
+    assert "linked_alerts" not in summary

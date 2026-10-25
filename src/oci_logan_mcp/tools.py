@@ -1535,7 +1535,8 @@ def get_tools() -> List[Dict[str, Any]]:
             "name": "delete_alert",
             "destructive": True,
             "description": (
-                "Delete an autonomous alert and all its backing OCI resources. "
+                "Delete a log alert: removes the alarm and its detection rule (the rule is kept if another alert still uses it). "
+                "The backing saved search is never deleted; use delete_saved_search for that. "
                 "TWO-FACTOR CONFIRMATION REQUIRED: First call returns a confirmation token and summary. "
                 "To execute, re-invoke with confirmation_token and your confirmation secret."
             ),

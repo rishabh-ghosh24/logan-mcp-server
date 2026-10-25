@@ -27,7 +27,8 @@ from .query_auto_saver import QueryAutoSaver
 from .config import Settings
 from .resources import get_syntax_guide, get_reference_docs
 from .alarm_service import AlarmService, DEFAULT_ALERT_SCHEDULE
-from .alert_links import describe_linked_alerts, find_alerts_for_saved_search, linked_alert_from_alarm
+from .alert_links import (DELETION_SCOPE, describe_linked_alerts, describe_origin,
+                          find_alerts_for_saved_search, linked_alert_from_alarm)
 from .dashboard_service import DashboardService
 from .notification_service import NotificationService
 from .confirmation import ConfirmationManager
@@ -477,13 +478,12 @@ class MCPHandlers:
                         "data_warning": DATA_WARNING,
                         "sample_line_count": sample_line_count,
                     }
-                elif name in ("update_saved_search", "update_alert") and arguments.get("query"):
+                elif name in ("update_saved_search", "update_alert", "delete_alert"):
                     try:
-                        line = await self._linked_alert_warning(name, arguments)
+                        summary_extras = await self._alert_summary_extras(name, arguments) or None
                     except Exception:
-                        logger.warning("Linked-alert lookup failed for %s; confirming without it", name)
-                        line = None
-                    summary_extras = {"linked_alerts": line} if line else None
+                        logger.warning("Alert lookup failed for %s; confirming without the extra lines", name)
+                        summary_extras = None
                 if not self._write_audit_event(
                     user=user_id,
                     tool=name,
@@ -598,13 +598,26 @@ class MCPHandlers:
                 return self._error_response('service_unavailable', 'The service operation could not complete. Check configuration and retry explicitly.')
             return [{"type": "text", "text": f"Error executing {name}: {str(e)}", "is_error": True}]
 
-    async def _linked_alert_warning(self, name: str, arguments: Dict) -> Optional[str]:
-        """Which alerts a query change will affect, computed before the write is confirmed."""
+    async def _alert_summary_extras(self, name: str, arguments: Dict) -> Dict[str, str]:
+        """Lines for a confirmation summary, computed before the write: which alerts a query
+        change affects, who made an alert that is not ours, and what a deletion leaves behind."""
+        extras: Dict[str, str] = {}
         if name == "update_saved_search":
-            alerts = await find_alerts_for_saved_search(self.oci_client, arguments["saved_search_id"])
-            return describe_linked_alerts(alerts, via="saved_search")
+            if arguments.get("query"):
+                alerts = await find_alerts_for_saved_search(self.oci_client, arguments["saved_search_id"])
+                line = describe_linked_alerts(alerts, via="saved_search")
+                if line:
+                    extras["linked_alerts"] = line
+            return extras
         alarm = await self.oci_client.get_alarm(arguments["alert_id"])
-        return describe_linked_alerts([linked_alert_from_alarm(alarm)], via="alert")
+        if name == "update_alert" and arguments.get("query"):
+            extras["linked_alerts"] = describe_linked_alerts([linked_alert_from_alarm(alarm)], via="alert")
+        origin = describe_origin(alarm)
+        if origin:
+            extras["origin"] = origin
+        if name == "delete_alert":
+            extras["deletion"] = DELETION_SCOPE
+        return extras
 
     async def _metric_tool(self, name: str, arguments: Dict) -> List[Dict]:
         result = await self.metrics_service.call(name, arguments, shared_compartment_id=self._shared_compartment_id)

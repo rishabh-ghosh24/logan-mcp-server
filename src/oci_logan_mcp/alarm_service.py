@@ -9,7 +9,7 @@ import oci
 from .client import OCILogAnalyticsClient
 from .cache import CacheManager
 from .saved_search_config import build_scope_filters, build_ui_config
-from .alert_links import find_log_alerts, is_console_origin
+from .alert_links import alarms_watching, find_log_alerts, is_console_origin
 
 # OCI Management Dashboard API requires crossService in featuresConfig
 FEATURES_CONFIG = {"crossService": {"shared": True}}
@@ -307,20 +307,40 @@ class AlarmService:
             "backing_saved_search_id": a.backing_saved_search_id,
             "backing_metric_task_id": a.backing_metric_task_id,
             "alert_group": a.alert_group,
+            "created_by_user": a.created_by_user,
+            "created_on": a.created_on,
         } for a in alerts]
 
     async def delete_alert(self, alert_id: str) -> Dict[str, Any]:
+        """Remove the alarm and its detection rule. The saved search is never deleted here, and
+        the rule is kept while another alarm still reads the metric it posts."""
         alarm = await self.oci_client.get_alarm(alert_id)
-        tags = alarm.get("freeform_tags", {})
+        tags = alarm.get("freeform_tags", {}) or {}
         task_id = tags.get("logan_backing_metric_task_id")
         saved_search_id = tags.get("logan_backing_saved_search_id")
+        if not task_id:
+            # A console-made alert carries none of our tags: follow OCI's own links instead.
+            for linked in await find_log_alerts(self.oci_client, alarm.get("compartment_id")):
+                if linked.alarm_id == alert_id:
+                    task_id, saved_search_id = linked.backing_metric_task_id, linked.backing_saved_search_id
+                    break
+
+        kept = []
+        if saved_search_id:
+            kept.append({"resource": "saved_search", "id": saved_search_id,
+                         "reason": "delete_alert never deletes saved searches; use delete_saved_search "
+                                   "if it is no longer wanted"})
+        if task_id:
+            others = await self._other_alerts_on_rule(task_id, alert_id, alarm.get("compartment_id"))
+            if others:
+                kept.append({"resource": "detection_rule", "id": task_id,
+                             "reason": "still used by alert(s) " + ", ".join(f"'{name}'" for name in others)})
+                task_id = None
 
         deleted = []
         remaining = []
-
         for resource_id, delete_fn, label in [
             (task_id, self.oci_client.delete_scheduled_task, "metric_task"),
-            (saved_search_id, self.oci_client.delete_management_saved_search, "backing_saved_search"),
             (alert_id, self.oci_client.delete_alarm, "alarm"),
         ]:
             if not resource_id:
@@ -334,14 +354,21 @@ class AlarmService:
                 else:
                     remaining.append({"label": label, "id": resource_id, "error": str(e)})
 
+        result: Dict[str, Any] = {"deleted": deleted, "kept": kept, "partial_failure": False}
         if remaining:
-            return {
-                "partial_failure": True,
-                "deleted": deleted,
-                "remaining": [r["id"] for r in remaining],
-                "details": remaining,
-            }
-        return {"deleted": deleted, "partial_failure": False}
+            result.update(partial_failure=True, remaining=[r["id"] for r in remaining], details=remaining)
+        return result
+
+    async def _other_alerts_on_rule(self, task_id: str, alert_id: str, compartment_id: Optional[str]) -> List[str]:
+        """Display names of the other alarms that read the metric this rule posts."""
+        try:
+            rule = await self.oci_client.get_scheduled_task_details(task_id)
+        except oci.exceptions.ServiceError as e:
+            if e.status == 404:
+                return []
+            raise
+        alarms = await self.oci_client.list_alarms(compartment_id)
+        return [a.get("display_name") or a["id"] for a in alarms_watching(alarms, rule) if a["id"] != alert_id]
 
     async def update_alert(self, alert_id: str, **kwargs) -> Dict[str, Any]:
         alarm = await self.oci_client.get_alarm(alert_id)

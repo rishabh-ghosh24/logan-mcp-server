@@ -182,6 +182,25 @@ def test_parse_condition_gives_no_threshold_for_compound_or_absence_conditions()
     assert parse_condition("break_in_attempts[5m].groupBy(host).mean() > 8") == ("break_in_attempts", "gt", "8")
 
 
+CREATED_TAGS = {"Oracle-Tags": {"CreatedBy": "example-idcs/test.user@example.invalid",
+                                "CreatedOn": "2026-08-04T16:19:00.414Z"}}
+
+
+@pytest.mark.asyncio
+async def test_creator_is_read_from_oci_default_tags():
+    """OCI stamps Oracle-Tags.CreatedBy / CreatedOn on resources made in the console."""
+    stamped = {**CONSOLE_ALARM, "defined_tags": CREATED_TAGS}
+    client = make_client([stamped], tasks_for_search=[{"id": "ocid1.task.console"}],
+                         task_details={"ocid1.task.console": CONSOLE_TASK})
+
+    [alert] = await find_alerts_for_saved_search(client, "ocid1.mss.console")
+
+    assert alert.created_by_user == "example-idcs/test.user@example.invalid"
+    assert alert.created_on == "2026-08-04T16:19:00.414Z"
+    [ours] = await find_alerts_for_saved_search(make_client([LOGAN_ALARM]), "ocid1.mss.logan")
+    assert (ours.created_by_user, ours.created_on) == (None, None)
+
+
 class TestListAlerts:
     """list_alerts shows every log alert, ours and console-made, with its live condition."""
 
@@ -206,6 +225,7 @@ class TestListAlerts:
         assert console["backing_saved_search_id"] == "ocid1.mss.console"
         assert console["backing_metric_task_id"] == "ocid1.task.console"
         assert "ocid1.alarm.cpu" not in {r["alarm_id"] for r in rows}
+        assert ("created_by_user" in console) and ("created_on" in console)
 
     @pytest.mark.asyncio
     async def test_list_alerts_keeps_existing_keys_for_logan_alerts(self):

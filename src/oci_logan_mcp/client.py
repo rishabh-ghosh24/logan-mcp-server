@@ -1118,7 +1118,10 @@ class OCILogAnalyticsClient:
                     "query": getattr(data, "query", ""),
                     "pending_duration": getattr(data, "pending_duration", None),
                     "compartment_id": getattr(data, "compartment_id", None),
-                    "freeform_tags": getattr(data, "freeform_tags", {}) or {}}
+                    "namespace": getattr(data, "namespace", None),
+                    "resource_group": getattr(data, "resource_group", None),
+                    "freeform_tags": getattr(data, "freeform_tags", {}) or {},
+                    "defined_tags": getattr(data, "defined_tags", {}) or {}}
         except oci.exceptions.ServiceError as e:
             if e.status == 429:
                 await self._rate_limiter.handle_rate_limit()
@@ -1142,7 +1145,8 @@ class OCILogAnalyticsClient:
                  "namespace": getattr(a, "namespace", None),
                  "resource_group": getattr(a, "resource_group", None),
                  "query": getattr(a, "query", "") or "",
-                 "freeform_tags": getattr(a, "freeform_tags", {}) or {}}
+                 "freeform_tags": getattr(a, "freeform_tags", {}) or {},
+                 "defined_tags": getattr(a, "defined_tags", {}) or {}}
                 for a in _get_items(response.data)
             ]
         except oci.exceptions.ServiceError as e:

@@ -30,6 +30,8 @@ class LinkedAlert:
     schedule: str
     schedule_format: str
     alert_group: Optional[str] = None
+    created_by_user: Optional[str] = None
+    created_on: Optional[str] = None
 
 
 def parse_condition(mql: Optional[str]) -> Tuple[Optional[str], Optional[str], Optional[str]]:
@@ -57,6 +59,38 @@ def is_console_origin(alarm: Dict[str, Any]) -> bool:
     return (alarm.get("freeform_tags") or {}).get("logan_origin") == "console"
 
 
+def creator(alarm: Dict[str, Any]) -> Tuple[Optional[str], Optional[str]]:
+    """Who created the alarm and when, from OCI's default tags (Oracle-Tags.CreatedBy / CreatedOn)."""
+    for namespace in (alarm.get("defined_tags") or {}).values():
+        if isinstance(namespace, dict) and namespace.get("CreatedBy"):
+            return namespace.get("CreatedBy"), namespace.get("CreatedOn")
+    return None, None
+
+
+def origin_of(alarm: Dict[str, Any]) -> str:
+    """'logan' for an alarm this server created, 'console' for any other."""
+    return "console" if is_console_origin(alarm) or not _is_logan_alarm(alarm) else "logan"
+
+
+def describe_origin(alarm: Dict[str, Any]) -> Optional[str]:
+    """One sentence for a confirmation summary when the alert is not ours."""
+    if origin_of(alarm) != "console":
+        return None
+    user, created_on = creator(alarm)
+    by = f" by {user}" if user else ""
+    on = f" on {created_on[:10]}" if created_on else ""
+    return f"Created in the OCI Console{by}{on}, not by this server."
+
+
+DELETION_SCOPE = ("Deleting removes the alarm and its detection rule (the rule is kept if another alert "
+                  "still uses it). The backing saved search stays; use delete_saved_search to remove it.")
+
+
+def alarms_watching(alarms: List[Dict[str, Any]], task: Dict[str, Any]) -> List[Dict[str, Any]]:
+    """Alarms whose condition reads the metric this detection rule posts."""
+    return [a for a in alarms if _watches(a, task)]
+
+
 def _is_logan_alarm(alarm: Dict[str, Any]) -> bool:
     tags = alarm.get("freeform_tags") or {}
     return tags.get("logan_managed") == "true" and tags.get("logan_kind") == "monitoring_alarm"
@@ -75,6 +109,7 @@ def _from_tagged(alarm: Dict[str, Any]) -> LinkedAlert:
         metric_namespace=alarm.get("namespace"), metric_name=metric,
         query=tags.get("logan_query", ""), schedule=tags.get("logan_schedule", ""),
         schedule_format="logan", alert_group=tags.get("logan_group_id"),
+        created_by_user=creator(alarm)[0], created_on=creator(alarm)[1],
     )
 
 
@@ -117,6 +152,7 @@ async def _console_matches(client, alarms: List[Dict[str, Any]], task: Dict[str,
             backing_saved_search_id=task.get("saved_search_id"), backing_metric_task_id=task["id"],
             metric_namespace=task.get("metric_namespace"), metric_name=task.get("metric_name"),
             query=query, schedule=schedule, schedule_format=schedule_format,
+            created_by_user=creator(alarm)[0], created_on=creator(alarm)[1],
         ))
     return results
 

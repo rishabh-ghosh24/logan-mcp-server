@@ -122,64 +122,103 @@ class TestCreateAlert:
 
 
 class TestDeleteAlert:
-    @pytest.mark.asyncio
-    async def test_deletes_backing_first_alarm_last(self):
+    """delete_alert removes the alarm and its detection rule. It never deletes the saved search,
+    and it keeps the rule when another alarm still watches the metric it posts."""
+
+    RULE = {"id": "ocid1.task.1", "saved_search_id": "ocid1.mss.1", "cron": "0 */15 * ? * *",
+            "metric_namespace": "logan_custom_metrics", "metric_name": "logan_alert_abc",
+            "metric_resource_group": "logan_alerts"}
+
+    def logan_client(self):
         client = AsyncMock()
         client.get_alarm.return_value = {
-            "id": "ocid1.alarm.1",
-            "freeform_tags": {
-                "logan_backing_saved_search_id": "ocid1.mss.1",
-                "logan_backing_metric_task_id": "ocid1.task.1",
-            }
+            "id": "ocid1.alarm.1", "display_name": "mine", "namespace": "logan_custom_metrics",
+            "query": "logan_alert_abc[15m].last() > 0",
+            "freeform_tags": {"logan_managed": "true", "logan_kind": "monitoring_alarm",
+                              "logan_backing_saved_search_id": "ocid1.mss.1",
+                              "logan_backing_metric_task_id": "ocid1.task.1"},
         }
+        client.get_scheduled_task_details.return_value = dict(self.RULE)
+        client.list_alarms.return_value = [client.get_alarm.return_value]
+        return client
+
+    @pytest.mark.asyncio
+    async def test_deletes_rule_then_alarm_and_keeps_the_saved_search(self):
+        client = self.logan_client()
         svc = make_svc(client)
         call_order = []
         client.delete_scheduled_task.side_effect = lambda *a, **kw: call_order.append("task")
-        client.delete_management_saved_search.side_effect = lambda *a, **kw: call_order.append("mss")
         client.delete_alarm.side_effect = lambda *a, **kw: call_order.append("alarm")
 
-        await svc.delete_alert("ocid1.alarm.1")
+        result = await svc.delete_alert("ocid1.alarm.1")
 
-        assert call_order == ["task", "mss", "alarm"]
+        assert call_order == ["task", "alarm"]
+        client.delete_management_saved_search.assert_not_called()
+        assert result["deleted"] == ["metric_task", "alarm"]
+        assert result["partial_failure"] is False
+        [kept] = result["kept"]
+        assert kept["resource"] == "saved_search" and kept["id"] == "ocid1.mss.1"
+        assert "delete_saved_search" in kept["reason"]
+
+    @pytest.mark.asyncio
+    async def test_keeps_the_rule_when_another_alarm_watches_its_metric(self):
+        client = self.logan_client()
+        other = {"id": "ocid1.alarm.2", "display_name": "Night shift copy", "namespace": "logan_custom_metrics",
+                 "resource_group": "logan_alerts", "query": "logan_alert_abc[15m].last() > 500", "freeform_tags": {}}
+        client.list_alarms.return_value = [client.get_alarm.return_value, other]
+
+        result = await make_svc(client).delete_alert("ocid1.alarm.1")
+
+        client.delete_scheduled_task.assert_not_called()
+        client.delete_alarm.assert_awaited_once_with("ocid1.alarm.1")
+        kinds = {k["resource"]: k for k in result["kept"]}
+        assert set(kinds) == {"saved_search", "detection_rule"}
+        assert "Night shift copy" in kinds["detection_rule"]["reason"]
+        assert result["deleted"] == ["alarm"]
+
+    @pytest.mark.asyncio
+    async def test_console_alarm_without_our_tags_finds_its_rule_through_oci(self):
+        client = AsyncMock()
+        alarm = {"id": "ocid1.alarm.c", "display_name": "Console one", "namespace": "test_detection_rule",
+                 "resource_group": None, "query": "test_metric[5m].max() > 0", "freeform_tags": {"team": "x"}}
+        rule = {"id": "ocid1.task.c", "saved_search_id": "ocid1.mss.c", "cron": None, "interval": "PT5M",
+                "metric_namespace": "test_detection_rule", "metric_name": "test_metric", "metric_resource_group": None}
+        client.get_alarm.return_value = alarm
+        client.list_alarms.return_value = [alarm]
+        client.list_saved_searches.return_value = [{"id": "ocid1.task.c"}]
+        client.get_scheduled_task_details.return_value = rule
+        client.get_saved_search.return_value = {"id": "ocid1.mss.c", "query": "* | stats count"}
+
+        result = await make_svc(client).delete_alert("ocid1.alarm.c")
+
+        client.delete_scheduled_task.assert_awaited_once_with("ocid1.task.c")
+        client.delete_alarm.assert_awaited_once_with("ocid1.alarm.c")
+        client.delete_management_saved_search.assert_not_called()
+        assert result["deleted"] == ["metric_task", "alarm"]
+        assert [k["id"] for k in result["kept"]] == ["ocid1.mss.c"]
 
     @pytest.mark.asyncio
     async def test_handles_404_gracefully(self):
-        client = AsyncMock()
-        client.get_alarm.return_value = {
-            "id": "ocid1.alarm.1",
-            "freeform_tags": {
-                "logan_backing_saved_search_id": "ocid1.mss.1",
-                "logan_backing_metric_task_id": "ocid1.task.1",
-            }
-        }
+        client = self.logan_client()
         import oci
-        not_found = oci.exceptions.ServiceError(404, "NotFound", {}, "not found")
-        client.delete_scheduled_task.side_effect = not_found
-        svc = make_svc(client)
+        client.delete_scheduled_task.side_effect = oci.exceptions.ServiceError(404, "NotFound", {}, "not found")
 
-        await svc.delete_alert("ocid1.alarm.1")
-        assert client.delete_management_saved_search.called
+        result = await make_svc(client).delete_alert("ocid1.alarm.1")
+
         assert client.delete_alarm.called
+        assert result["deleted"] == ["metric_task", "alarm"] and result["partial_failure"] is False
 
     @pytest.mark.asyncio
     async def test_partial_failure_returns_report(self):
-        client = AsyncMock()
-        client.get_alarm.return_value = {
-            "id": "ocid1.alarm.1",
-            "freeform_tags": {
-                "logan_backing_saved_search_id": "ocid1.mss.1",
-                "logan_backing_metric_task_id": "ocid1.task.1",
-            }
-        }
+        client = self.logan_client()
         import oci
-        client.delete_management_saved_search.side_effect = oci.exceptions.ServiceError(
-            500, "InternalError", {}, "server error"
-        )
-        svc = make_svc(client)
+        client.delete_scheduled_task.side_effect = oci.exceptions.ServiceError(500, "InternalError", {}, "server error")
 
-        result = await svc.delete_alert("ocid1.alarm.1")
+        result = await make_svc(client).delete_alert("ocid1.alarm.1")
+
         assert result["partial_failure"] is True
-        assert "ocid1.mss.1" in result["remaining"]
+        assert "ocid1.task.1" in result["remaining"]
+        assert client.delete_alarm.called
 
 
 class TestListAlerts:

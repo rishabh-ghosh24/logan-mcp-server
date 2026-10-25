@@ -52,11 +52,11 @@ NON_DESTRUCTIVE_MUTATION_EXEMPTIONS: dict[str, str] = {
 }
 
 _SUMMARY_KEYS: Dict[str, list] = {
-    "delete_alert": ["alert_id"],
+    "delete_alert": ["alert_id", "origin", "deletion"],
     "delete_saved_search": ["saved_search_id"],
     "delete_dashboard": ["dashboard_id"],
     "delete_playbook": ["playbook_id"],
-    "update_alert": ["alert_id", "display_name", "severity", "query", "linked_alerts"],
+    "update_alert": ["alert_id", "display_name", "severity", "query", "linked_alerts", "origin"],
     "update_saved_search": ["saved_search_id", "display_name", "query", "linked_alerts"],
     "add_dashboard_tile": ["dashboard_id", "title", "query", "visualization_type"],
     "create_alert": [
@@ -237,7 +237,7 @@ class ConfirmationManager:
         for key in summary_keys:
             if key in arguments:
                 val = str(arguments[key])
-                if key not in ("data_warning", "linked_alerts") and len(val) > 120:
+                if key not in ("data_warning", "linked_alerts", "origin", "deletion") and len(val) > 120:
                     val = val[:120] + "..."
                 parts.append(f"  {key}: {val}")
         return "\n".join(parts)
