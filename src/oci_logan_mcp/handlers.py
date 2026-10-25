@@ -952,9 +952,27 @@ class MCPHandlers:
         return self._json_response(envelope("sources", rows, keyword=keyword, limit=args.get("limit", DEFAULT_LIMIT),
                                             names=[r.get("display_name") or r.get("name") for r in sources]))
 
+    async def _resolve_source_name(self, source_name: Optional[str]) -> Optional[str]:
+        """OCI's field filter wants the internal source name; accept the display name too."""
+        if not source_name:
+            return source_name
+        try:
+            sources = await self.schema_manager.get_log_sources()
+        except Exception as error:  # the catalog is only a convenience here
+            logger.warning("Could not resolve source name %r: %s", source_name, error)
+            return source_name
+        if any(row.get("name") == source_name for row in sources):
+            return source_name
+        wanted = source_name.strip().lower()
+        for row in sources:
+            if (row.get("display_name") or "").strip().lower() == wanted:
+                return row.get("name") or source_name
+        return source_name
+
     async def _list_fields(self, args: Dict) -> List[Dict]:
         """List fields: optional source filter (server side), keyword filter, bounded."""
-        fields = await self.schema_manager.get_fields(source_name=args.get("source_name"))
+        source_name = await self._resolve_source_name(args.get("source_name"))
+        fields = await self.schema_manager.get_fields(source_name=source_name)
         field_dicts = [
             {
                 "name": f.name,
@@ -971,8 +989,11 @@ class MCPHandlers:
             self.context_manager.update_confirmed_fields(field_dicts)
         keyword = args.get("keyword")
         rows = [compact_row(row) for row in filter_rows(field_dicts, keyword, ("name", "display_name", "description"))]
-        return self._json_response(envelope("fields", rows, keyword=keyword, limit=args.get("limit", DEFAULT_LIMIT),
-                                            names=[f["name"] for f in field_dicts]))
+        out = envelope("fields", rows, keyword=keyword, limit=args.get("limit", DEFAULT_LIMIT),
+                       names=[f["name"] for f in field_dicts])
+        if source_name:
+            out["source_name"] = source_name
+        return self._json_response(out)
 
     async def _list_entities(self, args: Dict) -> List[Dict]:
         """List entities: optional type filter (server side), keyword filter, bounded."""

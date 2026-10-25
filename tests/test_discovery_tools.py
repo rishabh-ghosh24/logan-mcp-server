@@ -156,3 +156,17 @@ def test_tool_definitions_declare_keyword_and_limit_within_the_payload_bound():
         assert props["keyword"]["type"] == "string" and props["limit"]["type"] == "integer"
         assert "50" in tools[name]["description"]
     assert len(json.dumps(get_tools())) <= 60_000
+
+
+@pytest.mark.asyncio
+async def test_fields_accept_the_display_name_of_a_source(tmp_path):
+    """OCI's field filter wants the internal source name; a display name used to return nothing."""
+    handlers, client, _ = make_handlers(tmp_path)
+
+    out = await call(handlers, "list_fields", {"source_name": "OCI VCN Flow Unified Schema Logs"})
+
+    client.list_fields.assert_awaited_once_with("ociVcnFlowUnifiedSchemaLogs")
+    assert out["source_name"] == "ociVcnFlowUnifiedSchemaLogs" and out["total"] == 3
+    client.list_fields.reset_mock()
+    await call(handlers, "list_fields", {"source_name": "ociAuditLogs"})
+    client.list_fields.assert_awaited_once_with("ociAuditLogs")  # an internal name passes through
