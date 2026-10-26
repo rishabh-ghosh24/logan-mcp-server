@@ -79,6 +79,7 @@ async def test_unresolved_console_query_fails_before_any_write_with_positive_con
     if known_search:
         client.get_alarm.return_value['freeform_tags']['logan_backing_saved_search_id'] = SEARCH
     client.list_saved_searches.return_value = []
+    client.list_scheduled_tasks_for_saved_search.return_value = []
     service = AlarmService(client, CacheManager())
     with pytest.raises(ValueError, match='backing'):
         await service.update_alert('alarm-a', query='* | stats count as total')
@@ -86,6 +87,7 @@ async def test_unresolved_console_query_fails_before_any_write_with_positive_con
     client.update_scheduled_task.assert_not_awaited()
     client.update_alarm.assert_not_awaited()
     client.list_saved_searches.return_value = [{'id': RULE_ID}]
+    client.list_scheduled_tasks_for_saved_search.return_value = [{'id': RULE_ID}]
     await service.update_alert('alarm-a', query='* | stats count as total')
     client.update_management_saved_search.assert_awaited_once()
     assert client.update_alarm.call_args.args[1].query is None
@@ -206,6 +208,7 @@ async def test_missing_rule_is_confirmed_by_inventory_before_any_delete(status, 
     client.list_scheduled_tasks_for_saved_search.assert_awaited_once()
     client.delete_alarm.reset_mock()
     client.get_scheduled_task_details.side_effect = None
+    client.list_scheduled_tasks_for_saved_search.return_value = [{'id': RULE_ID}]
     await service.delete_alert('alarm-a')
     client.delete_scheduled_task.assert_awaited_once_with(RULE_ID)
     client.delete_alarm.assert_awaited_once_with('alarm-a')

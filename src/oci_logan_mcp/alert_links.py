@@ -92,6 +92,30 @@ def alarms_watching(alarms: List[Dict[str, Any]], task: Dict[str, Any]) -> List[
     return [a for a in alarms if _watches(a, task)]
 
 
+async def resolve_alert_rule(client, alarm: Dict[str, Any]) -> Optional[Dict[str, Any]]:
+    """Resolve one current native producer before a backing resource is changed."""
+    if not alarm.get("namespace") or not alarm.get("metric_compartment_id"):
+        raise ValueError("Cannot verify this alert's metric scope; no changes were made.")
+    summaries = await client.list_scheduled_tasks_for_saved_search(
+        compartment_id=alarm.get("compartment_id") or client.compartment_id,
+    )
+    if not isinstance(summaries, list):
+        raise ValueError("Cannot verify the detection-rule inventory; no changes were made.")
+    matches = []
+    for summary in summaries:
+        if summary.get("lifecycle_state") == "DELETED":
+            continue
+        task = await client.get_scheduled_task_details(summary["id"])
+        if task.get("lifecycle_state") == "DELETED" or not _watches(alarm, task):
+            continue
+        if not task.get("saved_search_id") or not task.get("metric_compartment_id"):
+            raise ValueError("Cannot verify this detection rule's backing resources; no changes were made.")
+        matches.append(task)
+    if len(matches) > 1:
+        raise ValueError("Ambiguous alert: multiple native detection rules produce its metrics; no changes were made.")
+    return matches[0] if matches else None
+
+
 def metric_references(condition: Optional[str]) -> set[str]:
     """Read every metric operand, excluding names inside quoted dimension values."""
     unquoted = _QUOTED_TEXT_RE.sub(' ', condition or '')
@@ -170,27 +194,20 @@ async def _console_matches(client, alarms: List[Dict[str, Any]], task: Dict[str,
 
 async def find_alerts_for_saved_search(client, saved_search_id: str,
                                        compartment_id: Optional[str] = None) -> List[LinkedAlert]:
-    """Merge tagged alarms with every alarm found through OCI's current rule links."""
+    """Find native dependents; tags preserve presentation metadata only after verification."""
     alarms = await client.list_alarms(compartment_id)
     tasks = await client.list_scheduled_tasks_for_saved_search(saved_search_id)
     details = [await client.get_scheduled_task_details(task["id"]) for task in tasks]
-    eligible = []
-    for alarm in alarms:
-        metrics = metric_references(alarm.get("query"))
-        producers = [task for task in details if task.get("metric_name") in metrics
-                     and task.get("metric_namespace") == alarm.get("namespace")]
-        cid = alarm.get("metric_compartment_id")
-        if cid and producers and all(task.get("metric_compartment_id")
-                and task["metric_compartment_id"] != cid for task in producers):
-            continue
-        eligible.append(alarm)
-    tagged = [_from_tagged(a) for a in eligible
-              if (a.get("freeform_tags") or {}).get("logan_backing_saved_search_id") == saved_search_id]
-    results = {alert.alarm_id: alert for alert in tagged}
+    tagged = {alarm["id"]: _from_tagged(alarm) for alarm in alarms if _is_logan_alarm(alarm)}
+    results = {}
     for task in details:
-        for alert in await _console_matches(client, eligible, task):
-            previous = results.get(alert.alarm_id)
-            if previous and previous.created_by == "logan":
+        if task.get("saved_search_id") != saved_search_id:
+            continue
+        for alert in await _console_matches(client, alarms, task):
+            previous = tagged.get(alert.alarm_id)
+            if (previous and previous.created_by == "logan"
+                    and previous.backing_saved_search_id == saved_search_id
+                    and previous.backing_metric_task_id == task["id"]):
                 # Keep the public five-field schedule and grouping on our alarms.
                 alert = replace(alert, schedule=previous.schedule,
                                 schedule_format=previous.schedule_format,
@@ -210,7 +227,10 @@ async def find_log_alerts(client, compartment_id: Optional[str] = None) -> List[
     for task in await client.list_saved_searches():
         details = await client.get_scheduled_task_details(task["id"])
         for alert in await _console_matches(client, alarms, details):
-            found.setdefault(alert.alarm_id, alert)
+            previous = found.get(alert.alarm_id)
+            if previous:
+                alert = replace(alert, alert_group=previous.alert_group)
+            found[alert.alarm_id] = alert
     return list(found.values())
 
 

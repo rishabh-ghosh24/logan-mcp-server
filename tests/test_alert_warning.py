@@ -35,6 +35,14 @@ def make_handlers(tmp_path, alarms):
     client.list_alarms = AsyncMock(return_value=list(alarms))
     client.get_alarm = AsyncMock(return_value=alarms[0] if alarms else {})
     client.list_scheduled_tasks_for_saved_search = AsyncMock(return_value=[])
+    if alarms and (alarms[0].get("freeform_tags") or {}).get("logan_backing_saved_search_id"):
+        client.list_scheduled_tasks_for_saved_search.return_value = [{"id": "ocid1.task.logan"}]
+        client.get_scheduled_task_details = AsyncMock(return_value={
+            "id": "ocid1.task.logan", "saved_search_id": SEARCH_ID,
+            "metric_namespace": "logan_custom_metrics", "metric_name": "logan_alert_abc",
+            "metric_compartment_id": client.compartment_id, "metric_resource_group": "logan_alerts",
+            "cron": "0 */15 * ? * *"})
+        client.get_saved_search = AsyncMock(return_value={"id": SEARCH_ID, "query": "* | stats count"})
     cache = MagicMock()
     cache.get = MagicMock(return_value=None)
     user_dir = tmp_path / "users" / "testuser"

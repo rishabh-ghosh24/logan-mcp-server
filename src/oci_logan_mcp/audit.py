@@ -16,7 +16,8 @@ from pathlib import Path
 from typing import Any, Dict, Iterator, List
 
 from .file_lock import locked_file
-from .sanitize import redact_dict
+from .sanitize import AuditFingerprint, redact_dict
+from .time_parser import TIME_RANGES
 
 logger = logging.getLogger(__name__)
 
@@ -32,8 +33,17 @@ _STRIP_KEYS = frozenset({
 _TEXT_ARGUMENT_KEYS = frozenset({
     "query", "queries", "sample_logs", "markdown", "description", "notes", "regex_pattern",
 })
+_STRUCTURAL_ARGUMENT_VALUES = {
+    "time_range": frozenset(TIME_RANGES),
+    "format": frozenset({"json", "csv", "markdown", "html", "pdf", "both", "json_ndjson", "regex_text"}),
+    "scope": frozenset({"default", "tenancy"}),
+    "service": frozenset({"logs", "metrics", "all"}),
+    "severity": frozenset({"CRITICAL", "ERROR", "WARNING", "INFO"}),
+    "threshold_operator": frozenset({"gt", "gte", "eq", "lt", "lte"}),
+}
 _SUMMARY_KEYS = frozenset({
     "success", "status", "execution_ms", "error_type", "row_count", "column_count",
+    "succeeded_count", "failed_count", "partial_failure",
 })
 
 
@@ -51,14 +61,18 @@ def _fingerprint(text: str) -> Dict[str, Any]:
     return {"sha256": hashlib.sha256(text.encode("utf-8")).hexdigest(), "length": len(text)}
 
 
-def _omit_argument_text(value: Any, text_field: bool = False) -> Any:
+def _omit_argument_text(value: Any, text_field: bool = False, argument_name: str | None = None) -> Any:
+    if isinstance(value, AuditFingerprint):
+        return value
     if isinstance(value, dict):
-        return {key: _omit_argument_text(item, text_field or key.lower() in _TEXT_ARGUMENT_KEYS)
+        return {key: _omit_argument_text(item, text_field or key.lower() in _TEXT_ARGUMENT_KEYS, key)
                 for key, item in value.items()}
     if isinstance(value, (list, tuple)):
-        return [_omit_argument_text(item, text_field) for item in value]
-    if isinstance(value, str) and (text_field or len(value) > 64):
-        return _fingerprint(value)
+        return [_omit_argument_text(item, text_field, argument_name) for item in value]
+    if isinstance(value, str):
+        if not text_field and value in _STRUCTURAL_ARGUMENT_VALUES.get(argument_name, ()):
+            return value
+        return AuditFingerprint(value)
     return value
 
 
@@ -103,12 +117,10 @@ class AuditLogger:
     ) -> None:
         """Append one audit entry as a JSON line."""
         clean_args = {k: v for k, v in args.items() if k not in _STRIP_KEYS}
-        redacted_args = redact_dict(clean_args)
+        redacted_args = redact_dict(clean_args if self._store_arguments else _omit_argument_text(clean_args))
         sample_digest = clean_args.get("sample_sha256")
         if isinstance(sample_digest, str) and re.fullmatch(r"[0-9a-fA-F]{64}", sample_digest):
             redacted_args["sample_sha256"] = sample_digest
-        if not self._store_arguments:
-            redacted_args = _omit_argument_text(redacted_args)
         timestamp = datetime.now(timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ")
         if blocked is None:
             blocked = outcome in {

@@ -35,6 +35,12 @@ CONSOLE_TASK = {
     "cron": "0 */5 * ? * *", "metric_namespace": "test_detection_rule", "metric_name": "test_metric",
     "metric_resource_group": None, "freeform_tags": {},
 }
+LOGAN_TASK = {
+    "id": "ocid1.task.logan", "saved_search_id": "ocid1.mss.logan",
+    "metric_namespace": "logan_custom_metrics", "metric_name": "logan_alert_abc",
+    "metric_resource_group": "logan_alerts", "metric_compartment_id": COMPARTMENT,
+    "cron": "0 */15 * ? * *",
+}
 
 
 def make_client(alarms, tasks_for_search=(), task_details=None, all_tasks=()):
@@ -60,7 +66,9 @@ def test_parse_condition_reads_metric_operator_and_threshold():
 
 @pytest.mark.asyncio
 async def test_fast_path_uses_backing_tag_without_listing_tasks():
-    client = make_client([LOGAN_ALARM, CONSOLE_ALARM])
+    client = make_client([LOGAN_ALARM, CONSOLE_ALARM], tasks_for_search=[{"id": "ocid1.task.logan"}],
+                         task_details={"ocid1.task.logan": LOGAN_TASK})
+    client.get_saved_search.return_value = {"id": "ocid1.mss.logan", "query": LOGAN_ALARM["freeform_tags"]["logan_query"]}
 
     found = await find_alerts_for_saved_search(client, "ocid1.mss.logan")
 
@@ -197,7 +205,9 @@ async def test_creator_is_read_from_oci_default_tags():
 
     assert alert.created_by_user == "example-idcs/test.user@example.invalid"
     assert alert.created_on == "2026-08-04T16:19:00.414Z"
-    [ours] = await find_alerts_for_saved_search(make_client([LOGAN_ALARM]), "ocid1.mss.logan")
+    own_client = make_client([LOGAN_ALARM], tasks_for_search=[{"id": "ocid1.task.logan"}],
+                             task_details={"ocid1.task.logan": LOGAN_TASK})
+    [ours] = await find_alerts_for_saved_search(own_client, "ocid1.mss.logan")
     assert (ours.created_by_user, ours.created_on) == (None, None)
 
 
@@ -263,7 +273,8 @@ class TestSavedSearchUpdate:
     async def test_query_update_refreshes_each_linked_logan_alarm_and_reports_them(self):
         tagged = {**LOGAN_ALARM, "freeform_tags": {**LOGAN_ALARM["freeform_tags"],
                                                     "logan_backing_saved_search_id": self.SEARCH_ID}}
-        client = make_client([tagged])
+        client = make_client([tagged], tasks_for_search=[{"id": "ocid1.task.logan"}],
+                             task_details={"ocid1.task.logan": {**LOGAN_TASK, "saved_search_id": self.SEARCH_ID}})
         client.get_saved_search.return_value = {"id": self.SEARCH_ID, "ui_config": {"queryString": "old"}}
         client.get_alarm.return_value = tagged
         client.update_management_saved_search.return_value = {"id": self.SEARCH_ID}
@@ -311,7 +322,9 @@ class TestSavedSearchUpdate:
             "team": "x", "logan_managed": "true", "logan_kind": "monitoring_alarm", "logan_origin": "console",
             "logan_backing_saved_search_id": self.SEARCH_ID, "logan_backing_metric_task_id": "ocid1.task.console",
             "logan_query": self.NEW_QUERY}}
-        client = make_client([stamped])
+        client = make_client([stamped], tasks_for_search=[{"id": "ocid1.task.console"}],
+                             task_details={"ocid1.task.console": {**CONSOLE_TASK, "saved_search_id": self.SEARCH_ID}})
+        client.get_saved_search.return_value = {"id": self.SEARCH_ID, "query": self.NEW_QUERY}
 
         found = await find_alerts_for_saved_search(client, self.SEARCH_ID)
 

@@ -3,6 +3,8 @@
 import asyncio
 from typing import Optional, List, Dict, Any
 from datetime import datetime
+import oci
+from oci._vendor.requests.exceptions import Timeout as SdkTimeout
 
 from .client import OCILogAnalyticsClient, QueryTimeoutError
 from .cache import CacheManager
@@ -13,6 +15,15 @@ from .query_estimator import QueryEstimator, QueryEstimate
 from .budget_tracker import BudgetTracker, BudgetExceededError
 
 MAX_BATCH_QUERIES = 10
+
+
+def _is_query_timeout(error: Exception) -> bool:
+    """Keep dispatched work charged when a native timeout leaves its outcome unknown."""
+    return (
+        isinstance(error, (QueryTimeoutError, TimeoutError, SdkTimeout))
+        or (isinstance(error, oci.exceptions.ServiceError) and error.status in (408, 504))
+        or any(isinstance(argument, SdkTimeout) for argument in error.args)
+    )
 
 
 class QueryEngine:
@@ -201,7 +212,7 @@ class QueryEngine:
             execution_time = (datetime.now() - start_time).total_seconds()
             # Timed-out SDK work can still run, so keep its reservation.
             if (budget_reserved and self.budget_tracker is not None
-                    and not isinstance(e, QueryTimeoutError)):
+                    and not _is_query_timeout(e)):
                 self.budget_tracker.release(bytes=reserved_bytes, cost_usd=reserved_cost)
             self.logger.log_query(
                 query=query,

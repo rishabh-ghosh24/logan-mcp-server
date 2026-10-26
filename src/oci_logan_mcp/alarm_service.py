@@ -9,7 +9,7 @@ import oci
 from .client import OCILogAnalyticsClient
 from .cache import CacheManager
 from .saved_search_config import build_scope_filters, build_ui_config
-from .alert_links import CONSOLE_STAMP, alarms_watching, find_log_alerts, origin_of
+from .alert_links import CONSOLE_STAMP, alarms_watching, find_log_alerts, origin_of, resolve_alert_rule
 
 # OCI Management Dashboard API requires crossService in featuresConfig
 FEATURES_CONFIG = {"crossService": {"shared": True}}
@@ -317,15 +317,9 @@ class AlarmService:
         the rule is kept while another alarm still reads the metric it posts."""
         self.cache.delete('saved_searches')
         alarm = await self.oci_client.get_alarm(alert_id)
-        tags = alarm.get("freeform_tags", {}) or {}
-        task_id = tags.get("logan_backing_metric_task_id")
-        saved_search_id = tags.get("logan_backing_saved_search_id")
-        if not task_id:
-            # A console-made alert carries none of our tags: follow OCI's own links instead.
-            for linked in await find_log_alerts(self.oci_client, alarm.get("compartment_id")):
-                if linked.alarm_id == alert_id:
-                    task_id, saved_search_id = linked.backing_metric_task_id, linked.backing_saved_search_id
-                    break
+        rule = await resolve_alert_rule(self.oci_client, alarm)
+        task_id = rule["id"] if rule else None
+        saved_search_id = rule["saved_search_id"] if rule else None
 
         kept = []
         if saved_search_id:
@@ -385,8 +379,8 @@ class AlarmService:
         self.cache.delete('saved_searches')
         alarm = await self.oci_client.get_alarm(alert_id)
         tags = alarm.get("freeform_tags", {})
-        task_id = tags.get("logan_backing_metric_task_id")
-        saved_search_id = tags.get("logan_backing_saved_search_id")
+        task_id = None
+        saved_search_id = None
 
         display_name = kwargs.get("display_name")
         query = kwargs.get("query")
@@ -395,15 +389,15 @@ class AlarmService:
         threshold_operator = kwargs.get("threshold_operator")
         severity = kwargs.get("severity")
         destination_topic_id = kwargs.get("destination_topic_id")
+        updates = []
 
         console_origin = origin_of(alarm) == "console"
-        if console_origin and (query or schedule or display_name) and not (saved_search_id and task_id):
-            links = await find_log_alerts(self.oci_client, alarm.get("compartment_id"))
-            linked = next((row for row in links if row.alarm_id == alert_id), None)
-            if linked:
-                saved_search_id, task_id = linked.backing_saved_search_id, linked.backing_metric_task_id
-            if not (saved_search_id and task_id):
-                raise ValueError("Cannot resolve this console alert's backing resources. "
+        if query or schedule or display_name:
+            rule = await resolve_alert_rule(self.oci_client, alarm)
+            if rule:
+                saved_search_id, task_id = rule["saved_search_id"], rule["id"]
+            else:
+                raise ValueError("Cannot resolve this alert's backing resources. "
                                  "Inspect its rule in OCI before retrying; no changes were made.")
 
         if query and saved_search_id:
@@ -416,7 +410,8 @@ class AlarmService:
             )
             if display_name:
                 mss_update.display_name = f"logan-alert-{display_name}"
-            await self.oci_client.update_management_saved_search(saved_search_id, mss_update)
+            updates.append(("saved_search", saved_search_id,
+                            self.oci_client.update_management_saved_search, mss_update))
         elif query:
             self._validate_metric_query(query)  # validate even if we can't update
 
@@ -424,7 +419,8 @@ class AlarmService:
             mss_update = oci.management_dashboard.models.UpdateManagementSavedSearchDetails(
                 display_name=f"logan-alert-{display_name}",
             )
-            await self.oci_client.update_management_saved_search(saved_search_id, mss_update)
+            updates.append(("saved_search", saved_search_id,
+                            self.oci_client.update_management_saved_search, mss_update))
 
         if schedule:
             native_schedule = self._validate_cron(schedule)
@@ -436,20 +432,22 @@ class AlarmService:
             )
             if display_name:
                 task_update.display_name = f"logan-alert-task-{display_name}"
-            await self.oci_client.update_scheduled_task(task_id, task_update)
+            updates.append(("detection_rule", task_id, self.oci_client.update_scheduled_task, task_update))
         elif display_name and not query:
             task_update = oci.log_analytics.models.UpdateStandardTaskDetails(
                 kind="STANDARD",
                 display_name=f"logan-alert-task-{display_name}",
             )
-            await self.oci_client.update_scheduled_task(task_id, task_update)
+            updates.append(("detection_rule", task_id, self.oci_client.update_scheduled_task, task_update))
 
         alarm_update_fields = {}
         if query:
             # The alarm keeps a copy of the query for list_alerts and the notification body;
             # refresh both and repair the alarm in the same update.
-            stamp = {**CONSOLE_STAMP, "logan_backing_saved_search_id": saved_search_id,
-                     "logan_backing_metric_task_id": task_id} if console_origin else None
+            stamp = {"logan_backing_saved_search_id": saved_search_id,
+                     "logan_backing_metric_task_id": task_id}
+            if console_origin:
+                stamp.update(CONSOLE_STAMP)
             alarm_update_fields.update(self.refresh_alarm_for_query(alarm, query, stamp=stamp))
         if threshold_value is not None or threshold_operator is not None or schedule:
             alarm_update_fields.update(self._repair_fields(
@@ -470,9 +468,26 @@ class AlarmService:
 
         if alarm_update_fields:
             alarm_details = oci.monitoring.models.UpdateAlarmDetails(**alarm_update_fields)
-            await self.oci_client.update_alarm(alert_id, alarm_details)
+            updates.append(("alarm", alert_id, self.oci_client.update_alarm, alarm_details))
 
         changed = [field for field in ("display_name", "query", "schedule", "threshold_value",
                                      "threshold_operator", "severity", "destination_topic_id")
                    if kwargs.get(field) is not None]
+        # All relationships, validation and SDK models are ready before the first write.
+        completed = []
+        for index, (resource, identifier, update, details) in enumerate(updates):
+            try:
+                await update(identifier, details)
+            except Exception as error:
+                if not completed:
+                    raise
+                return {
+                    "alarm_id": alert_id, "status": "partial_failure", "partial_failure": True,
+                    "requested": changed, "completed": completed,
+                    "remaining": [item[1] for item in updates[index:]],
+                    "details": [{"resource": resource, "id": identifier,
+                                 "error_type": type(error).__name__,
+                                 "error": "Update failed. Inspect current state before retrying explicitly."}],
+                }
+            completed.append({"resource": resource, "id": identifier})
         return {"alarm_id": alert_id, "updated": changed}

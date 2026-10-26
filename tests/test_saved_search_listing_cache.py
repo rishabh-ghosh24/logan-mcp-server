@@ -142,7 +142,7 @@ async def test_alarm_writes_invalidate_only_the_listing_snapshot(operation):
     service, client = make_service(rules)
     first = await service.list_searches()
     assert first[0]['dependent_rules'] == (1 if operation == 'delete' else 0)
-    client.get_alarm.return_value = {**CONSOLE, 'freeform_tags': {
+    client.get_alarm.return_value = {**CONSOLE, 'query': 'team_metric[5m].max() > 4', 'freeform_tags': {
         'logan_managed': 'true', 'logan_kind': 'monitoring_alarm',
         'logan_backing_saved_search_id': SEARCH, 'logan_backing_metric_task_id': rule()['id']}}
     client.list_alarms.return_value = [client.get_alarm.return_value]

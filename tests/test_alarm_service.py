@@ -127,18 +127,21 @@ class TestDeleteAlert:
 
     RULE = {"id": "ocid1.task.1", "saved_search_id": "ocid1.mss.1", "cron": "0 */15 * ? * *",
             "metric_namespace": "logan_custom_metrics", "metric_name": "logan_alert_abc",
-            "metric_resource_group": "logan_alerts"}
+            "metric_resource_group": "logan_alerts", "metric_compartment_id": "ocid1.compartment.test"}
 
     def logan_client(self):
         client = AsyncMock()
+        client.compartment_id = "ocid1.compartment.test"
         client.get_alarm.return_value = {
             "id": "ocid1.alarm.1", "display_name": "mine", "namespace": "logan_custom_metrics",
+            "compartment_id": "ocid1.compartment.test", "metric_compartment_id": "ocid1.compartment.test",
             "query": "logan_alert_abc[15m].last() > 0",
             "freeform_tags": {"logan_managed": "true", "logan_kind": "monitoring_alarm",
                               "logan_backing_saved_search_id": "ocid1.mss.1",
                               "logan_backing_metric_task_id": "ocid1.task.1"},
         }
         client.get_scheduled_task_details.return_value = dict(self.RULE)
+        client.list_scheduled_tasks_for_saved_search.return_value = [{"id": "ocid1.task.1"}]
         client.list_alarms.return_value = [client.get_alarm.return_value]
         return client
 
@@ -179,13 +182,17 @@ class TestDeleteAlert:
     @pytest.mark.asyncio
     async def test_console_alarm_without_our_tags_finds_its_rule_through_oci(self):
         client = AsyncMock()
+        client.compartment_id = "ocid1.compartment.test"
         alarm = {"id": "ocid1.alarm.c", "display_name": "Console one", "namespace": "test_detection_rule",
+                 "compartment_id": "ocid1.compartment.test", "metric_compartment_id": "ocid1.compartment.test",
                  "resource_group": None, "query": "test_metric[5m].max() > 0", "freeform_tags": {"team": "x"}}
         rule = {"id": "ocid1.task.c", "saved_search_id": "ocid1.mss.c", "cron": None, "interval": "PT5M",
-                "metric_namespace": "test_detection_rule", "metric_name": "test_metric", "metric_resource_group": None}
+                "metric_namespace": "test_detection_rule", "metric_name": "test_metric", "metric_resource_group": None,
+                "metric_compartment_id": "ocid1.compartment.test"}
         client.get_alarm.return_value = alarm
         client.list_alarms.return_value = [alarm]
         client.list_saved_searches.return_value = [{"id": "ocid1.task.c"}]
+        client.list_scheduled_tasks_for_saved_search.return_value = [{"id": "ocid1.task.c"}]
         client.get_scheduled_task_details.return_value = rule
         client.get_saved_search.return_value = {"id": "ocid1.mss.c", "query": "* | stats count"}
 
@@ -244,8 +251,11 @@ class TestUpdateAlert:
     @pytest.mark.asyncio
     async def test_query_update_only_touches_saved_search(self):
         client = AsyncMock()
+        client.compartment_id = "ocid1.compartment.test"
         client.get_alarm.return_value = {
             "id": "ocid1.alarm.1",
+            "namespace": "logan_custom_metrics", "compartment_id": "ocid1.compartment.test",
+            "metric_compartment_id": "ocid1.compartment.test",
             "freeform_tags": {
                 "logan_managed": "true", "logan_kind": "monitoring_alarm",
                 "logan_backing_saved_search_id": "ocid1.mss.1",
@@ -258,6 +268,11 @@ class TestUpdateAlert:
             "destinations": ["ocid1.topic.1"],
         }
         client.update_management_saved_search.return_value = {"id": "ocid1.mss.1"}
+        client.list_scheduled_tasks_for_saved_search.return_value = [{"id": "ocid1.task.1"}]
+        client.get_scheduled_task_details.return_value = {
+            "id": "ocid1.task.1", "saved_search_id": "ocid1.mss.1",
+            "metric_namespace": "logan_custom_metrics", "metric_name": "logan_alert_abc123",
+            "metric_compartment_id": "ocid1.compartment.test", "metric_resource_group": "logan_alerts"}
         svc = make_svc(client)
 
         await svc.update_alert("ocid1.alarm.1", query="* | stats avg(duration)")
@@ -278,8 +293,11 @@ class TestUpdateAlert:
     @pytest.mark.asyncio
     async def test_display_name_updates_all_three(self):
         client = AsyncMock()
+        client.compartment_id = "ocid1.compartment.test"
         client.get_alarm.return_value = {
             "id": "ocid1.alarm.1",
+            "namespace": "logan_custom_metrics", "compartment_id": "ocid1.compartment.test",
+            "metric_compartment_id": "ocid1.compartment.test",
             "freeform_tags": {
                 "logan_managed": "true", "logan_kind": "monitoring_alarm",
                 "logan_backing_saved_search_id": "ocid1.mss.1",
@@ -294,6 +312,11 @@ class TestUpdateAlert:
         client.update_management_saved_search.return_value = {"id": "ocid1.mss.1"}
         client.update_scheduled_task.return_value = {"id": "ocid1.task.1"}
         client.update_alarm.return_value = {"id": "ocid1.alarm.1", "freeform_tags": {}}
+        client.list_scheduled_tasks_for_saved_search.return_value = [{"id": "ocid1.task.1"}]
+        client.get_scheduled_task_details.return_value = {
+            "id": "ocid1.task.1", "saved_search_id": "ocid1.mss.1",
+            "metric_namespace": "logan_custom_metrics", "metric_name": "logan_alert_abc123",
+            "metric_compartment_id": "ocid1.compartment.test", "metric_resource_group": "logan_alerts"}
         svc = make_svc(client)
 
         await svc.update_alert("ocid1.alarm.1", display_name="renamed")

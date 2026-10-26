@@ -219,8 +219,10 @@ class SavedSearchService:
                     if 'query' in kwargs and backing_mss_id else [])
 
         if "query" in kwargs and backing_mss_id:
+            current = await self.oci_client.get_saved_search(backing_mss_id)
             mss_update = oci.management_dashboard.models.UpdateManagementSavedSearchDetails(
                 data_config=[{"query": kwargs["query"]}],
+                ui_config={**(current.get("ui_config") or {}), "queryString": kwargs["query"]},
             )
             await self.oci_client.update_management_saved_search(backing_mss_id, mss_update)
 
@@ -238,6 +240,8 @@ class SavedSearchService:
 
         self.cache.delete("saved_searches")
         self.cache.delete(f"saved_search:{search_id}")
+        if backing_mss_id:
+            self.cache.delete(f"saved_search:{backing_mss_id}")
         result = {"id": search_id, "updated": list(kwargs.keys()), **{k: v for k, v in kwargs.items()}}
         return await self._finish_linked_alerts(result, prepared)
 

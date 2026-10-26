@@ -668,6 +668,15 @@ class MCPHandlers:
     def _json_response(self, payload: Any) -> List[Dict]:
         return [{"type": "text", "text": _dumps(payload, indent=2, default=str)}]
 
+    def _operation_response(self, payload: Dict) -> List[Dict]:
+        """Keep completed work visible while classifying an operation's failure."""
+        result = self._json_response(payload)
+        if payload.get("partial_failure") or payload.get("status") in {
+            "error", "failed", "partial", "partial_failure",
+        }:
+            result[0]["is_error"] = True
+        return result
+
     def _error_response(self, error_code: str, message: str, **extra: Any) -> List[Dict]:
         payload = {"status": "error", "error_code": error_code, "error": message}
         payload.update(extra)
@@ -789,6 +798,14 @@ class MCPHandlers:
             summary["row_count"] = len(payload)
             if payload and isinstance(payload[0], dict):
                 summary["first_keys"] = sorted(payload[0].keys())[:10]
+            if payload and all(isinstance(row, dict) and type(row.get("success")) is bool for row in payload):
+                succeeded = sum(row["success"] for row in payload)
+                failed = len(payload) - succeeded
+                summary.update(
+                    succeeded_count=succeeded, failed_count=failed,
+                    partial_failure=bool(succeeded and failed),
+                    status="partial" if succeeded and failed else "failed" if failed else "success",
+                )
         elif isinstance(payload, dict):
             data = payload.get("data")
             if isinstance(data, dict):
@@ -1301,7 +1318,10 @@ class MCPHandlers:
                 if success:
                     self.auto_saver.process_successful_query(q_spec["query"], r["result"])
                 self._record_query_outcome(q_spec["query"], success)
-        return [{"type": "text", "text": _dumps(results, indent=2, default=str)}]
+        response = self._json_response(results)
+        if results and all(item.get("success") is False for item in results):
+            response[0]["is_error"] = True
+        return response
 
     def _record_query_outcome(self, query: str, success: bool) -> None:
         """Keep personal learning separate from successful tool delivery."""
@@ -1790,7 +1810,7 @@ class MCPHandlers:
         if email_report_id:
             self._record_email_delivery_attempt(email_report_id, result)
 
-        return self._json_response(result)
+        return self._operation_response(result)
 
     def _validate_email_delivery_confirmation(
         self,
@@ -2834,7 +2854,7 @@ class MCPHandlers:
             severity=args.get("severity", "CRITICAL"),
             compartment_id=args.get("compartment_id"),
         )
-        return [{"type": "text", "text": _dumps(result, indent=2)}]
+        return self._operation_response(result)
 
     async def _list_alerts(self, args: Dict) -> List[Dict]:
         result = await self.alarm_service.list_alerts(
@@ -2846,11 +2866,11 @@ class MCPHandlers:
         alert_id = args["alert_id"]
         update_kwargs = {k: v for k, v in args.items() if k != "alert_id"}
         result = await self.alarm_service.update_alert(alert_id, **update_kwargs)
-        return [{"type": "text", "text": _dumps(result, indent=2)}]
+        return self._operation_response(result)
 
     async def _delete_alert(self, args: Dict) -> List[Dict]:
         result = await self.alarm_service.delete_alert(args["alert_id"])
-        return [{"type": "text", "text": _dumps(result, indent=2)}]
+        return self._operation_response(result)
 
     # ── Saved search CRUD handlers ──────────────────────────────────────
 
@@ -2862,13 +2882,13 @@ class MCPHandlers:
             compartment_id=args.get("compartment_id"),
             category=args.get("category"),
         )
-        return [{"type": "text", "text": _dumps(result, indent=2)}]
+        return self._operation_response(result)
 
     async def _update_saved_search(self, args: Dict) -> List[Dict]:
         search_id = args["saved_search_id"]
         update_kwargs = {k: v for k, v in args.items() if k != "saved_search_id"}
         result = await self.saved_search.update_search(search_id, **update_kwargs)
-        return [{"type": "text", "text": _dumps(result, indent=2)}]
+        return self._operation_response(result)
 
     async def _delete_saved_search(self, args: Dict) -> List[Dict]:
         await self.saved_search.delete_search(args["saved_search_id"], compartment_id=args.get("compartment_id"))
@@ -2883,7 +2903,7 @@ class MCPHandlers:
             description=args.get("description"),
             compartment_id=args.get("compartment_id"),
         )
-        return [{"type": "text", "text": _dumps(result, indent=2)}]
+        return self._operation_response(result)
 
     async def _list_dashboards(self, args: Dict) -> List[Dict]:
         result = await self.dashboard_service.list_dashboards(
@@ -2900,11 +2920,11 @@ class MCPHandlers:
             width=args.get("width"),
             height=args.get("height"),
         )
-        return [{"type": "text", "text": _dumps(result, indent=2)}]
+        return self._operation_response(result)
 
     async def _delete_dashboard(self, args: Dict) -> List[Dict]:
         result = await self.dashboard_service.delete_dashboard(args["dashboard_id"])
-        return [{"type": "text", "text": _dumps(result, indent=2)}]
+        return self._operation_response(result)
 
     # ── Estimation + Budget handlers ───────────────────────────────────
 

@@ -20,6 +20,14 @@ def make_client():
     client.create_management_saved_search.return_value = {"id": "ocid1.mss.1"}
     client.create_scheduled_task.return_value = {"id": "ocid1.task.1"}
     client.create_alarm.return_value = {"id": "ocid1.alarm.1", "freeform_tags": {}}
+    client.list_scheduled_tasks_for_saved_search.return_value = [{"id": "ocid1.task.1"}]
+    def native_rule(task_id):
+        alarm = client.get_alarm.return_value
+        return {"id": task_id, "saved_search_id": "ocid1.mss.1",
+                "metric_namespace": alarm["namespace"], "metric_name": alarm["query"].split("[")[0],
+                "metric_compartment_id": "ocid1.compartment.test",
+                "metric_resource_group": alarm.get("resource_group")}
+    client.get_scheduled_task_details.side_effect = native_rule
     return client
 
 
@@ -30,6 +38,8 @@ def make_svc(client):
 def existing_alarm(query, schedule="*/15 * * * *"):
     return {
         "id": "ocid1.alarm.1",
+        "namespace": "logan_custom_metrics", "compartment_id": "ocid1.compartment.test",
+        "metric_compartment_id": "ocid1.compartment.test",
         "freeform_tags": {
             "logan_managed": "true", "logan_kind": "monitoring_alarm",
             "logan_backing_saved_search_id": "ocid1.mss.1",
