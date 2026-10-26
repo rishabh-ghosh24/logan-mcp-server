@@ -20,8 +20,8 @@ After the verified host key is saved, the MCP client can connect without an inte
       "args": [
         "-i", "/absolute/path/to/your-key",
         "-o", "StrictHostKeyChecking=yes",
-        "-o", "ServerAliveInterval=60",
-        "-o", "ServerAliveCountMax=3",
+        "-o", "ServerAliveInterval=30",
+        "-o", "ServerAliveCountMax=20",
         "opc@your-vm-host",
         "cd /path/to/logan-mcp-server && source venv/bin/activate && oci-logan-mcp --user firstname.lastname"
       ]
@@ -35,12 +35,26 @@ For Codex CLI, add this to `~/.codex/config.toml`:
 ```toml
 [mcp_servers.logan-mcp]
 command = "ssh"
-args = ["-i", "/absolute/path/to/your-key", "-o", "StrictHostKeyChecking=yes", "-o", "ServerAliveInterval=60", "-o", "ServerAliveCountMax=3", "opc@your-vm-host", "cd /path/to/logan-mcp-server && source venv/bin/activate && oci-logan-mcp --user firstname.lastname"]
+args = ["-i", "/absolute/path/to/your-key", "-o", "StrictHostKeyChecking=yes", "-o", "ServerAliveInterval=30", "-o", "ServerAliveCountMax=20", "opc@your-vm-host", "cd /path/to/logan-mcp-server && source venv/bin/activate && oci-logan-mcp --user firstname.lastname"]
 ```
 
-The keepalive options send a packet every 60 seconds and disconnect after three missed replies. They help detect idle SSH connections dropped by a firewall or NAT gateway. Each connection starts a server process speaking MCP over stdio.
+Each connection starts a server process speaking MCP over stdio.
+`ServerAliveInterval=30` sends an encrypted probe after 30 seconds without server
+data. `ServerAliveCountMax=20` allows about 10 minutes of unanswered probes before
+SSH disconnects. See the [OpenSSH keepalive reference](https://man.openbsd.org/ssh_config#ServerAliveCountMax).
 
-The Windows one-click installer is distributed internally. Use the public manual connection examples for this repository.
+This longer tolerance can survive a short outage while the same connection
+remains valid. An IP change, TCP reset or broken pipe still drops the connection;
+keepalives do not reconnect it. The Claude app then needs a restart. Local
+installations do not use SSH and are unaffected by this limitation. HTTP
+transport is the planned fix.
+
+A truly dead connection can take about 10 minutes to be detected by these probes.
+Operating-system failures or client call timeouts can end a call sooner; this is
+not a guaranteed 10-minute recovery window.
+
+Native Windows installation has not been verified. The examples above connect
+to a separately configured server through SSH.
 
 ## User identity
 
@@ -74,7 +88,7 @@ bash oci-initial-setup.sh
 Follow its restart and login instructions. Then install the MCP package:
 
 ```bash
-git clone https://github.com/rishabh-ghosh24/logan-mcp-server.git
+git clone --branch mcp-publish https://github.com/rishabh-ghosh24/logan-mcp-server.git
 cd logan-mcp-server
 python3.11 -m venv venv
 source venv/bin/activate
@@ -83,15 +97,19 @@ pip install -e .
 
 ### Existing VM with Python 3.11
 
-The [existing-VM helper](../scripts/setup_oel9.sh) creates the virtual environment and installs the package. Confirm Python 3.11 is available before using it, so its legacy interpreter fallback cannot select an unsupported version:
+The [existing-VM helper](../scripts/setup_oel9.sh) chooses an available Python
+3.11 through 3.14 interpreter, creates `venv`, and installs the package with
+development dependencies. If no supported interpreter is found, it attempts to
+install Python 3.11 using `sudo dnf`; review that system change before running it:
 
 ```bash
-git clone https://github.com/rishabh-ghosh24/logan-mcp-server.git
+git clone --branch mcp-publish https://github.com/rishabh-ghosh24/logan-mcp-server.git
 cd logan-mcp-server
-python3.11 --version && ./scripts/setup_oel9.sh
+./scripts/setup_oel9.sh
 ```
 
-For Python 3.12 to 3.14, use the manual Quick Start with your selected interpreter.
+For installation without the helper's system-package step, use the manual
+[Quick Start](../README.md#quick-start) with your selected interpreter.
 
 ### Instance principal setup
 
