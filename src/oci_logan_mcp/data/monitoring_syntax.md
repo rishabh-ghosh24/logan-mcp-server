@@ -6,7 +6,9 @@ changes only Log Analytics. Metrics work without Log Analytics configured.
 1. Call `test_connection` with `service: metrics`. This tests inspection, not query
    read permission. A successful data query tests read access for its own scope.
 2. Call `list_metric_namespaces`, then `list_metrics` for a visible namespace.
-   Inspect stream dimensions before selecting filters or grouping.
+   With no `metric_name`, it returns exact metric names only. For a follow-up
+   about a selected metric, supply `metric_name` to inspect its stream dimensions
+   before selecting query filters or grouping.
 3. Search `search_metric_catalog` for a common intent such as `cpu`. Resolve
    ambiguity and pass an exact key to `query_catalog_metric`. Use `query_metrics`
    for custom namespaces or expert MQL.
@@ -48,9 +50,25 @@ caps keep whole series and report dropped counts and reasons. A partial subset
 does not describe the fleet. Narrow dimensions, request a smaller window or
 choose a coarser compatible interval; do not rank a trimmed subset as the fleet.
 
-Discovery returns one native page without trimming. `more_available` and
-`next_page_token` mean more pages may exist. Reuse the exact scope and filters
-when following the token. No total inventory count is claimed.
+For questions about available metrics, answer with a bullet list of OCI's exact
+metric names. Do not generate readable labels or add descriptions, request types,
+buckets or dimensions unless the user asks for those details. Any optional label
+must come from the reviewed catalog. Actual values require a query tool.
+
+Discovery returns one native page per call. Names mode removes duplicate names
+within that page; named-metric follow-ups retain detailed stream rows. An
+instance-filtered request preserves OCI's dimension filters and compacts names
+afterward, because OCI documents that grouping can ignore dimension filters.
+`returned_count` is this page's projected count, not a global inventory count.
+
+`more_available` and `next_page_token` mean more pages may exist. For an all-names
+answer, follow the token with the exact same scope and filters and deduplicate
+names across pages. Each page costs one session query slot, even when it adds
+no new names. Check `budget_remaining.queries` from the last response, or use
+`get_session_budget`, before following another page. Stop paging when five or
+fewer query slots remain; preserve that reserve for follow-up work and explicitly
+report the collected list as incomplete. Also report incomplete on timeout or
+failure. This is client guidance; the server's existing hard budget is unchanged.
 
 Empty data is `no_data`, not an error or a proof of service health. Backend,
 validation, budget and timeout failures are flagged errors. A composite failure

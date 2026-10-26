@@ -17,7 +17,7 @@ def get_metric_tools() -> list[dict]:
     return [
         tool('list_metric_namespaces','Discover one page of visible Monitoring namespaces in the chosen scope.',
             {**scope,**paging},[]),
-        tool('list_metrics','Discover one page of metric streams and dimensions. Follow next_page_token.',
+        tool('list_metrics','List exact metric names; with metric_name, return streams/dimensions. Each page costs one session query slot. Follow next_page_token; deduplicate names. Check budget_remaining.queries: stop paging at 5 remaining slots and report incomplete.',
             {**scope,**paging,'namespace':text,'metric_name':text,'resource_group':text,'dimension_filters':filters},['namespace']),
         tool('search_metric_catalog','Search reviewed metric keys and aliases locally. Resolve ambiguous candidates before querying.',
             {'query':text,'namespace':text,'resource_group':text,

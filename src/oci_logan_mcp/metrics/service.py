@@ -77,17 +77,19 @@ class MetricsService:
             deadline = asyncio.get_running_loop().time() + config.timeout_seconds
             if name in ('list_metric_namespaces', 'list_metrics'):
                 namespaces = name == 'list_metric_namespaces'
+                names_only = not namespaces and not arguments.get('metric_name')
                 filters = {key: arguments.get(key) for key in ('namespace', 'metric_name', 'resource_group', 'dimension_filters')}
                 namespace = filters['namespace']
                 if not namespaces and (not isinstance(namespace, str) or not namespace.strip()
                         or len(namespace) > 256 or any(ord(char) < 32 for char in namespace)):
                     raise MetricsError('invalid_namespace', 'Provide a metric namespace from discovery.')
                 response = await self.gateway.discover(scope, **filters, limit=arguments.get('limit', 50),
-                    page_token=arguments.get('page_token'), group_namespaces=namespaces, deadline=deadline)
+                    page_token=arguments.get('page_token'), group_namespaces=namespaces,
+                    names_only=names_only, deadline=deadline)
                 self._inspect_authorized = True
                 self._inspect_scope = asdict(scope)
                 payload = format_discovery(response, scope=scope, namespace=filters['namespace'], filters=filters,
-                    group_namespaces=namespaces, limits=limits)
+                    group_namespaces=namespaces, names_only=names_only, limits=limits)
                 payload.update(self._budget_context(), status='success' if payload['returned_count'] else 'no_data')
                 if result_size(payload) > limits.max_response_bytes:
                     raise MetricsError('response_limit_exceeded', 'Lower the discovery limit to fit the complete page.')

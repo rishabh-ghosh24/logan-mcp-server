@@ -22,9 +22,10 @@ class MonitoringGateway:
 
     async def discover(self, scope: MetricScope, *, namespace=None, metric_name=None,
                        resource_group=None, dimension_filters=None, limit=50,
-                       page_token=None, group_namespaces=False, deadline: float):
+                       page_token=None, group_namespaces=False, names_only=False, deadline: float):
         config = self.require_configuration()
         if (type(limit) is not int or not 1 <= limit <= 100 or type(group_namespaces) is not bool
+                or type(names_only) is not bool or (names_only and (group_namespaces or metric_name))
                 or (group_namespaces and any((namespace,metric_name,resource_group,dimension_filters)))
                 or (dimension_filters is not None and (not isinstance(dimension_filters,Mapping)
                     or any(not isinstance(k,str) or not isinstance(v,str) for k,v in dimension_filters.items())))):
@@ -32,6 +33,11 @@ class MonitoringGateway:
         details = oci.monitoring.models.ListMetricsDetails(group_by=['namespace']) if group_namespaces else (
             oci.monitoring.models.ListMetricsDetails(namespace=namespace,name=metric_name,
                 resource_group=resource_group,dimension_filters=dict(dimension_filters) if dimension_filters is not None else None))
+        if names_only and not dimension_filters:
+            # OCI documents that grouping ignores dimension filters.
+            details.group_by = ['name']
+            details.sort_by = 'NAME'
+            details.sort_order = 'ASC'
         timeout = config.timeout_seconds
         def request():
             sdk = self.client.monitoring_client_for_region(scope.region,timeout_seconds=timeout)

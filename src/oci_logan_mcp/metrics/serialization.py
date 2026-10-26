@@ -138,7 +138,7 @@ def fit_series(series: Sequence[dict], *, context: dict, limits: ResponseLimits)
 
 def format_discovery(response: Any, *, scope: MetricScope, namespace: str | None,
                      filters: Mapping, group_namespaces: bool,
-                     limits: ResponseLimits | None=None) -> dict:
+                     limits: ResponseLimits | None=None, names_only: bool=False) -> dict:
     rows = list(response.data)
     headers = getattr(response,'headers',None) or {}
     payload = {'query_language':'mql','scope':asdict(scope),'namespace':namespace,
@@ -149,8 +149,16 @@ def format_discovery(response: Any, *, scope: MetricScope, namespace: str | None
     if group_namespaces:
         payload['namespaces'] = [row.namespace for row in rows]
     else:
-        payload['metrics'] = [dict(namespace=row.namespace,name=row.name,resource_group=row.resource_group,
-                                   compartment_id=row.compartment_id,dimensions=_dimensions(row.dimensions)) for row in rows]
+        payload['discovery_mode'] = 'names' if names_only else 'streams'
+        if names_only:
+            names = [row.name for row in rows]
+            if any(not isinstance(name,str) or not name for name in names):
+                raise MetricsError('invalid_metrics_response','Monitoring returned an invalid metric name.')
+            payload['metrics'] = [{'name': name} for name in sorted(set(names))]
+            payload['returned_count'] = len(payload['metrics'])
+        else:
+            payload['metrics'] = [dict(namespace=row.namespace,name=row.name,resource_group=row.resource_group,
+                                       compartment_id=row.compartment_id,dimensions=_dimensions(row.dimensions)) for row in rows]
     if result_size(payload)>(limits or ResponseLimits()).max_response_bytes:
         raise MetricsError('response_limit_exceeded','The complete discovery page exceeds the response limit. Lower the discovery limit.')
     return payload
