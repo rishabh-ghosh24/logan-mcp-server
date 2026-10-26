@@ -2,7 +2,7 @@
 
 from __future__ import annotations
 
-from typing import Any, Dict, List, Optional, Tuple
+from typing import Any, Dict, List, Optional, Sequence, Tuple
 
 from .budget_tracker import BudgetExceededError
 
@@ -15,8 +15,9 @@ ENTITY_FIELD_MAP: Dict[str, str] = {
     "host": "Host Name (Server)",
     "user": "User Name",
     "request_id": "Request ID",
-    "ip": "IP Address",
+    "ip": "Source IP",
 }
+IP_FIELDS = ("Source IP", "Destination IP", "Host IP Address (Client)")
 
 
 class PivotTool:
@@ -35,15 +36,19 @@ class PivotTool:
         field_name: Optional[str] = None,
     ) -> Dict[str, Any]:
         field = self._resolve_field(entity_type, field_name)
+        fields = IP_FIELDS if entity_type == "ip" else None
 
         if sources is None:
-            sources = await self._discover_sources(field, entity_value, time_range)
+            sources = await self._discover_sources(field, entity_value, time_range, fields=fields)
 
         if not sources:
-            return self._empty_result(entity_type, entity_value, field, time_range)
+            result = self._empty_result(entity_type, entity_value, field, time_range)
+            if fields:
+                result["entity"]["fields"] = list(fields)
+            return result
 
         by_source, partial = await self._query_sources(
-            sources, field, entity_value, time_range, max_rows_per_source
+            sources, field, entity_value, time_range, max_rows_per_source, fields=fields
         )
 
         timeline = self._build_timeline(by_source)
@@ -51,7 +56,8 @@ class PivotTool:
         sources_matched = sum(1 for s in by_source if s["rows"])
 
         return {
-            "entity": {"type": entity_type, "value": entity_value, "field": field},
+            "entity": {"type": entity_type, "value": entity_value, "field": field,
+                       **({"fields": list(fields)} if fields else {})},
             "by_source": by_source,
             "cross_source_timeline": timeline,
             "stats": {"total_events": total_events, "sources_matched": sources_matched},
@@ -74,10 +80,20 @@ class PivotTool:
             raise ValueError(f"Unknown entity_type {entity_type!r}. Valid: {valid}")
         return field
 
+    @staticmethod
+    def _condition(field: str, value: str, fields: Optional[Sequence[str]] = None) -> str:
+        """Keep caller values literal and group the supported IP alternatives."""
+        def escape(text: str) -> str:
+            return text.replace("\\", "\\\\").replace("'", "\\'")
+
+        conditions = [f"'{escape(name)}' = '{escape(value)}'" for name in (fields or (field,))]
+        return "(" + " or ".join(conditions) + ")" if fields else conditions[0]
+
     async def _discover_sources(
-        self, field: str, value: str, time_range: Dict[str, str]
+        self, field: str, value: str, time_range: Dict[str, str],
+        fields: Optional[Sequence[str]] = None,
     ) -> List[str]:
-        query = f"'{field}' = '{value}' | stats count by 'Log Source'"
+        query = f"{self._condition(field, value, fields)} | stats count by 'Log Source'"
         res = await self._engine.execute(query=query, **time_range)
 
         data = res.get("data", {}) or {}
@@ -115,13 +131,15 @@ class PivotTool:
         value: str,
         time_range: Dict[str, str],
         max_rows: int,
+        fields: Optional[Sequence[str]] = None,
     ) -> Tuple[List[Dict[str, Any]], bool]:
         by_source = []
         partial = False
 
         for source in sources:
             try:
-                query = f"'Log Source' = '{source}' and '{field}' = '{value}'"
+                source_condition = self._condition("Log Source", source)
+                query = f"{source_condition} and {self._condition(field, value, fields)}"
                 res = await self._engine.execute(
                     query=query, max_results=max_rows, **time_range
                 )

@@ -84,6 +84,9 @@ class QueryEngine:
         budget_override: bool = False,
     ) -> Dict[str, Any]:
         """Internal execute with cache-first ordering."""
+        if max_results is not None and (type(max_results) is not int or max_results < 1):
+            raise ValueError("max_results must be a positive integer")
+
         # Parse time parameters
         start, end = parse_time_range(time_start, time_end, time_range)
 
@@ -91,7 +94,9 @@ class QueryEngine:
         effective_compartment = compartment_id or self.oci_client.compartment_id
 
         # --- Cache-first: check cache before any estimation or OCI calls ---
-        cache_key = self._make_cache_key(query, start, end, include_subcompartments, effective_compartment)
+        cache_key = self._make_cache_key(
+            query, start, end, include_subcompartments, effective_compartment, max_results
+        )
         if use_cache:
             cached_bundle = self.cache.get(cache_key)
             if cached_bundle is not None:
@@ -255,8 +260,9 @@ class QueryEngine:
         end: datetime,
         include_subcompartments: bool = True,
         compartment_id: Optional[str] = None,
+        max_results: Optional[int] = None,
     ) -> str:
         """Generate cache key for a query."""
         sub_flag = "sub" if include_subcompartments else "nosub"
         comp = compartment_id or "default"
-        return f"{query}:{start.isoformat()}:{end.isoformat()}:{sub_flag}:{comp}"
+        return f"{query}:{start.isoformat()}:{end.isoformat()}:{sub_flag}:{comp}:limit={max_results}"

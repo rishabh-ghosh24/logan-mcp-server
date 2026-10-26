@@ -45,7 +45,7 @@ class TestFieldResolution:
         assert ENTITY_FIELD_MAP["host"] == "Host Name (Server)"
         assert ENTITY_FIELD_MAP["user"] == "User Name"
         assert ENTITY_FIELD_MAP["request_id"] == "Request ID"
-        assert ENTITY_FIELD_MAP["ip"] == "IP Address"
+        assert ENTITY_FIELD_MAP["ip"] == "Source IP"
 
     def test_resolve_field_returns_mapped_name(self):
         assert PivotTool._resolve_field("host", None) == "Host Name (Server)"

@@ -102,7 +102,17 @@ class VisualizationEngine:
         if not generator:
             raise ValueError(f"Unsupported chart type: {chart_type}")
 
-        image = generator(df, title, options)
+        plot_df = df
+        if chart_type in {ChartType.LINE, ChartType.AREA, ChartType.HEATMAP}:
+            plot_df = df.copy()
+            for column in data.get("columns", []):
+                name = column.get("name")
+                if column.get("type") == "TIMESTAMP" and name in plot_df:
+                    values = plot_df[name]
+                    unit = "ms" if pd.api.types.is_numeric_dtype(values) else None
+                    plot_df[name] = pd.to_datetime(values, unit=unit, utc=True)
+
+        image = generator(plot_df, title, options)
 
         return {
             "image_base64": image,
@@ -155,7 +165,7 @@ class VisualizationEngine:
 
     def _is_datetime_column(self, series: pd.Series) -> bool:
         """Check if a series contains datetime-like values."""
-        if series.dtype == "datetime64[ns]":
+        if pd.api.types.is_datetime64_any_dtype(series):
             return True
 
         # Sample first few non-null values
@@ -195,19 +205,19 @@ class VisualizationEngine:
             total_hours = date_range.total_seconds() / 3600
 
             if total_hours <= 2:
-                ax.xaxis.set_major_formatter(mdates.DateFormatter("%H:%M"))
-                ax.xaxis.set_major_locator(mdates.MinuteLocator(interval=15))
+                ax.xaxis.set_major_formatter(mdates.DateFormatter("%H:%M", tz="UTC"))
+                ax.xaxis.set_major_locator(mdates.AutoDateLocator(tz="UTC", minticks=3, maxticks=8))
             elif total_hours <= 24:
-                ax.xaxis.set_major_formatter(mdates.DateFormatter("%H:%M"))
+                ax.xaxis.set_major_formatter(mdates.DateFormatter("%H:%M", tz="UTC"))
                 ax.xaxis.set_major_locator(mdates.HourLocator(interval=2))
             elif total_hours <= 168:  # 7 days
-                ax.xaxis.set_major_formatter(mdates.DateFormatter("%b %d\n%H:%M"))
+                ax.xaxis.set_major_formatter(mdates.DateFormatter("%b %d\n%H:%M", tz="UTC"))
                 ax.xaxis.set_major_locator(mdates.DayLocator())
             elif total_hours <= 720:  # 30 days
-                ax.xaxis.set_major_formatter(mdates.DateFormatter("%b %d"))
+                ax.xaxis.set_major_formatter(mdates.DateFormatter("%b %d", tz="UTC"))
                 ax.xaxis.set_major_locator(mdates.DayLocator(interval=3))
             else:
-                ax.xaxis.set_major_formatter(mdates.DateFormatter("%Y-%m-%d"))
+                ax.xaxis.set_major_formatter(mdates.DateFormatter("%Y-%m-%d", tz="UTC"))
                 ax.xaxis.set_major_locator(mdates.AutoDateLocator())
 
             plt.setp(ax.xaxis.get_majorticklabels(), rotation=30, ha="right")
@@ -380,7 +390,7 @@ class VisualizationEngine:
 
         self._format_count_axis(ax, axis="y")
 
-        ax.set_xlabel(x_col if not is_datetime else "")
+        ax.set_xlabel(x_col if not is_datetime else "Time (UTC)")
         ax.set_ylabel(value_cols[0] if len(value_cols) == 1 else "Count")
         ax.set_title(title or "Trend Over Time")
 
@@ -451,7 +461,7 @@ class VisualizationEngine:
 
         self._format_count_axis(ax, axis="y")
 
-        ax.set_xlabel(x_col if not is_datetime else "")
+        ax.set_xlabel(x_col if not is_datetime else "Time (UTC)")
         ax.set_ylabel(value_cols[0] if len(value_cols) == 1 else "Count")
         ax.set_title(title or "Volume Over Time")
         ax.grid(True, alpha=0.3)

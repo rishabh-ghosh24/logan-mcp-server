@@ -1292,7 +1292,7 @@ def get_tools() -> List[Dict[str, Any]]:
                 "properties": {
                     "category": {
                         "type": "string",
-                        "enum": ["basic", "security", "performance", "errors", "statistics", "all"],
+                        "enum": ["basic", "security", "performance", "errors", "statistics", "network", "audit", "general", "all"],
                         "description": "Category of examples to return. Use 'all' for complete reference.",
                     },
                     "include_personal": {

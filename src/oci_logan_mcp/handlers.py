@@ -2368,6 +2368,8 @@ class MCPHandlers:
     async def _set_compartment(self, args: Dict) -> List[Dict]:
         """Set compartment context and remember the user's choice."""
         new_id = args["compartment_id"]
+        if not isinstance(new_id, str) or not new_id.strip():
+            raise ValueError("compartment_id must be non-empty")
         self._shared_compartment_id = new_id
         self.oci_client.compartment_id = new_id
         self.settings.log_analytics.default_compartment_id = new_id
@@ -2384,6 +2386,8 @@ class MCPHandlers:
 
     async def _set_namespace(self, args: Dict) -> List[Dict]:
         """Set namespace context."""
+        if not isinstance(args["namespace"], str) or not args["namespace"].strip():
+            raise ValueError("namespace must be non-empty")
         self.oci_client.namespace = args["namespace"]
         self.cache.clear()
         return [{"type": "text", "text": f"Namespace set to: {args['namespace']}"}]
