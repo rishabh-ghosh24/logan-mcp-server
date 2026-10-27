@@ -250,9 +250,9 @@ Read the [confirmation, budget and audit details](docs/operations.md), the
   are unaffected by this SSH limitation; HTTP transport is the planned fix.
 - **Delivery:** real Slack and Telegram sends are unverified. Contract tests and
   safe error handling passed; Notifications email delivery was verified.
-- **Platforms:** release checks ran on Oracle Linux with Python 3.11 and 3.14.
-  Native Windows remains unverified. Linux/macOS CI is configured for Python
-  3.11 through 3.14, but has not run for this release branch.
+- **Platforms:** GitHub CI passes on Linux and macOS with Python 3.11 through
+  3.14, using simulated OCI calls. Live OCI release checks ran on Oracle Linux
+  with Python 3.11 and 3.14. Native Windows remains unverified.
 - **Client caching:** a client can retain old tools or schemas until reconnecting.
 - **Metric output:** series, point and byte caps can omit whole series. Results
   disclose this; do not rank a capped subset as the whole fleet. Metrics charts,

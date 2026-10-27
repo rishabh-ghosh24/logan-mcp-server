@@ -99,8 +99,8 @@ Notifications emails. This does not establish every platform or tenancy.
 
 - Real Slack and Telegram delivery remains unverified; HTTP contracts and safe
   error handling were tested.
-- Native Windows is unverified. The configured hosted CI matrix has not run on
-  this release branch; it runs for main and pull requests into main.
+- Native Windows is unverified. Hosted CI passes on Linux and macOS with Python
+  3.11 through 3.14, using simulated OCI calls.
 - Some clients cache tool schemas. Reconnect after upgrading; restart the client
   if it has no reconnect control.
 - Transport is stdio, optionally through SSH. Hosted HTTPS/OAuth is deferred.
