@@ -69,12 +69,12 @@ async def test_query_times_out_against_a_real_blocking_sdk_call(client):
 async def test_query_deadline_covers_all_pages(client):
     from oci_logan_mcp.client import QueryTimeoutError
 
-    client.settings.query.timeout_seconds = 0.07
+    client.settings.query.timeout_seconds = 2.0
     pages = []
 
     def query(**kwargs):
         pages.append(kwargs.get("page"))
-        time.sleep(0.045)
+        time.sleep(1.2)
         return _query_page(1, more=True)
 
     client._la_client.query = query
@@ -116,12 +116,12 @@ async def test_query_retry_keeps_the_original_deadline(client):
     from oci.log_analytics.models import QueryDetails, TimeRange
     from oci_logan_mcp.client import QueryTimeoutError
 
-    client.settings.query.timeout_seconds = 0.07
+    client.settings.query.timeout_seconds = 2.0
     calls = []
 
     def query(**kwargs):
         calls.append(kwargs)
-        time.sleep(0.045)
+        time.sleep(1.2)
         if len(calls) == 1:
             raise oci.exceptions.ServiceError(
                 status=429, code="TooManyRequests", headers={}, message="retry"

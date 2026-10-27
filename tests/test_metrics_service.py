@@ -372,10 +372,10 @@ async def test_composite_uses_one_deadline_and_charges_late_second_request(tmp_p
     from oci_logan_mcp.metrics.models import MetricDefinition
     entry=MetricDefinition('pair','oci_computeagent','Pair',('CpuUtilization','MemoryUtilization'),'percent')
     handlers.metrics_service._catalog_loader=lambda: MetricCatalog([entry],version='test')
-    handlers.settings.monitoring.timeout_seconds=.25
+    handlers.settings.monitoring.timeout_seconds=2.0
     original=sdk.summarize_metrics_data
     def delayed(**kwargs):
-        time.sleep(.15)
+        time.sleep(1.2)
         return original(**kwargs)
     sdk.summarize_metrics_data=delayed
     args=raw_arguments(metric_key='pair')
@@ -384,7 +384,7 @@ async def test_composite_uses_one_deadline_and_charges_late_second_request(tmp_p
     assert error and payload['error']['code']=='monitoring_timeout' and payload['complete'] is False
     assert payload['completed_queries']==['CpuUtilization[5m].mean()'] and payload['returned_datapoint_count']==2
     assert handlers._budget_tracker.snapshot().queries==2
-    await asyncio.sleep(.1)
+    await asyncio.sleep(1.0)
     assert len(sdk.calls)==2 and len(list(handlers.audit_logger.iter_entries()))==2
 
 
