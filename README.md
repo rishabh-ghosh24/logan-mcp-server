@@ -27,7 +27,7 @@ You need Git, Python **3.11 through 3.14**, an MCP client that supports local
 stdio servers, and access to Log Analytics or Monitoring data. The installer
 resolves the package's SDK requirements: MCP `>=1.22.0,<2` and OCI `>=2.104.2`.
 
-### 1. Install the release candidate
+### 1. Install
 
 These commands select `mcp-publish`, the branch for the 1.3.0 candidate. Cloning
 without `--branch` selects the repository's default branch, which may be older.
