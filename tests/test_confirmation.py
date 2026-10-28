@@ -30,6 +30,20 @@ class TestConfirmationManager:
         store = SecretStore(tmp_path / "no_secret.hash")  # no set_secret called
         return ConfirmationManager(secret_store=store, token_expiry_seconds=300)
 
+    @pytest.mark.parametrize("changed", [
+        {"compartment_id": "b", "namespace": "ns", "include_subcompartments": True},
+        {"compartment_id": "a", "namespace": "other", "include_subcompartments": True},
+        {"compartment_id": "a", "namespace": "ns", "include_subcompartments": False},
+    ])
+    def test_confirmation_scope_is_bound_and_shown(self, manager, changed):
+        args = {"alert_id": "alarm"}
+        scope = {"compartment_id": "a", "namespace": "ns", "include_subcompartments": True}
+        first = manager.request_confirmation("delete_alert", args, scope=scope)
+        assert "Scope: compartment=a, namespace=ns" in first["summary"]
+        assert manager.validate_confirmation(first["confirmation_token"], "test-secret", "delete_alert", args, scope=scope)
+        next_token = manager.request_confirmation("delete_alert", args, scope=scope)["confirmation_token"]
+        assert not manager.validate_confirmation(next_token, "test-secret", "delete_alert", args, scope=changed)
+
     def test_is_guarded(self, manager):
         """All guarded tools are recognized; known non-mutating tools are not."""
         for tool in GUARDED_TOOLS:

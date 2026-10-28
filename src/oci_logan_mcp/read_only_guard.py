@@ -13,6 +13,11 @@ allowed in read-only mode by explicit product policy and remains required-audit
 in the handler.
 """
 
+# Tools that send tenancy data to an external system.
+OUTBOUND_TOOLS: frozenset[str] = frozenset(
+    {"send_to_slack", "send_to_telegram", "deliver_report"}
+)
+
 MUTATING_TOOLS: frozenset[str] = frozenset(
     {
         # Session / context mutations

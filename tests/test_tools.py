@@ -1,7 +1,30 @@
 """Tests for tool definitions — confirmation params and destructive flags."""
 
+import pytest
+
 from oci_logan_mcp.tools import get_tools
 from oci_logan_mcp.confirmation import GUARDED_TOOLS
+
+
+CONVENTION_TOOLS = ["run_query", "list_log_sources", "list_fields", "validate_query", "explain_query",
+                    "get_log_summary", "diff_time_windows", "pivot_on_entity", "trace_request_id", "find_rare_events"]
+
+
+@pytest.mark.parametrize("name", CONVENTION_TOOLS)
+def test_top_tools_follow_description_convention(name):
+    description = next(tool["description"] for tool in get_tools() if tool["name"] == name)
+    labels = ("Use when:", "Parameters:", "Limits:", "Example:")
+    assert all(label in description for label in labels)
+    assert [description.index(label) for label in labels] == sorted(description.index(label) for label in labels)
+    assert len(description) <= 1200
+
+
+def test_tools_list_payload_stays_bounded():
+    import json
+
+    tools = get_tools()
+    assert len(tools) == 69
+    assert len(json.dumps(tools)) <= 80_000
 
 
 def test_guarded_tools_have_confirmation_params():
@@ -145,9 +168,15 @@ def test_create_log_source_from_sample_schema():
     assert "verification_time_range" in props
     assert props["verification_time_range"]["enum"] == [
         "last_15_min",
+        "last_30_min",
         "last_1_hour",
+        "last_3_hours",
+        "last_6_hours",
+        "last_12_hours",
         "last_24_hours",
+        "last_2_days",
         "last_7_days",
+        "last_14_days",
         "last_30_days",
     ]
     assert "field_check_limit" in props
@@ -160,6 +189,29 @@ def test_create_log_source_from_sample_schema():
         "log_group_id",
         "acknowledge_data_review",
     ]
+
+
+def test_all_time_range_enums_expose_supported_presets():
+    from oci_logan_mcp.time_parser import TIME_RANGES, parse_time_range
+
+    def enum_nodes(node):
+        if isinstance(node, dict):
+            for name, value in node.items():
+                if name in {"time_range", "verification_time_range"} and isinstance(value, dict):
+                    if "enum" in value:
+                        yield value["enum"]
+                yield from enum_nodes(value)
+        elif isinstance(node, list):
+            for value in node:
+                yield from enum_nodes(value)
+
+    enums = [enum for tool in get_tools() for enum in enum_nodes(tool["inputSchema"])]
+    assert len(enums) >= 8
+    for enum in enums:
+        assert enum == list(TIME_RANGES)
+        for preset in enum:
+            start, end = parse_time_range(time_range=preset)
+            assert end - start == TIME_RANGES[preset]
 
 
 def test_playbook_tool_schemas():

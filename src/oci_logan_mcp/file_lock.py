@@ -61,13 +61,17 @@ def atomic_yaml_write(path: Path, data: Any) -> None:
     temp_path.replace(path)
 
 
-def atomic_yaml_read(path: Path, default: Any = None) -> Any:
-    """Read YAML file, returning default if missing or corrupt."""
+def atomic_yaml_read(path: Path, default: Any = None, *, strict: bool = False) -> Any:
+    """Read YAML; strict callers receive read/parse errors instead of defaults."""
     if not path.exists():
         return default
     try:
         with path.open("r", encoding="utf-8") as f:
             data = yaml.safe_load(f)
+            if strict and data is None:
+                raise ValueError("Empty YAML document")
             return data if data is not None else default
     except Exception:
+        if strict:
+            raise
         return default

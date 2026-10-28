@@ -1,0 +1,35 @@
+version: '2026-10-24'
+query_language: mql
+catalog_version: '2026-10-24'
+templates:
+  - name: compute_cpu_one_hour
+    query_language: mql
+    namespace: oci_computeagent
+    tool: query_catalog_metric
+    catalog_key: cpu
+    catalog_version: '2026-10-24'
+    expected_unit: percent
+    required_substitutions: []
+    arguments: {metric_key: cpu, time_range: last_1_hour, interval: 5m}
+    source_urls: ['https://docs.oracle.com/en-us/iaas/Content/Compute/References/computemetrics.htm']
+  - name: compute_cpu_raw_day
+    query_language: mql
+    namespace: oci_computeagent
+    tool: query_metrics
+    expected_unit: percent
+    required_substitutions: []
+    arguments: {namespace: oci_computeagent, query: 'CpuUtilization[5m].mean()', time_range: last_24_hours}
+    source_urls: ['https://docs.oracle.com/en-us/iaas/Content/Compute/References/computemetrics.htm']
+  - name: load_balancer_connections
+    query_language: mql
+    namespace: oci_lbaas
+    tool: query_catalog_metric
+    catalog_key: lb_active_connections
+    catalog_version: '2026-10-24'
+    expected_unit: count
+    required_substitutions: []
+    arguments:
+      metric_key: lb_active_connections
+      time_range: last_1_hour
+      dimension_filters: {lbComponent: loadBalancer}
+    source_urls: ['https://docs.oracle.com/en-us/iaas/Content/Balance/Reference/loadbalancermetrics.htm']

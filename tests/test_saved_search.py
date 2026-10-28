@@ -190,7 +190,7 @@ class TestListSearchesFiltersLoganManaged:
 
 class TestCreateSearch:
     @pytest.mark.asyncio
-    async def test_creates_mss_and_task(self):
+    async def test_creates_native_saved_search_without_task(self):
         client = AsyncMock()
         client.compartment_id = "ocid1.compartment.test"
         client.create_management_saved_search.return_value = {
@@ -210,23 +210,25 @@ class TestCreateSearch:
         )
 
         assert client.create_management_saved_search.called
-        assert client.create_scheduled_task.called
-        assert result["id"] == "ocid1.task.new"
+        client.create_scheduled_task.assert_not_called()
+        assert result["id"] == "ocid1.mss.new"
+        details = client.create_management_saved_search.call_args.args[0]
+        assert details.data_config == [{"query": "* | stats count"}]
         assert result["management_saved_search_id"] == "ocid1.mss.new"
         assert cache.get("saved_searches") is None
 
     @pytest.mark.asyncio
-    async def test_create_rolls_back_mss_on_task_failure(self):
+    async def test_native_create_failure_does_not_start_followup_operations(self):
         client = AsyncMock()
         client.compartment_id = "ocid1.compartment.test"
-        client.create_management_saved_search.return_value = {"id": "ocid1.mss.1"}
-        client.create_scheduled_task.side_effect = Exception("task API error")
+        client.create_management_saved_search.side_effect = Exception("saved search API error")
         svc = SavedSearchService(client, CacheManager(CacheConfig(enabled=True)))
 
-        with pytest.raises(Exception, match="task API error"):
+        with pytest.raises(Exception, match="saved search API error"):
             await svc.create_search(display_name="x", query="* | stats count")
 
-        client.delete_management_saved_search.assert_called_once_with("ocid1.mss.1")
+        client.create_scheduled_task.assert_not_called()
+        client.delete_management_saved_search.assert_not_called()
 
 
 class TestDeleteSearch:

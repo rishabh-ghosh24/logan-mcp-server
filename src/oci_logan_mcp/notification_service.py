@@ -225,7 +225,7 @@ class NotificationService:
         if query_result:
             table_text = self._render_table(query_result, format_type)
             table_text = self._truncate_results(table_text)
-            parts.append(f"<pre>{table_text}</pre>")
+            parts.append(f"<pre>{html.escape(table_text)}</pre>")
             parts.append(f"<i>Rows: {query_result.get('total_count', '?')}</i>")
         return "\n\n".join(parts)
 

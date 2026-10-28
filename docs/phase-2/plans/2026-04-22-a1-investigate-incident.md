@@ -450,7 +450,7 @@ git commit -m "feat(a1): _compute_windows with dual-anchor absolute timestamps"
 **Live probe required before test fixtures:** Before writing the test helper shape, run this query against the VM once and capture the `DiffTool` response:
 
 ```bash
-ssh emdemo-logan "cd ~/logan-mcp-server && git checkout feat/investigate-incident && .venv/bin/pip install -e . --quiet && .venv/bin/python -c \"
+ssh <vm-alias> "cd ~/logan-mcp-server && git checkout feat/investigate-incident && .venv/bin/pip install -e . --quiet && .venv/bin/python -c \"
 import asyncio, json
 from oci_logan_mcp.config import load_config
 from oci_logan_mcp.client import OCILogAnalyticsClient
@@ -1675,7 +1675,7 @@ git commit -m "feat(a1): phase 4 A2 anomaly ranking with anchored windows"
 **Live probe before test fixtures:** Capture the real response shape for each query type on the VM. Record the column layout for `cluster`, entity discovery, and timeline queries.
 
 ```bash
-ssh emdemo-logan "cd ~/logan-mcp-server && git checkout feat/investigate-incident && .venv/bin/pip install -e . --quiet && .venv/bin/python -c \"
+ssh <vm-alias> "cd ~/logan-mcp-server && git checkout feat/investigate-incident && .venv/bin/pip install -e . --quiet && .venv/bin/python -c \"
 import asyncio, json
 from oci_logan_mcp.config import load_config
 from oci_logan_mcp.client import OCILogAnalyticsClient

@@ -31,6 +31,208 @@ def auto_saver(mock_context_manager, mock_user_store):
 DUMMY_RESULT = {"data": {"rows": [[1]], "columns": [{"name": "count"}]}}
 
 
+def test_semantic_canonicalization_keeps_distinct_scopes(auto_saver, mock_user_store):
+    base = ("(Severity in ('ERROR', 'CRITICAL', 'FATAL') or 'Original Log Content' like '%error%' "
+            "or 'Original Log Content' like '%fail%' or 'Original Log Content' like '%fatal%' "
+            "or 'Original Log Content' like '%critical%' or 'Original Log Content' like '%exception%') "
+            "and 'Log Group' = '{group}' | stats count by 'Log Source' | sort -count | head 10")
+    production, development = base.format(group="Production"), base.format(group="Development")
+    auto_saver.process_successful_query(production, DUMMY_RESULT)
+    auto_saver.process_successful_query(development, DUMMY_RESULT)
+    auto_saver.process_successful_query(development, DUMMY_RESULT)
+    entries = {entry["query"]: entry for entry in mock_user_store.list_queries()}
+    assert set(entries) == {production, development}
+    assert entries[production]["entry_id"] != entries[development]["entry_id"]
+    assert (entries[production]["use_count"], entries[development]["use_count"]) == (1, 2)
+    assert {entry["name"] for entry in entries.values()} == {"error_like_sources_by_log_source", "error_like_sources_by_log_source_v2"}
+
+
+class TestVariantCaps:
+    SHAPE = "'Log Source' = 'VCN Flow Logs' | stats count by 'Action' | sort -count | head 10"
+    BASE = "top_10_vcn_flow_logs_count_by_action"
+
+    @pytest.mark.parametrize("auto_slot", [True, False])
+    def test_overall_store_limit_preserves_manual_entries(self, auto_saver, mock_user_store, auto_slot):
+        from oci_logan_mcp.file_lock import atomic_yaml_write
+        from oci_logan_mcp.user_store import MAX_QUERIES_PER_USER
+
+        probe = auto_saver.process_successful_query("'Log Source' = 'Old' | stats count", DUMMY_RESULT)
+        assert probe is not None
+        manual = [dict(entry_id=f"manual-{i}", name=f"manual_{i}", query=f"manual query {i}",
+                       description="mine", origin="manual", tags=[], use_count=1,
+                       last_used="2000-01-01T00:00:00Z", success_count=0, interest_score=4)
+                  for i in range(MAX_QUERIES_PER_USER - int(auto_slot))]
+        seeded = manual + ([probe] if auto_slot else [])
+        atomic_yaml_write(mock_user_store._queries_path, {"version": 1, "queries": seeded})
+        new_query = "'Log Source' = 'New' | stats count"
+        saved = auto_saver.process_successful_query(new_query, DUMMY_RESULT)
+        entries = mock_user_store.list_queries()
+        assert {entry["entry_id"] for entry in manual} <= {entry["entry_id"] for entry in entries}
+        assert len(entries) == MAX_QUERIES_PER_USER
+        if auto_slot:
+            assert saved is not None
+            assert any(entry["query"] == new_query for entry in entries)
+            assert not any(entry["entry_id"] == probe["entry_id"] for entry in entries)
+        else:
+            assert saved is None
+            assert {entry["entry_id"]: entry for entry in entries} == {
+                entry["entry_id"]: entry for entry in seeded
+            }
+
+    def test_concurrent_savers_plan_and_apply_source_retention_together(self, auto_saver, mock_user_store, monkeypatch):
+        import threading
+        from concurrent.futures import ThreadPoolExecutor
+
+        for index in range(19):
+            assert auto_saver.process_successful_query(self.audit_shape(index), DUMMY_RESULT) is not None
+        other_store = UserStore(mock_user_store.base_dir, user_id=mock_user_store.user_id)
+        other = QueryAutoSaver(MagicMock(), other_store)
+        planned, release, attempted, other_planned = (threading.Event() for _ in range(4))
+        save = mock_user_store.save_query
+        metadata = other._generate_metadata
+
+        def gated_save(*args, **kwargs):
+            planned.set()
+            if not release.wait(5):
+                raise TimeoutError("Test did not release the first saver")
+            return save(*args, **kwargs)
+
+        def observed_metadata(*args, **kwargs):
+            other_planned.set()
+            return metadata(*args, **kwargs)
+
+        def second_save():
+            attempted.set()
+            return other.process_successful_query(self.audit_shape(20), DUMMY_RESULT)
+
+        monkeypatch.setattr(mock_user_store, "save_query", gated_save)
+        monkeypatch.setattr(other, "_generate_metadata", observed_metadata)
+        with ThreadPoolExecutor(max_workers=2) as executor:
+            first = executor.submit(auto_saver.process_successful_query, self.audit_shape(19), DUMMY_RESULT)
+            try:
+                assert planned.wait(3)
+                second = executor.submit(second_save)
+                assert attempted.wait(3)
+                entered_while_first_pending = other_planned.wait(0.2)
+            finally:
+                release.set()
+            assert first.result(timeout=5) is not None
+            assert second.result(timeout=5) is not None
+        entries = mock_user_store.list_queries()
+        assert len(entries) == 20
+        assert not entered_while_first_pending
+        assert {self.audit_shape(19), self.audit_shape(20)} <= {entry["query"] for entry in entries}
+
+    def variant(self, index):
+        return self.SHAPE + f" | eval v = {index}"
+
+    @staticmethod
+    def audit_shape(index):
+        return f"'Log Source' = 'OCI Audit Logs' | stats count by 'Field{index}' | sort -count | head 10"
+
+    def test_fourth_variant_replaces_weakest_auto_saved(self, auto_saver, mock_user_store):
+        for index in range(3):
+            assert auto_saver.process_successful_query(self.variant(index), DUMMY_RESULT) is not None
+        mock_user_store.record_success(self.variant(1))
+        mock_user_store.record_success(self.variant(2))
+        saved = auto_saver.process_successful_query(self.variant(3), DUMMY_RESULT)
+        queries = mock_user_store.list_queries()
+        assert saved is not None and len(queries) == 3
+        assert {entry["query"] for entry in queries} == {self.variant(i) for i in (1, 2, 3)}
+        assert not any(entry["name"].endswith("_v4") for entry in queries)
+
+    def test_source_cap_evicts_weakest_across_distinct_shapes(self, auto_saver, mock_user_store):
+        for index in range(22):
+            assert auto_saver.process_successful_query(self.audit_shape(index), DUMMY_RESULT) is not None
+        queries = mock_user_store.list_queries()
+        assert len(queries) == 20
+        assert {entry["query"] for entry in queries} == {self.audit_shape(i) for i in range(2, 22)}
+
+    def test_source_cap_never_evicts_manual_saves(self, auto_saver, mock_user_store):
+        manual = mock_user_store.save_query(name="mine", query=self.audit_shape(99), description="manual")
+        for index in range(25):
+            assert auto_saver.process_successful_query(self.audit_shape(index), DUMMY_RESULT) is not None
+        queries = mock_user_store.list_queries()
+        assert len(queries) == 21
+        assert sum(entry.get("origin") == "auto" for entry in queries) == 20
+        assert next(entry for entry in queries if entry["entry_id"] == manual["entry_id"])["query"] == self.audit_shape(99)
+
+    def test_legacy_ten_variants_are_reduced_to_cap(self, auto_saver, mock_user_store):
+        from oci_logan_mcp.file_lock import atomic_yaml_write
+
+        entries = [dict(entry_id=f"id{i}", name=self.BASE if i == 0 else f"{self.BASE}_v{i+1}",
+                        query=self.variant(i), description="legacy auto", category="network",
+                        tags=["auto-saved"], use_count=1, success_count=i,
+                        failure_count=0, interest_score=5) for i in range(10)]
+        atomic_yaml_write(mock_user_store._queries_path, {"version": 1, "queries": entries})
+        saved = auto_saver.process_successful_query(self.variant(99), DUMMY_RESULT)
+        queries = mock_user_store.list_queries()
+        assert saved is not None and len(queries) == 3
+        assert {entry["query"] for entry in queries} == {self.variant(i) for i in (8, 9, 99)}
+
+    def test_legacy_without_tags_is_manual_and_new_variants_are_bounded(self, auto_saver, mock_user_store):
+        from oci_logan_mcp.file_lock import atomic_yaml_write
+
+        entry = dict(entry_id="legacy", name="legacy", query=self.variant(50),
+                     description="old manual", category="general", use_count=1,
+                     success_count=0, failure_count=0, interest_score=5)
+        atomic_yaml_write(mock_user_store._queries_path, {"version": 1, "queries": [entry]})
+        for index in range(5):
+            assert auto_saver.process_successful_query(self.variant(index), DUMMY_RESULT) is not None
+        queries = mock_user_store.list_queries()
+        assert len(queries) == 4
+        assert next(item for item in queries if item["entry_id"] == "legacy") == entry
+        assert sum(item.get("origin") == "auto" for item in queries) == 3
+        assert any(item["query"] == self.variant(4) for item in queries)
+
+    def test_collision_does_not_evict_existing_auto_queries(self, auto_saver, mock_user_store):
+        from oci_logan_mcp.file_lock import atomic_yaml_write
+
+        for index in range(3):
+            assert auto_saver.process_successful_query(self.variant(index), DUMMY_RESULT) is not None
+        original = mock_user_store.list_queries()
+        atomic_yaml_write(mock_user_store._shared_dir / "promoted_queries.yaml", {"queries": [
+            {"name": self.BASE, "query": "protected shared query", "description": "shared"}
+        ]})
+        saved = auto_saver.process_successful_query(self.variant(3), DUMMY_RESULT)
+        assert saved is None
+        assert mock_user_store.list_queries() == original
+
+
+def test_semantic_auto_save_preserves_a_manual_entry(auto_saver, mock_user_store):
+    query = (
+        "Severity in ('ERROR', 'CRITICAL', 'FATAL') or "
+        "'Original Log Content' like '%error%' or 'Original Log Content' like '%fail%' or "
+        "'Original Log Content' like '%fatal%' or 'Original Log Content' like '%critical%' or "
+        "'Original Log Content' like '%exception%' | stats count by 'Log Source' | sort -count"
+    )
+    original = mock_user_store.save_query(name="my_error_sources", query=query,
+                                          description="Keep my explanation", category="errors")
+    auto_saver.process_successful_query(query, DUMMY_RESULT)
+    [entry] = mock_user_store.list_queries()
+    for field in ("entry_id", "name", "query", "description", "category"):
+        assert entry[field] == original[field]
+    assert entry["origin"] == "manual" and entry["use_count"] == 2
+
+
+def test_semantic_canonical_name_collision_keeps_both_queries(auto_saver, mock_user_store):
+    query = (
+        "Severity in ('ERROR', 'CRITICAL', 'FATAL') or "
+        "'Original Log Content' like '%error%' or 'Original Log Content' like '%fail%' or "
+        "'Original Log Content' like '%fatal%' or 'Original Log Content' like '%critical%' or "
+        "'Original Log Content' like '%exception%' | stats count by 'Log Source' | sort -count"
+    )
+    auto = mock_user_store.save_query(name="legacy_auto", query=query, description="automatic",
+                                      origin="auto")
+    manual = mock_user_store.save_query(name="error_like_sources_by_log_source",
+                                        query="my different query", description="mine")
+    auto_saver.process_successful_query(query, DUMMY_RESULT)
+    entries = mock_user_store.list_queries()
+    assert {entry["query"] for entry in entries} == {query, "my different query"}
+    assert {entry["entry_id"] for entry in entries} == {auto["entry_id"], manual["entry_id"]}
+    assert next(entry for entry in entries if entry["entry_id"] == manual["entry_id"])["name"] == manual["name"]
+
+
 # ================================================================
 # Interest scoring
 # ================================================================
@@ -208,6 +410,10 @@ class TestNameGeneration:
             category="general",
             tags=["auto-saved"],
         )
+        # This fixture represents a pre-origin YAML file, not a new manual save.
+        data = mock_user_store._load()
+        data["queries"][0].pop("origin", None)
+        mock_user_store._save(data)
 
         saved = auto_saver.process_successful_query(q, DUMMY_RESULT)
 
@@ -237,6 +443,7 @@ class TestNameGeneration:
             tags=["auto-saved"],
         )
         data = mock_user_store._load()
+        data["queries"][0].pop("origin", None)
         data["queries"][0]["use_count"] = 7
         data["queries"][0]["success_count"] = 4
         data["queries"][0]["failure_count"] = 2
@@ -369,3 +576,83 @@ class TestHelpers:
 
     def test_infer_category_general(self, auto_saver):
         assert auto_saver._infer_category("just a random query") == "general"
+
+
+class TestKeywordStarterLearning:
+    QUERY = "(error or fail or fatal or critical or exception) | stats count by 'Log Source' | sort -count"
+
+    @pytest.mark.parametrize("query", [
+        QUERY,
+        "( ERROR  or fail or fatal or critical or exception )\n| stats count by 'Log Source' | sort -count",
+    ])
+    def test_successful_keyword_starter_persists_semantic_metadata(self, auto_saver, mock_user_store, query):
+        saved = auto_saver.process_successful_query(query, DUMMY_RESULT)
+
+        assert saved is not None
+        assert saved["name"] == "error_like_sources_by_log_source"
+        assert saved["category"] == "errors"
+        assert saved["intent_key"] == "error_keyword_sources"
+        assert saved["query_shape"] == "count_by_log_source"
+        assert saved["description"] == "[auto-saved] Count logs matching error keywords by log source"
+        persisted = UserStore(mock_user_store.base_dir, user_id="testuser").list_queries()
+        assert len(persisted) == 1
+        assert persisted[0]["entry_id"] == saved["entry_id"]
+        assert persisted[0]["query"] == query
+
+    def test_keyword_rename_preserves_a_distinct_legacy_query_and_usage(self, auto_saver, mock_user_store):
+        legacy_query = (
+            "(Severity in ('ERROR', 'CRITICAL', 'FATAL') or 'Original Log Content' like '%error%' "
+            "or 'Original Log Content' like '%fail%' or 'Original Log Content' like '%fatal%' "
+            "or 'Original Log Content' like '%critical%' or 'Original Log Content' like '%exception%') "
+            "and 'Original Log Content' not like '%NOERROR%' | stats count by 'Log Source' | sort -count"
+        )
+        legacy = auto_saver.process_successful_query(legacy_query, DUMMY_RESULT)
+        generic = mock_user_store.save_query(
+            name="count_by_log_source", query=self.QUERY,
+            description="[auto-saved] Count grouped by Log Source", origin="auto",
+        )
+
+        first = auto_saver.process_successful_query(self.QUERY, DUMMY_RESULT)
+        second = auto_saver.process_successful_query(self.QUERY, DUMMY_RESULT)
+
+        assert first is not None and second is not None
+        entries = {entry["query"]: entry for entry in mock_user_store.list_queries()}
+        assert set(entries) == {legacy_query, self.QUERY}
+        assert entries[legacy_query] == legacy
+        assert entries[self.QUERY]["entry_id"] == generic["entry_id"]
+        assert first["name"] == second["name"] == "error_like_sources_by_log_source_v2"
+        assert entries[self.QUERY]["use_count"] == 3
+        assert entries[self.QUERY]["intent_key"] == "error_keyword_sources"
+        assert entries[legacy_query]["intent_key"] == "error_like_sources"
+
+    def test_keyword_learning_preserves_an_explicit_user_name(self, auto_saver, mock_user_store):
+        manual = mock_user_store.save_query(
+            name="my_keyword_triage", query=self.QUERY,
+            description="My investigation", origin="manual",
+        )
+
+        saved = auto_saver.process_successful_query(self.QUERY, DUMMY_RESULT)
+
+        assert saved is not None
+        assert saved["entry_id"] == manual["entry_id"]
+        assert saved["name"] == "my_keyword_triage"
+        assert saved["description"] == "My investigation"
+        assert saved["origin"] == "manual"
+        assert saved["query"] == self.QUERY
+        assert saved["use_count"] == 2
+        assert len(mock_user_store.list_queries()) == 1
+
+    @pytest.mark.parametrize("query", [
+        "(error or fail or fatal or critical) | stats count by 'Log Source' | sort -count",
+        "(error and fail and fatal and critical and exception) | stats count by 'Log Source' | sort -count",
+        "'Message' = 'error or fail or fatal or critical or exception' | stats count by 'Log Source' | sort -count",
+        "(error or fail or fatal or critical or exception) and 'Log Group' = 'Development' | stats count by 'Log Source' | sort -count",
+        "(error or fail or fatal or critical or exception) | stats count by 'Entity' | sort -count",
+    ])
+    def test_other_query_meanings_do_not_receive_keyword_metadata(self, auto_saver, mock_user_store, query):
+        saved = auto_saver.process_successful_query(query, DUMMY_RESULT)
+
+        assert saved is not None
+        assert saved.get("intent_key") != "error_keyword_sources"
+        assert saved["name"] != "error_like_sources_by_log_source"
+        assert mock_user_store.list_queries()[0]["query"] == query

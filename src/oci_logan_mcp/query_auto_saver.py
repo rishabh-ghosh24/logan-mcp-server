@@ -12,9 +12,12 @@ import re
 from typing import Any, Dict, Optional, Tuple
 
 from .context_manager import ContextManager
-from .user_store import UserStore
+from .user_store import UserStore, query_origin
+from .sanitize import normalize_query_text
 
 logger = logging.getLogger(__name__)
+MAX_VARIANTS_PER_SHAPE = 3
+MAX_AUTO_SAVED_PER_SOURCE = 20
 
 # ----------------------------------------------------------------
 # Trivial-query patterns (never auto-save)
@@ -72,6 +75,10 @@ class QueryAutoSaver:
     # Public API
     # ----------------------------------------------------------------
 
+    def score_query(self, query: str) -> int:
+        """Score a query using the same rules as automatic learning."""
+        return self._compute_interest_score(query)
+
     def process_successful_query(
         self, query: str, result: Dict[str, Any]
     ) -> Optional[Dict[str, Any]]:
@@ -80,51 +87,56 @@ class QueryAutoSaver:
         Returns the saved/updated entry, or None if skipped.
         """
         try:
-            # 1. Trivial? → skip
-            score = self._compute_interest_score(query)
-            if score < 2:
-                return None
+            with self.user_store.locked_queries():
+                # 1. Trivial? → skip
+                score = self._compute_interest_score(query)
+                if score < 2:
+                    return None
 
-            # 2. Canonical semantic queries before the generic exact-query
-            # usage bump, so legacy auto-save names can be migrated in place.
-            semantic = self._semantic_metadata(query)
-            if semantic:
-                canonical = self._canonicalize_semantic_query(query, semantic, score)
-                if canonical:
-                    return canonical
+                # 2. Canonical semantic queries before the generic exact-query
+                # usage bump, so legacy auto-save names can be migrated in place.
+                semantic = self._semantic_metadata(query)
+                if semantic:
+                    canonical = self._canonicalize_semantic_query(query, semantic, score)
+                    if canonical:
+                        return canonical
 
-            # 3. Already saved? → bump use_count only
-            if self.user_store.record_usage(query):
-                return None
+                # 3. Already saved? → bump use_count only
+                if self.user_store.record_usage(query):
+                    return None
 
-            # 4. Generate metadata from query text
-            if semantic:
-                name = self._unique_name(semantic["name"])
-                description = semantic["description"]
-                category = semantic["category"]
-                intent_key = semantic["intent_key"]
-                query_shape = semantic["query_shape"]
-            else:
-                name, description, category = self._generate_metadata(query)
-                intent_key = None
-                query_shape = None
+                # 4. Generate metadata from query text
+                evictions: set[str] = set()
+                if semantic:
+                    name = self._unique_name(semantic["name"])
+                    description = semantic["description"]
+                    category = semantic["category"]
+                    intent_key = semantic["intent_key"]
+                    query_shape = semantic["query_shape"]
+                else:
+                    name, description, category = self._generate_metadata(query, evictions)
+                    self._enforce_source_cap(self._extract_source(query), evictions)
+                    intent_key = None
+                    query_shape = None
 
-            # 5. Save via user_store
-            saved = self.user_store.save_query(
-                name=name,
-                query=query.strip(),
-                description=f"[auto-saved] {description}",
-                category=category,
-                tags=["auto-saved"],
-                interest_score=score,
-                intent_key=intent_key,
-                query_shape=query_shape,
-            )
-            # If collision with builtin/shared, silently skip
-            if "collision_warning" in saved:
-                return None
-            logger.info(f"Auto-saved query: {name} (score={score})")
-            return saved
+                # 5. Save via user_store
+                saved = self.user_store.save_query(
+                    name=name,
+                    query=query.strip(),
+                    description=f"[auto-saved] {description}",
+                    category=category,
+                    tags=["auto-saved"],
+                    interest_score=score,
+                    intent_key=intent_key,
+                    query_shape=query_shape,
+                    origin="auto",
+                    evict_auto_names=list(evictions),
+                )
+                # Skip rejected names and entries that cannot fit the catalog.
+                if "collision_warning" in saved or "capacity_warning" in saved:
+                    return None
+                logger.info(f"Auto-saved query: {name} (score={score})")
+                return saved
 
         except Exception as exc:
             # Never let auto-save failures break query execution
@@ -181,7 +193,9 @@ class QueryAutoSaver:
     # Metadata generation
     # ----------------------------------------------------------------
 
-    def _generate_metadata(self, query: str) -> Tuple[str, str, str]:
+    def _generate_metadata(
+        self, query: str, evictions: Optional[set[str]] = None,
+    ) -> Tuple[str, str, str]:
         """Generate (name, description, category) from query text."""
         q = query.strip()
         q_lower = q.lower()
@@ -211,7 +225,7 @@ class QueryAutoSaver:
         name = name[:60]  # max length
 
         # Deduplicate name if collision
-        name = self._unique_name(name)
+        name = self._variant_name(name, evictions)
 
         # --- Build description ---
         desc_parts: list[str] = []
@@ -235,15 +249,21 @@ class QueryAutoSaver:
 
     def _semantic_metadata(self, query: str) -> Optional[Dict[str, str]]:
         """Return high-confidence semantic metadata for known query intents."""
-        if self._is_error_like_sources_query(query):
+        keyword_form = re.fullmatch(
+            r"\(\s*error\s+or\s+fail\s+or\s+fatal\s+or\s+critical\s+or\s+exception\s*\)"
+            r"\s*\|\s*stats\s+count\s+by\s+'log source'\s*\|\s*sort\s+-count",
+            query.strip(), re.IGNORECASE,
+        ) is not None
+        if keyword_form or self._is_error_like_sources_query(query):
             return {
                 "name": "error_like_sources_by_log_source",
                 "description": (
+                    "Count logs matching error keywords by log source" if keyword_form else
                     "Count error-like activity by log source using severity "
                     "and case-insensitive Original Log Content keyword search"
                 ),
                 "category": "errors",
-                "intent_key": "error_like_sources",
+                "intent_key": "error_keyword_sources" if keyword_form else "error_like_sources",
                 "query_shape": "count_by_log_source",
             }
         return None
@@ -271,7 +291,21 @@ class QueryAutoSaver:
         if not matches:
             return None
 
+        manual = next((entry for entry in matches if query_origin(entry) == "manual"), None)
+        if manual is not None:
+            return self.user_store.save_query(
+                name=manual["name"], query=manual["query"],
+                description=manual["description"], origin="auto",
+            )
+
         canonical_name = semantic["name"]
+        matching_names = {entry["name"] for entry in matches}
+        if any(entry["name"] == canonical_name and entry["name"] not in matching_names
+               for entry in self.user_store.list_queries()):
+            canonical_name = next((
+                entry["name"] for entry in matches
+                if re.fullmatch(rf"{re.escape(canonical_name)}(?:_v\d+)?", entry["name"])
+            ), None) or self._unique_name(canonical_name)
         saved = self.user_store.save_query(
             name=canonical_name,
             query=query.strip(),
@@ -282,6 +316,7 @@ class QueryAutoSaver:
             force=True,
             intent_key=semantic["intent_key"],
             query_shape=semantic["query_shape"],
+            origin="auto",
         )
         for existing in matches:
             if existing.get("name") != canonical_name:
@@ -294,22 +329,9 @@ class QueryAutoSaver:
         query: str,
         semantic: Dict[str, str],
     ) -> list[Dict[str, Any]]:
-        clean_query = query.strip()
-        matches: list[Dict[str, Any]] = []
-        for existing in self.user_store.list_queries():
-            existing_query = str(existing.get("query", "")).strip()
-            same_query = existing_query == clean_query
-            same_semantic = (
-                existing.get("intent_key") == semantic["intent_key"]
-                and existing.get("query_shape") == semantic["query_shape"]
-            )
-            legacy_error_name = (
-                re.fullmatch(r"count_by_log_source(?:_v\d+)?", str(existing.get("name", ""))) is not None
-                and self._is_error_like_sources_query(existing_query)
-            )
-            if same_query or same_semantic or legacy_error_name:
-                matches.append(existing)
-        return matches
+        clean_query = normalize_query_text(query)
+        return [entry for entry in self.user_store.list_queries()
+                if normalize_query_text(str(entry.get("query", ""))) == clean_query]
 
     def _extract_source(self, query: str) -> Optional[str]:
         """Extract Log Source name if explicitly filtered."""
@@ -370,3 +392,40 @@ class QueryAutoSaver:
             if candidate not in existing_names:
                 return candidate
         return f"{base_name}_{id(base_name)}"
+
+    @staticmethod
+    def _weakness(entry: Dict[str, Any]) -> tuple:
+        return (entry.get("success_count", 0), entry.get("use_count", 0),
+                entry.get("last_used") or "")
+
+    def _variant_name(self, base: str, evictions: Optional[set[str]] = None) -> str:
+        """Select a reusable name and stage the weakest automatic variants."""
+        if evictions is None:
+            evictions = set()
+        entries = self.user_store.list_queries()
+        pattern = re.compile(rf"^{re.escape(base)}(?:_v\d+)?$")
+        variants = sorted(
+            (entry for entry in entries if query_origin(entry) == "auto"
+             and pattern.fullmatch(entry["name"])), key=self._weakness,
+        )
+        while len(variants) >= MAX_VARIANTS_PER_SHAPE:
+            evictions.add(variants.pop(0)["name"])
+        names = {entry["name"] for entry in entries} - evictions
+        if base not in names:
+            return base
+        index = 2
+        while f"{base}_v{index}" in names:
+            index += 1
+        return f"{base}_v{index}"
+
+    def _enforce_source_cap(self, source: Optional[str], evictions: set[str]) -> None:
+        """Stage source evictions without changing the store before save."""
+        if source is None:
+            return
+        entries = sorted(
+            (entry for entry in self.user_store.list_queries()
+             if query_origin(entry) == "auto" and entry["name"] not in evictions
+             and self._extract_source(entry["query"]) == source), key=self._weakness,
+        )
+        while len(entries) >= MAX_AUTO_SAVED_PER_SOURCE:
+            evictions.add(entries.pop(0)["name"])

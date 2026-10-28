@@ -1,7 +1,11 @@
 """OCI Log Analytics client wrapper."""
 
 import asyncio
+from copy import deepcopy
 import logging
+import math
+import re
+import threading
 from io import BytesIO
 from typing import Optional, List, Dict, Any, Sequence, Tuple
 from datetime import datetime
@@ -15,6 +19,14 @@ from .rate_limiter import RateLimiter
 from .config import Settings
 
 logger = logging.getLogger(__name__)
+
+
+class QueryTimeoutError(Exception):
+    """The query exceeded its whole-operation deadline."""
+
+
+class ServiceUnavailableError(RuntimeError):
+    """SDK construction failed without exposing provider exception text."""
 
 
 def _get_items(response_data):
@@ -72,20 +84,78 @@ class OCILogAnalyticsClient:
         self.settings = settings
         self._config, self._signer = get_signer(settings.oci)
 
-        self._la_client = oci.log_analytics.LogAnalyticsClient(
-            config=self._config, signer=self._signer
-        )
-
-        self._identity_client = oci.identity.IdentityClient(
-            config=self._config, signer=self._signer
-        )
+        self._service_lock = threading.RLock()
+        self._la_factory = oci.log_analytics.LogAnalyticsClient
+        self._identity_factory = oci.identity.IdentityClient
+        self._monitoring_factory = oci.monitoring.MonitoringClient
+        self._none_retry_factory = oci.retry.NoneRetryStrategy
+        self.__la_client = None
+        self.__identity_client = None
+        self._regional_monitoring_clients = {}
 
         self._rate_limiter = RateLimiter()
+        self._scheduled_task_rate_lock = asyncio.Lock()
         self._auth_type = settings.oci.auth_type
 
         # Runtime context (can be changed)
         self._namespace = settings.log_analytics.namespace
         self._compartment_id = settings.log_analytics.default_compartment_id
+
+    def _construct_service(self, factory, service, **arguments):
+        try:
+            return factory(signer=self._signer, **arguments)
+        except Exception:
+            raise ServiceUnavailableError(
+                f"{service} client is unavailable. Check OCI setup and use test_connection."
+            ) from None
+
+    @property
+    def _la_client(self):
+        with self._service_lock:
+            if self.__la_client is None:
+                self.__la_client = self._construct_service(
+                    self._la_factory, "Log Analytics", config=deepcopy(self._config),
+                )
+            return self.__la_client
+
+    @_la_client.setter
+    def _la_client(self, value):
+        with self._service_lock:
+            self.__la_client = value
+
+    @property
+    def _identity_client(self):
+        with self._service_lock:
+            if self.__identity_client is None:
+                self.__identity_client = self._construct_service(
+                    self._identity_factory, "Identity", config=deepcopy(self._config),
+                )
+            return self.__identity_client
+
+    @_identity_client.setter
+    def _identity_client(self, value):
+        with self._service_lock:
+            self.__identity_client = value
+
+    def monitoring_client_for_region(self, region: str, *, timeout_seconds: float):
+        """Get an immutable regional configuration without changing the alarm client."""
+        self.settings.require_monitoring_config()
+        if not isinstance(region, str) or not re.fullmatch(r"[a-z][a-z0-9]*(?:-[a-z0-9]+)+-\d+", region):
+            raise ValueError("Choose a valid OCI region name.")
+        if (type(timeout_seconds) not in (int, float)
+                or not math.isfinite(timeout_seconds) or timeout_seconds <= 0):
+            raise ValueError("Monitoring timeout must be a finite positive number.")
+        key = (region, float(timeout_seconds))
+        with self._service_lock:
+            if key not in self._regional_monitoring_clients:
+                config = deepcopy(self._config)
+                config["region"] = region
+                self._regional_monitoring_clients[key] = self._construct_service(
+                    self._monitoring_factory, "Monitoring", config=config,
+                    timeout=(min(10.0, timeout_seconds), timeout_seconds),
+                    retry_strategy=self._none_retry_factory(),
+                )
+            return self._regional_monitoring_clients[key]
 
     @property
     def monitoring_client(self):
@@ -207,7 +277,33 @@ class OCILogAnalyticsClient:
         compartment_id: str,
         include_subcompartments: bool,
     ) -> Dict[str, Any]:
-        """Execute a query against a single compartment."""
+        """Bound all pages, rate-limit waits and retries by one deadline."""
+        timeout = self.settings.query.timeout_seconds
+        timer = asyncio.timeout(timeout)
+        try:
+            async with timer:
+                return await self._execute_query_pages(
+                    query_string, time_start, time_end, max_results,
+                    compartment_id, include_subcompartments,
+                )
+        except TimeoutError as error:
+            if not timer.expired():
+                raise
+            raise QueryTimeoutError(
+                f"Query exceeded {timeout}s (query.timeout_seconds); "
+                "narrow the time range or add a 'Log Source' filter"
+            ) from error
+
+    async def _execute_query_pages(
+        self,
+        query_string: str,
+        time_start: str,
+        time_end: str,
+        max_results: Optional[int],
+        compartment_id: str,
+        include_subcompartments: bool,
+    ) -> Dict[str, Any]:
+        """Fetch query pages within the caller's deadline."""
         await self._rate_limiter.acquire()
 
         max_results = max_results or self.settings.query.max_results
@@ -245,7 +341,8 @@ class OCILogAnalyticsClient:
         page_limit = 10000 if is_cluster else max_results
 
         try:
-            response = self._la_client.query(
+            response = await asyncio.to_thread(
+                self._la_client.query,
                 namespace_name=self._namespace,
                 query_details=query_details,
                 limit=page_limit,
@@ -259,7 +356,8 @@ class OCILogAnalyticsClient:
             row_cap = page_limit if is_cluster else max_results
             while response.has_next_page and len(result["rows"]) < row_cap:
                 await self._rate_limiter.acquire()
-                response = self._la_client.query(
+                response = await asyncio.to_thread(
+                    self._la_client.query,
                     namespace_name=self._namespace,
                     query_details=query_details,
                     limit=page_limit,
@@ -278,7 +376,7 @@ class OCILogAnalyticsClient:
         except oci.exceptions.ServiceError as e:
             if e.status == 429:
                 await self._rate_limiter.handle_rate_limit()
-                return await self._execute_single_query(
+                return await self._execute_query_pages(
                     query_string, time_start, time_end, max_results,
                     compartment_id, include_subcompartments
                 )
@@ -357,12 +455,15 @@ class OCILogAnalyticsClient:
 
         result = []
         for et in entity_types:
-            if hasattr(et, "name"):
-                result.append(et.name)
-            elif hasattr(et, "entity_type_name"):
-                result.append(et.entity_type_name)
-            elif isinstance(et, str):
+            if isinstance(et, str):
                 result.append(et)
+                continue
+            # SDK objects carry entity_type_display_name (human) and entity_type (internal)
+            for attr in ("entity_type_display_name", "entity_type", "name", "entity_type_name"):
+                value = getattr(et, attr, None)
+                if isinstance(value, str) and value:
+                    result.append(value)
+                    break
             else:
                 result.append(str(et))
         return result
@@ -373,7 +474,7 @@ class OCILogAnalyticsClient:
 
         kwargs = {"namespace_name": self._namespace}
         if source_name:
-            kwargs["source_name"] = source_name
+            kwargs["source_names"] = source_name
 
         response = list_call_get_all_results(
             self._la_client.list_fields,
@@ -699,6 +800,30 @@ class OCILogAnalyticsClient:
             for f in _get_items(response.data)
         ]
 
+    async def get_entities_summary(self, compartment_id: Optional[str] = None) -> Dict[str, int]:
+        """Entity counts for a compartment from OCI's summary call (no entity listing)."""
+        await self._rate_limiter.acquire()
+        response = await asyncio.to_thread(
+            self._la_client.get_log_analytics_entities_summary,
+            namespace_name=self._namespace, compartment_id=compartment_id or self._compartment_id,
+        )
+        self._rate_limiter.reset()
+        data = response.data
+        return {"active_entities": getattr(data, "active_entities_count", 0) or 0,
+                "entities_with_logs_collected": getattr(data, "entities_with_has_logs_collected_count", 0) or 0,
+                "entities_with_management_agent": getattr(data, "entities_with_management_agent_count", 0) or 0}
+
+    async def list_entity_types(self) -> List[Dict[str, Any]]:
+        """Entity type definitions (names only; no entities)."""
+        await self._rate_limiter.acquire()
+        response = await asyncio.to_thread(
+            list_call_get_all_results, self._la_client.list_log_analytics_entity_types,
+            namespace_name=self._namespace,
+        )
+        self._rate_limiter.reset()
+        return [{"name": getattr(item, "name", ""), "internal_name": getattr(item, "internal_name", None),
+                 "category": getattr(item, "category", None)} for item in response.data]
+
     async def list_entities(self, entity_type: Optional[str] = None) -> List[Dict[str, Any]]:
         """List monitored entities (auto-paginates across all pages)."""
         await self._rate_limiter.acquire()
@@ -710,7 +835,11 @@ class OCILogAnalyticsClient:
         if entity_type:
             kwargs["entity_type_name"] = [entity_type]
 
-        response = list_call_get_all_results(
+        # The service defaults to ten entities per page. Larger pages avoid
+        # hundreds of requests and retries when assembling the full schema.
+        kwargs["limit"] = 100
+        response = await asyncio.to_thread(
+            list_call_get_all_results,
             self._la_client.list_log_analytics_entities,
             **kwargs,
         )
@@ -797,6 +926,23 @@ class OCILogAnalyticsClient:
         """Get a specific saved search."""
         await self._rate_limiter.acquire()
 
+        if saved_search_id.startswith("ocid1.managementsavedsearch."):
+            response = await asyncio.to_thread(
+                self.dashx_client.get_management_saved_search,
+                management_saved_search_id=saved_search_id,
+            )
+            self._rate_limiter.reset()
+            data = response.data
+            ui_config = data.ui_config or {}
+            query = ui_config.get("queryString", "")
+            if not query:
+                query = next((item["query"] for item in (data.data_config or [])
+                              if isinstance(item, dict) and item.get("query")), "")
+            return {"id": data.id, "display_name": data.display_name,
+                    "query": query, "ui_config": ui_config,
+                    "compartment_id": getattr(data, "compartment_id", None),
+                    "lifecycle_state": getattr(data, "lifecycle_state", "")}
+
         response = self._la_client.get_scheduled_task(
             namespace_name=self._namespace,
             scheduled_task_id=saved_search_id,
@@ -804,10 +950,14 @@ class OCILogAnalyticsClient:
         self._rate_limiter.reset()
 
         data = response.data
+        query = getattr(data, "saved_search_query", "")
+        action = getattr(data, "action", None)
+        if not query and action and getattr(action, "saved_search_id", None):
+            query = (await self.get_saved_search(action.saved_search_id))["query"]
         return {
             "id": data.id,
             "display_name": getattr(data, "display_name", ""),
-            "query": getattr(data, "saved_search_query", ""),
+            "query": query,
             "lifecycle_state": getattr(data, "lifecycle_state", ""),
             "_action": getattr(data, "action", None),  # expose for backing MSS lookup
         }
@@ -894,6 +1044,48 @@ class OCILogAnalyticsClient:
                 return await self.create_scheduled_task(details)
             raise
 
+    async def list_scheduled_tasks_for_saved_search(
+        self, saved_search_id: Optional[str] = None, compartment_id: Optional[str] = None,
+    ) -> List[Dict[str, Any]]:
+        """Read all saved-search rules in a compartment, optionally filtered by search."""
+        await self._rate_limiter.acquire()
+        filters = {"saved_search_id": saved_search_id} if saved_search_id is not None else {}
+        response = await asyncio.to_thread(
+            list_call_get_all_results, self._la_client.list_scheduled_tasks,
+            namespace_name=self._namespace, compartment_id=compartment_id or self._compartment_id,
+            task_type="SAVED_SEARCH", **filters,
+        )
+        self._rate_limiter.reset()
+        return [{"id": item.id, "display_name": getattr(item, "display_name", ""),
+                 "lifecycle_state": getattr(item, "lifecycle_state", "")}
+                for item in _get_items(response.data)]
+
+    async def get_scheduled_task_details(self, task_id: str) -> Dict[str, Any]:
+        """Read the ids a scheduled task links: its saved search and the metric it posts."""
+        async with self._scheduled_task_rate_lock:
+            await self._rate_limiter.acquire()
+        response = await asyncio.to_thread(
+            self._la_client.get_scheduled_task, namespace_name=self._namespace, scheduled_task_id=task_id,
+        )
+        self._rate_limiter.reset()
+        task = response.data
+        action = getattr(task, "action", None)
+        extraction = getattr(action, "metric_extraction", None)
+        schedule = (task.schedules or [None])[0] if getattr(task, "schedules", None) else None
+        return {
+            "id": task.id,
+            "display_name": getattr(task, "display_name", ""),
+            "lifecycle_state": getattr(task, "lifecycle_state", ""),
+            "saved_search_id": getattr(action, "saved_search_id", None),
+            "cron": getattr(schedule, "expression", None),
+            "interval": getattr(schedule, "recurring_interval", None),
+            "metric_namespace": getattr(extraction, "namespace", None),
+            "metric_name": getattr(extraction, "metric_name", None),
+            "metric_compartment_id": getattr(extraction, "compartment_id", None),
+            "metric_resource_group": getattr(extraction, "resource_group", None),
+            "freeform_tags": getattr(task, "freeform_tags", {}) or {},
+        }
+
     async def update_scheduled_task(self, task_id: str, details) -> Dict[str, Any]:
         """Update a scheduled task in Log Analytics."""
         await self._rate_limiter.acquire()
@@ -960,7 +1152,11 @@ class OCILogAnalyticsClient:
                     "query": getattr(data, "query", ""),
                     "pending_duration": getattr(data, "pending_duration", None),
                     "compartment_id": getattr(data, "compartment_id", None),
-                    "freeform_tags": getattr(data, "freeform_tags", {}) or {}}
+                    "namespace": getattr(data, "namespace", None),
+                    "metric_compartment_id": getattr(data, "metric_compartment_id", None),
+                    "resource_group": getattr(data, "resource_group", None),
+                    "freeform_tags": getattr(data, "freeform_tags", {}) or {},
+                    "defined_tags": getattr(data, "defined_tags", {}) or {}}
         except oci.exceptions.ServiceError as e:
             if e.status == 429:
                 await self._rate_limiter.handle_rate_limit()
@@ -981,7 +1177,12 @@ class OCILogAnalyticsClient:
                 {"id": a.id, "display_name": getattr(a, "display_name", ""),
                  "lifecycle_state": getattr(a, "lifecycle_state", ""),
                  "severity": getattr(a, "severity", ""),
-                 "freeform_tags": getattr(a, "freeform_tags", {}) or {}}
+                 "namespace": getattr(a, "namespace", None),
+                 "metric_compartment_id": getattr(a, "metric_compartment_id", None),
+                 "resource_group": getattr(a, "resource_group", None),
+                 "query": getattr(a, "query", "") or "",
+                 "freeform_tags": getattr(a, "freeform_tags", {}) or {},
+                 "defined_tags": getattr(a, "defined_tags", {}) or {}}
                 for a in _get_items(response.data)
             ]
         except oci.exceptions.ServiceError as e:
@@ -1130,6 +1331,21 @@ class OCILogAnalyticsClient:
             raise
 
     # ── Management Saved Search methods ───────────────────────────────────
+
+    async def list_management_saved_searches(self) -> List[Dict[str, Any]]:
+        """List native Log Analytics saved searches across all pages."""
+        await self._rate_limiter.acquire()
+        response = await asyncio.to_thread(
+            list_call_get_all_results, self.dashx_client.list_management_saved_searches,
+            compartment_id=self._compartment_id, limit=100,
+        )
+        self._rate_limiter.reset()
+        return [{"id": item.id, "display_name": item.display_name,
+                 "lifecycle_state": getattr(item, "lifecycle_state", ""),
+                 "freeform_tags": getattr(item, "freeform_tags", {}) or {}}
+                for item in _get_items(response.data)
+                if getattr(item, "provider_id", "") == "log-analytics"
+                and getattr(item, "type", "") == "SEARCH_SHOW_IN_DASHBOARD"]
 
     async def create_management_saved_search(self, details) -> Dict[str, Any]:
         """Create a Management Dashboard saved search."""

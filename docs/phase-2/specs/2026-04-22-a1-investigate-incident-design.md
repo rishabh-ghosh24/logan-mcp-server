@@ -356,7 +356,7 @@ docs/phase-2/specs/triage-toolkit.md  # §A1 updated to match this doc
 
 ### 8.5 Live-probe discipline before test-writing
 
-Per the J2 / A4 post-mortems, **every new query shape must be live-probed against the dogfood tenancy before its test fixture is written**. For A1, that means running each of the following at least once on `emdemo-logan` and capturing the real response shape:
+Per the J2 / A4 post-mortems, **every new query shape must be live-probed against the dogfood tenancy before its test fixture is written**. For A1, that means running each of the following at least once on `<vm-alias>` and capturing the real response shape:
 
 - A2 breakout: `'Parse Failed' = 1 | stats count as n by 'Log Source'` current vs prior-window
 - Per-source cluster: `'Parse Failed' = 1 and 'Log Source' = 'Kubernetes Kubelet Logs' | cluster | sort -Count | head 3`

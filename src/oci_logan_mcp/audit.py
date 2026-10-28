@@ -3,35 +3,86 @@
 from __future__ import annotations
 
 import json
+import hashlib
 import logging
 import os
+import re
 import threading
 import uuid
+from contextlib import contextmanager
+from contextvars import ContextVar
 from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any, Dict, Iterator, List
 
 from .file_lock import locked_file
-from .sanitize import redact_dict
+from .sanitize import AuditFingerprint, redact_dict
+from .time_parser import TIME_RANGES
 
 logger = logging.getLogger(__name__)
 
 _MAX_FILE_SIZE = 10 * 1024 * 1024  # 10 MB
 _MAX_BACKUPS = 5
 _AUDIT_FILENAME = "audit.log"
+_CLIENT_METADATA: ContextVar[dict | None] = ContextVar("mcp_audit_client", default=None)
 _STRIP_KEYS = frozenset({
     "confirmation_token",
     "confirmation_secret",
     "confirmation_secret_confirm",
 })
+_TEXT_ARGUMENT_KEYS = frozenset({
+    "query", "queries", "sample_logs", "markdown", "description", "notes", "regex_pattern",
+})
+_STRUCTURAL_ARGUMENT_VALUES = {
+    "time_range": frozenset(TIME_RANGES),
+    "format": frozenset({"json", "csv", "markdown", "html", "pdf", "both", "json_ndjson", "regex_text"}),
+    "scope": frozenset({"default", "tenancy"}),
+    "service": frozenset({"logs", "metrics", "all"}),
+    "severity": frozenset({"CRITICAL", "ERROR", "WARNING", "INFO"}),
+    "threshold_operator": frozenset({"gt", "gte", "eq", "lt", "lte"}),
+}
+_SUMMARY_KEYS = frozenset({
+    "success", "status", "execution_ms", "error_type", "row_count", "column_count",
+    "succeeded_count", "failed_count", "partial_failure",
+})
+
+
+@contextmanager
+def audit_client_context(metadata: dict | None) -> Iterator[None]:
+    """Carry client claims into nested audit events for this call only."""
+    token = _CLIENT_METADATA.set(metadata)
+    try:
+        yield
+    finally:
+        _CLIENT_METADATA.reset(token)
+
+
+def _fingerprint(text: str) -> Dict[str, Any]:
+    return {"sha256": hashlib.sha256(text.encode("utf-8")).hexdigest(), "length": len(text)}
+
+
+def _omit_argument_text(value: Any, text_field: bool = False, argument_name: str | None = None) -> Any:
+    if isinstance(value, AuditFingerprint):
+        return value
+    if isinstance(value, dict):
+        return {key: _omit_argument_text(item, text_field or key.lower() in _TEXT_ARGUMENT_KEYS, key)
+                for key, item in value.items()}
+    if isinstance(value, (list, tuple)):
+        return [_omit_argument_text(item, text_field, argument_name) for item in value]
+    if isinstance(value, str):
+        if not text_field and value in _STRUCTURAL_ARGUMENT_VALUES.get(argument_name, ()):
+            return value
+        return AuditFingerprint(value)
+    return value
 
 
 class AuditLogger:
     """Append-only JSON-lines audit log with rotation and file locking."""
 
-    def __init__(self, log_dir: Path, session_id: str = "unknown") -> None:
+    def __init__(self, log_dir: Path, session_id: str = "unknown", store_arguments: bool = True) -> None:
         self._log_dir = log_dir
         self._session_id = session_id
+        self._store_arguments = store_arguments
         self._log_dir.mkdir(parents=True, exist_ok=True)
         try:
             os.chmod(self._log_dir, 0o750)
@@ -62,9 +113,14 @@ class AuditLogger:
         event_type: str = "mcp_call",
         actor_source: str = "logan_user",
         client_metadata: Dict[str, Any] | None = None,
+        error_type: str | None = None,
     ) -> None:
         """Append one audit entry as a JSON line."""
         clean_args = {k: v for k, v in args.items() if k not in _STRIP_KEYS}
+        redacted_args = redact_dict(clean_args if self._store_arguments else _omit_argument_text(clean_args))
+        sample_digest = clean_args.get("sample_sha256")
+        if isinstance(sample_digest, str) and re.fullmatch(r"[0-9a-fA-F]{64}", sample_digest):
+            redacted_args["sample_sha256"] = sample_digest
         timestamp = datetime.now(timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ")
         if blocked is None:
             blocked = outcome in {
@@ -81,7 +137,6 @@ class AuditLogger:
             "user": user,
             "pid": os.getpid(),
             "tool": tool,
-            "args": clean_args,
             "outcome": outcome,
             # Enriched MCP audit fields used by Argus POC audit review.
             "ts": timestamp,
@@ -90,21 +145,33 @@ class AuditLogger:
             "audit_ref": audit_ref,
             "actor": user,
             "actor_source": actor_source,
-            "client_metadata": client_metadata or {
+            "client_metadata": client_metadata or _CLIENT_METADATA.get() or {
                 "claimed_client": "unknown",
                 "claimed_version": "unknown",
                 "source_ip_truncated": None,
             },
             "event_type": event_type,
-            "args_redacted": redact_dict(clean_args),
+            "args_redacted": redacted_args,
             "blocked": blocked,
             "block_reason": block_reason,
             "audit_strictness": audit_strictness or "best_effort",
         }
         if result_summary != "":
+            if not self._store_arguments:
+                result_summary = {
+                    key: value for key, value in (result_summary.items() if isinstance(result_summary, dict) else [])
+                    if key in _SUMMARY_KEYS and isinstance(value, (bool, int, float))
+                }
             entry["result_summary"] = result_summary
-        if error:
-            entry["error"] = error
+        if error or error_type:
+            if not self._store_arguments:
+                entry["error"] = {
+                    "error_type": error_type or "unknown", **_fingerprint(error),
+                }
+            elif error:
+                entry["error"] = error
+        if not self._store_arguments:
+            entry["text_retained"] = False
 
         line = json.dumps(entry, separators=(",", ":")) + "\n"
 

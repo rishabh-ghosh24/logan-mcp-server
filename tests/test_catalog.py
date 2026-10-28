@@ -9,6 +9,36 @@ from oci_logan_mcp.resources import get_query_templates
 from oci_logan_mcp.user_store import UserStore
 
 
+def test_for_onboarding_ranks_manual_saves_above_auto_saves(tmp_path):
+    store = UserStore(base_dir=tmp_path, user_id="alice")
+    store.save_query(name="auto_one", query="a | stats count", description="automatic",
+                     category="errors", tags=["auto-saved"], interest_score=6, origin="auto")
+    for _ in range(5):
+        store.record_success("a | stats count")
+    store.save_query(name="manual_one", query="b | stats count", description="mine",
+                     category="errors", interest_score=4)
+    entries = UnifiedCatalog(base_dir=tmp_path).for_onboarding(
+        user_id="alice", category="errors", include_personal=2, include_community_favorites=0)
+    assert [item.name for item in entries if item.source == SourceType.PERSONAL] == [
+        "manual_one", "auto_one"
+    ]
+
+
+def test_catalog_infers_legacy_origin_and_respects_explicit_origin(tmp_path):
+    path = tmp_path / "users" / "alice" / "learned_queries.yaml"
+    path.parent.mkdir(parents=True)
+    path.write_text(yaml.safe_dump({"queries": [
+        {"name": "legacy_auto", "query": "a", "description": "a", "tags": ["auto-saved"]},
+        {"name": "legacy_manual", "query": "b", "description": "b"},
+        {"name": "explicit_manual", "query": "c", "description": "c",
+         "origin": "manual", "tags": ["auto-saved"]},
+    ]}))
+    entries = UnifiedCatalog(tmp_path).load_personal("alice")
+    assert {entry.name: entry.origin for entry in entries} == {
+        "legacy_auto": "auto", "legacy_manual": "manual", "explicit_manual": "manual",
+    }
+
+
 def test_catalog_loads_builtin_and_starter(tmp_path):
     """UnifiedCatalog loads builtin and starter entries."""
     catalog = UnifiedCatalog(base_dir=tmp_path)

@@ -1,6 +1,9 @@
 """Exhaustive tests for OCI Log Analytics client — especially pagination."""
 
 import json
+import asyncio
+import threading
+import time
 from io import BytesIO
 from pathlib import Path
 from types import SimpleNamespace
@@ -10,6 +13,126 @@ import pytest
 
 from oci_logan_mcp.client import OCILogAnalyticsClient
 from oci_logan_mcp.config import Settings
+
+
+def _query_page(value, more=False):
+    return SimpleNamespace(
+        data=SimpleNamespace(columns=[], items=[{"count": value}],
+                             total_count=1, is_partial_result=False),
+        has_next_page=more, next_page="second" if more else None,
+    )
+
+
+@pytest.mark.asyncio
+async def test_query_runs_all_sdk_pages_off_the_event_loop(client):
+    event_loop_thread = threading.get_ident()
+    called_threads = []
+
+    def query(**kwargs):
+        called_threads.append(threading.get_ident())
+        return _query_page(2 if kwargs.get("page") else 1, more=not kwargs.get("page"))
+
+    client._la_client.query = query
+    result = await client.query("* | stats count", "2026-01-01T00:00:00Z",
+                                "2026-01-01T01:00:00Z")
+    assert result["rows"] == [[1], [2]]
+    assert len(called_threads) == 2
+    assert all(thread != event_loop_thread for thread in called_threads)
+
+
+@pytest.mark.asyncio
+async def test_query_times_out_against_a_real_blocking_sdk_call(client):
+    from oci_logan_mcp.client import QueryTimeoutError
+
+    entered, release, finished = threading.Event(), threading.Event(), threading.Event()
+    client.settings.query.timeout_seconds = 0.05
+
+    def query(**kwargs):
+        entered.set()
+        release.wait(2)
+        finished.set()
+        return _query_page(42)
+
+    client._la_client.query = query
+    try:
+        with pytest.raises(QueryTimeoutError, match="query.timeout_seconds"):
+            await client.query("* | stats count", "2026-01-01T00:00:00Z",
+                               "2026-01-01T01:00:00Z")
+        assert entered.is_set()
+        assert not finished.is_set(), "The caller must return before the SDK call finishes"
+    finally:
+        release.set()
+        await asyncio.to_thread(finished.wait, 2)
+
+
+@pytest.mark.asyncio
+async def test_query_deadline_covers_all_pages(client):
+    from oci_logan_mcp.client import QueryTimeoutError
+
+    client.settings.query.timeout_seconds = 2.0
+    pages = []
+
+    def query(**kwargs):
+        pages.append(kwargs.get("page"))
+        time.sleep(1.2)
+        return _query_page(1, more=True)
+
+    client._la_client.query = query
+    with pytest.raises(QueryTimeoutError):
+        await client.query("* | stats count", "2026-01-01T00:00:00Z",
+                           "2026-01-01T01:00:00Z", max_results=10)
+    assert pages == [None, "second"]
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("wait_at", ["acquire", "backoff"])
+async def test_query_deadline_bounds_rate_limit_waits(client, wait_at):
+    import oci
+    from oci_logan_mcp.client import QueryTimeoutError
+
+    client.settings.query.timeout_seconds = 0.05
+    entered = asyncio.Event()
+
+    async def wait_forever():
+        entered.set()
+        await asyncio.Event().wait()
+
+    if wait_at == "acquire":
+        client._rate_limiter.acquire = wait_forever
+    else:
+        client._la_client.query = MagicMock(side_effect=oci.exceptions.ServiceError(
+            status=429, code="TooManyRequests", headers={}, message="retry"
+        ))
+        client._rate_limiter.handle_rate_limit = wait_forever
+    with pytest.raises(QueryTimeoutError):
+        await client.query("* | stats count", "2026-01-01T00:00:00Z",
+                           "2026-01-01T01:00:00Z")
+    assert entered.is_set()
+
+
+@pytest.mark.asyncio
+async def test_query_retry_keeps_the_original_deadline(client):
+    import oci
+    from oci.log_analytics.models import QueryDetails, TimeRange
+    from oci_logan_mcp.client import QueryTimeoutError
+
+    client.settings.query.timeout_seconds = 2.0
+    calls = []
+
+    def query(**kwargs):
+        calls.append(kwargs)
+        time.sleep(1.2)
+        if len(calls) == 1:
+            raise oci.exceptions.ServiceError(
+                status=429, code="TooManyRequests", headers={}, message="retry"
+            )
+        return _query_page(42)
+
+    client._la_client.query = query
+    with pytest.raises(QueryTimeoutError):
+        await client.query("* | stats count", "2026-01-01T00:00:00Z",
+                           "2026-01-01T01:00:00Z")
+    assert len(calls) == 2
 
 
 # ---------------------------------------------------------------------------
@@ -243,7 +366,8 @@ class TestListFieldsPagination:
             await client.list_fields(source_name="Linux Syslog")
 
         call_kwargs = mock_paginate.call_args.kwargs
-        assert call_kwargs.get("source_name") == "Linux Syslog"
+        assert call_kwargs.get("source_names") == "Linux Syslog"
+        assert "source_name" not in call_kwargs
 
     @pytest.mark.asyncio
     async def test_no_source_filter(self, client):
@@ -896,6 +1020,13 @@ class TestSerializeEntityTypes:
     def test_entity_types_as_strings(self, client):
         assert client._serialize_entity_types(["Host", "VM"]) == ["Host", "VM"]
 
+    def test_sdk_entity_types_give_their_display_name(self, client):
+        from oci.log_analytics.models import LogAnalyticsSourceEntityType
+        et = LogAnalyticsSourceEntityType(entity_type="oci_vcn_vnic", entity_type_category="OCI",
+                                          entity_type_display_name="OCI VCN VNIC", source_id=1)
+        bare = LogAnalyticsSourceEntityType(entity_type="oci_vcn_vnic")
+        assert client._serialize_entity_types([et, bare]) == ["OCI VCN VNIC", "oci_vcn_vnic"]
+
     def test_entity_types_mixed(self, client):
         et1 = MagicMock()
         et1.name = "Host"
@@ -1186,6 +1317,40 @@ class TestAlertClientMethods:
         mock_client._monitoring_client.delete_alarm.assert_called_once_with(
             alarm_id="ocid1.alarm.1"
         )
+
+    @pytest.mark.asyncio
+    async def test_get_scheduled_task_details_reads_a_fixed_frequency_interval(self, mock_client):
+        """Console-made detection rules usually run "every N minutes", which OCI stores as an
+        ISO interval on a FIXED_FREQUENCY schedule, not as a cron expression."""
+        from types import SimpleNamespace
+        mock_client._la_client = MagicMock()
+        mock_client._la_client.get_scheduled_task.return_value = SimpleNamespace(data=SimpleNamespace(
+            id="ocid1.task.1", display_name="rule", lifecycle_state="ACTIVE", freeform_tags={},
+            schedules=[SimpleNamespace(type="FIXED_FREQUENCY", recurring_interval="PT5M")],
+            action=SimpleNamespace(saved_search_id="ocid1.mss.1", metric_extraction=SimpleNamespace(
+                namespace="ns", metric_name="m", resource_group=None)),
+        ))
+
+        details = await mock_client.get_scheduled_task_details("ocid1.task.1")
+
+        assert details["cron"] is None
+        assert details["interval"] == "PT5M"
+
+    @pytest.mark.asyncio
+    async def test_alarm_records_carry_defined_tags(self, mock_client):
+        from types import SimpleNamespace
+        tags = {"Oracle-Tags": {"CreatedBy": "someone", "CreatedOn": "2026-08-04T16:19:00Z"}}
+        record = SimpleNamespace(id="ocid1.alarm.1", display_name="t", lifecycle_state="ACTIVE", severity="WARNING",
+                                 is_enabled=True, destinations=[], query="m[1m].max() > 0", pending_duration="PT1M",
+                                 compartment_id="c", freeform_tags={}, defined_tags=tags, namespace="ns",
+                                 resource_group=None)
+        mock_client._monitoring_client = MagicMock()
+        mock_client._monitoring_client.get_alarm.return_value = SimpleNamespace(data=record)
+        with patch("oci_logan_mcp.client.list_call_get_all_results",
+                   return_value=_make_paginated_response([record])):
+            [row] = await mock_client.list_alarms()
+        assert row["defined_tags"] == tags
+        assert (await mock_client.get_alarm("ocid1.alarm.1"))["defined_tags"] == tags
 
     @pytest.mark.asyncio
     async def test_get_alarm_includes_pending_duration(self, mock_client):

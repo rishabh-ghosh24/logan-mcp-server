@@ -51,6 +51,7 @@ class PlaybookRecorder:
             raise ValueError("since must be before until")
 
         steps = []
+        text_omitted = False
         for entry in self._audit_logger.iter_entries(session_id=self._audit_logger.session_id):
             if entry.get("tool") == "record_investigation":
                 continue
@@ -66,16 +67,21 @@ class PlaybookRecorder:
             steps.append(
                 {
                     "tool": entry.get("tool", ""),
-                    "args": entry.get("args", {}),
+                    "args": entry.get("args_redacted", entry.get("args", {})),
                     "ts": _iso(ts),
                     "outcome": entry.get("outcome", ""),
                 }
             )
+            if entry.get("text_retained") is False:
+                steps[-1]["text_retained"] = False
+                text_omitted = True
         steps.sort(key=lambda step: step["ts"])
 
         warning = ""
         if not steps:
             warning = "No audit events matched the requested time window."
+        elif text_omitted:
+            warning = "Argument text was not retained in the audit log; omitted steps require review before replay."
 
         playbook = {
             "id": f"pb_{uuid.uuid4().hex}",
@@ -88,4 +94,6 @@ class PlaybookRecorder:
             "window": {"since": _iso(since_dt), "until": _iso(until_dt)},
             "warning": warning,
         }
+        if text_omitted:
+            playbook["text_omitted"] = True
         return self._store.save(playbook)

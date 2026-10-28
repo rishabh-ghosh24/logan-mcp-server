@@ -3,9 +3,9 @@
 from __future__ import annotations
 
 import logging
+import getpass
 import os
 import re
-import shutil
 import threading
 import uuid
 from copy import deepcopy
@@ -23,6 +23,13 @@ MAX_QUERIES_PER_USER = 200
 SHARED_CATALOG_LOCK_NAME = "catalog.lock"
 
 
+def query_origin(entry: Dict[str, Any]) -> str:
+    """Recognize legacy auto rows while protecting explicit manual saves."""
+    return entry.get("origin") or (
+        "auto" if "auto-saved" in (entry.get("tags") or []) else "manual"
+    )
+
+
 def _needs_entry_id_backfill(data: Dict[str, Any]) -> bool:
     return any(not q.get("entry_id") for q in data.get("queries", []))
 
@@ -37,7 +44,7 @@ def _apply_entry_id_backfill(data: Dict[str, Any]) -> bool:
     return modified
 
 
-def ensure_entry_ids(queries_path: Path, lock_path: Path) -> Dict[str, Any]:
+def ensure_entry_ids(queries_path: Path, lock_path: Path, *, strict: bool = False) -> Dict[str, Any]:
     """Load a learned_queries.yaml, backfilling entry_id for any legacy rows.
 
     Backfill is idempotent and persisted under the user's queries.lock using the
@@ -48,12 +55,25 @@ def ensure_entry_ids(queries_path: Path, lock_path: Path) -> Dict[str, Any]:
     Shared between UserStore._load and promote.promote_all's phase-1 scan so
     pre-1.2.0 files get IDs on their first encounter, regardless of entry point.
     """
-    data = atomic_yaml_read(queries_path, default={"version": 1, "queries": []})
+    def read_store():
+        data = atomic_yaml_read(queries_path, default={"version": 1, "queries": []}, strict=strict)
+        if strict:
+            if not isinstance(data, dict) or not isinstance(data.get("queries"), list):
+                raise ValueError("Expected a query store with a queries list")
+            for row in data["queries"]:
+                if (not isinstance(row, dict)
+                        or any(not isinstance(row.get(field), str) or not row[field].strip()
+                               for field in ("name", "query"))
+                        or (row.get("entry_id") and not isinstance(row["entry_id"], str))):
+                    raise ValueError("Expected named query rows with string identities")
+        return data
+
+    data = read_store()
     if not _needs_entry_id_backfill(data):
         return data
     thread_lock = threading.RLock()
     with locked_file(lock_path, thread_lock):
-        data = atomic_yaml_read(queries_path, default={"version": 1, "queries": []})
+        data = read_store()
         if _apply_entry_id_backfill(data):
             atomic_yaml_write(queries_path, data)
     return data
@@ -62,13 +82,16 @@ def ensure_entry_ids(queries_path: Path, lock_path: Path) -> Dict[str, Any]:
 class UserStore:
     """Manages per-user learned queries with shared overlay."""
 
-    _VALID_USER_RE = re.compile(r"^[a-zA-Z0-9_.-]+$")
+    _VALID_USER_RE = re.compile(r"^(?!\.)[A-Za-z0-9_.-]+$")
 
     def __init__(self, base_dir: Path, user_id: Optional[str] = None) -> None:
         self.base_dir = base_dir
         raw_id = user_id or os.environ.get("LOGAN_USER") or os.environ.get("USER", "default")
-        if not self._VALID_USER_RE.match(raw_id):
-            raise ValueError(f"Invalid user_id '{raw_id}': must be alphanumeric, _, ., or -")
+        if not self._VALID_USER_RE.fullmatch(raw_id) or ".." in raw_id:
+            raise ValueError(
+                f"Invalid user_id '{raw_id}': letters, digits, '_', '.', '-' only; "
+                "must not start with '.' or contain '..'"
+            )
         self.user_id = raw_id
         self._user_dir = base_dir / "users" / self.user_id
         self._user_dir.mkdir(parents=True, exist_ok=True)
@@ -81,13 +104,29 @@ class UserStore:
         # Ensure shared_dir exists so lock file can be created
         self._shared_dir.mkdir(parents=True, exist_ok=True)
 
+    def locked_queries(self):
+        """Hold the personal-query lock across a multi-step update."""
+        return locked_file(self._lock_path, self._thread_lock)
+
     def _migrate_legacy(self, base_dir: Path) -> None:
-        """One-time migration: copy legacy context/learned_queries.yaml to user dir."""
+        """Move legacy queries to their OS owner's personal store once."""
         legacy = base_dir / "context" / "learned_queries.yaml"
         target = self._queries_path
-        if legacy.exists() and not target.exists():
-            shutil.copy2(legacy, target)
-            logger.info(f"Migrated legacy learned queries to user store for '{self.user_id}'")
+        if not legacy.exists():
+            return
+        if self.user_id != getpass.getuser():
+            logger.info("Legacy queries left for their OS owner; user %s is not the owner", self.user_id)
+            return
+        with locked_file(legacy.parent / "migration.lock", threading.RLock()):
+            archived = legacy.with_suffix(".yaml.migrated")
+            if not legacy.exists() or target.exists() or archived.exists():
+                logger.info("Legacy migration skipped; personal store or archive already exists for %s", self.user_id)
+                return
+            data = atomic_yaml_read(legacy, strict=True)
+            atomic_yaml_write(target, data)
+            legacy.rename(archived)
+            os.chmod(archived, 0o600)
+            logger.info("Migrated legacy queries to personal store for OS owner %s", self.user_id)
 
     def save_query(
         self,
@@ -101,12 +140,16 @@ class UserStore:
         rename_to: Optional[str] = None,
         intent_key: Optional[str] = None,
         query_shape: Optional[str] = None,
+        origin: str = "manual",
+        evict_auto_names: Optional[List[str]] = None,
     ) -> Dict[str, Any]:
         """Save or update a learned query.
 
         Returns the saved entry dict, or a dict with 'collision_warning' key if
         the name (case-insensitive) collides with a builtin or shared entry and
         force=False was not specified.
+        Automatic inserts can return capacity_warning when retention prefers
+        the existing catalog. In that case no staged eviction is written.
         """
         effective_name = rename_to if rename_to else name
         now = datetime.now(timezone.utc).isoformat()
@@ -114,16 +157,42 @@ class UserStore:
             data = self._load()
             queries = data.get("queries", [])
 
+            if origin == "auto":
+                for q in queries:
+                    if query_origin(q) == "manual" and (
+                        q["name"] == effective_name or q["query"].strip() == query.strip()
+                    ):
+                        q["origin"] = "manual"
+                        q["last_used"] = now
+                        q["use_count"] = q.get("use_count", 0) + 1
+                        self._save(data)
+                        return deepcopy(q)
+
+            # Stage retention changes in memory. A collision returns without
+            # writing them, and a concurrent manual upgrade remains protected.
+            if origin == "auto" and evict_auto_names:
+                queries = [q for q in queries if q["name"] not in evict_auto_names
+                           or query_origin(q) != "auto"]
+                data["queries"] = queries
+
             # Personal ↔ personal: update in place by name (bypass collision check)
             for q in queries:
                 if q["name"] == effective_name:
+                    replaced = q["query"] != query
                     q["query"] = query
                     q["description"] = description
                     q["category"] = category
-                    q["tags"] = tags or q.get("tags", [])
+                    q["tags"] = tags or q.get("tags") or []
+                    q["origin"] = origin
+                    if origin == "manual":
+                        q["tags"] = [tag for tag in q["tags"] if tag != "auto-saved"]
                     q["last_used"] = now
                     q["use_count"] = q.get("use_count", 0) + 1
                     q["interest_score"] = max(q.get("interest_score", 0), interest_score)
+                    if replaced:
+                        q.update(success_count=0, failure_count=0, use_count=1, interest_score=interest_score)
+                        for key in ("promotion_status", "promotion_reason", "promoted_at"):
+                            q.pop(key, None)
                     if intent_key is not None:
                         q["intent_key"] = intent_key
                     if query_shape is not None:
@@ -154,7 +223,10 @@ class UserStore:
                     q["name"] = effective_name
                     q["description"] = description
                     q["category"] = category
-                    q["tags"] = tags or q.get("tags", [])
+                    q["tags"] = tags or q.get("tags") or []
+                    q["origin"] = origin
+                    if origin == "manual":
+                        q["tags"] = [tag for tag in q["tags"] if tag != "auto-saved"]
                     q["last_used"] = now
                     q["use_count"] = q.get("use_count", 0) + 1
                     q["interest_score"] = max(q.get("interest_score", 0), interest_score)
@@ -188,6 +260,7 @@ class UserStore:
                 "description": description,
                 "category": category,
                 "tags": tags or [],
+                "origin": origin,
                 "created_at": now,
                 "last_used": now,
                 "use_count": 1,
@@ -203,8 +276,13 @@ class UserStore:
 
             # Enforce max limit
             if len(queries) > MAX_QUERIES_PER_USER:
-                queries.sort(key=lambda q: (q.get("use_count", 0), q.get("last_used", "")))
+                queries.sort(key=lambda q: (
+                    origin == "auto" and query_origin(q) == "manual",
+                    q.get("use_count", 0), q.get("last_used", ""),
+                ))
                 queries = queries[-MAX_QUERIES_PER_USER:]
+                if origin == "auto" and not any(q["entry_id"] == entry["entry_id"] for q in queries):
+                    return {"capacity_warning": "Personal catalog capacity protects existing higher-priority queries"}
 
             data["queries"] = queries
             self._save(data)

@@ -3,14 +3,27 @@
 import asyncio
 from typing import Optional, List, Dict, Any
 from datetime import datetime
+import oci
+from oci._vendor.requests.exceptions import Timeout as SdkTimeout
 
-from .client import OCILogAnalyticsClient
+from .client import OCILogAnalyticsClient, QueryTimeoutError
 from .cache import CacheManager
 from .query_logger import QueryLogger
 from .time_parser import parse_time_range
 from .next_steps import suggest as _suggest_next_steps
 from .query_estimator import QueryEstimator, QueryEstimate
 from .budget_tracker import BudgetTracker, BudgetExceededError
+
+MAX_BATCH_QUERIES = 10
+
+
+def _is_query_timeout(error: Exception) -> bool:
+    """Keep dispatched work charged when a native timeout leaves its outcome unknown."""
+    return (
+        isinstance(error, (QueryTimeoutError, TimeoutError, SdkTimeout))
+        or (isinstance(error, oci.exceptions.ServiceError) and error.status in (408, 504))
+        or any(isinstance(argument, SdkTimeout) for argument in error.args)
+    )
 
 
 class QueryEngine:
@@ -82,6 +95,9 @@ class QueryEngine:
         budget_override: bool = False,
     ) -> Dict[str, Any]:
         """Internal execute with cache-first ordering."""
+        if max_results is not None and (type(max_results) is not int or max_results < 1):
+            raise ValueError("max_results must be a positive integer")
+
         # Parse time parameters
         start, end = parse_time_range(time_start, time_end, time_range)
 
@@ -89,7 +105,9 @@ class QueryEngine:
         effective_compartment = compartment_id or self.oci_client.compartment_id
 
         # --- Cache-first: check cache before any estimation or OCI calls ---
-        cache_key = self._make_cache_key(query, start, end, include_subcompartments, effective_compartment)
+        cache_key = self._make_cache_key(
+            query, start, end, include_subcompartments, effective_compartment, max_results
+        )
         if use_cache:
             cached_bundle = self.cache.get(cache_key)
             if cached_bundle is not None:
@@ -192,9 +210,9 @@ class QueryEngine:
 
         except Exception as e:
             execution_time = (datetime.now() - start_time).total_seconds()
-            # Query failed — roll back the reservation so a failed OCI call
-            # doesn't consume the caller's budget.
-            if budget_reserved and self.budget_tracker is not None:
+            # Timed-out SDK work can still run, so keep its reservation.
+            if (budget_reserved and self.budget_tracker is not None
+                    and not _is_query_timeout(e)):
                 self.budget_tracker.release(bytes=reserved_bytes, cost_usd=reserved_cost)
             self.logger.log_query(
                 query=query,
@@ -213,7 +231,9 @@ class QueryEngine:
         include_subcompartments: bool = True,
         compartment_id: Optional[str] = None,
     ) -> List[Dict[str, Any]]:
-        """Execute multiple queries concurrently. Budget is NOT enforced for batch (P0)."""
+        """Execute up to ten queries with an atomic budget reservation per item."""
+        if len(queries) > MAX_BATCH_QUERIES:
+            raise ValueError(f"Batch limited to {MAX_BATCH_QUERIES} queries; got {len(queries)}")
         tasks = [
             self._execute_inner(
                 query=q["query"],
@@ -223,7 +243,7 @@ class QueryEngine:
                 max_results=q.get("max_results"),
                 include_subcompartments=q.get("include_subcompartments", include_subcompartments),
                 compartment_id=q.get("compartment_id", compartment_id),
-                skip_budget=True,
+                skip_budget=False,
             )
             for q in queries
         ]
@@ -233,7 +253,14 @@ class QueryEngine:
         return [
             {"success": True, "result": r}
             if not isinstance(r, Exception)
-            else {"success": False, "error": str(r)}
+            else {
+                "success": False,
+                "error": str(r) + (
+                    " Use run_query with budget_override and confirmation to override this refusal."
+                    if isinstance(r, BudgetExceededError) else ""
+                ),
+                "error_type": type(r).__name__,
+            }
             for r in results
         ]
 
@@ -244,8 +271,9 @@ class QueryEngine:
         end: datetime,
         include_subcompartments: bool = True,
         compartment_id: Optional[str] = None,
+        max_results: Optional[int] = None,
     ) -> str:
         """Generate cache key for a query."""
         sub_flag = "sub" if include_subcompartments else "nosub"
         comp = compartment_id or "default"
-        return f"{query}:{start.isoformat()}:{end.isoformat()}:{sub_flag}:{comp}"
+        return f"{query}:{start.isoformat()}:{end.isoformat()}:{sub_flag}:{comp}:limit={max_results}"

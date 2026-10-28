@@ -16,9 +16,9 @@ def logger_enabled(tmp_path):
 
 
 @pytest.fixture
-def logger_disabled():
+def logger_disabled(tmp_path):
     """Create a QueryLogger with logging disabled."""
-    config = LoggingConfig(query_logging=False)
+    config = LoggingConfig(query_logging=False, log_path=tmp_path / "disabled-logs")
     return QueryLogger(config)
 
 
@@ -47,14 +47,18 @@ class TestQueryLoggerInit:
     """Tests for initialization."""
 
     def test_init_with_logging_enabled(self, logger_enabled):
-        """Enabled logger sets up file logger."""
+        """Enabled history creates a private file."""
         assert logger_enabled._enabled is True
-        assert hasattr(logger_enabled, "_file_logger")
+        path = logger_enabled.config.log_path / "queries.log"
+        assert path.is_file()
+        assert path.stat().st_mode & 0o777 == 0o600
 
     def test_init_with_logging_disabled(self, logger_disabled):
-        """Disabled logger has no file logger."""
+        """Disabled history creates no directory and still keeps recent queries."""
         assert logger_disabled._enabled is False
-        assert not hasattr(logger_disabled, "_file_logger")
+        _log_sample(logger_disabled)
+        assert logger_disabled.get_recent_queries()[0]["query"] == "* | stats count"
+        assert not logger_disabled.config.log_path.exists()
 
     def test_default_config_used_if_none(self):
         """None config -> default LoggingConfig."""
@@ -112,17 +116,9 @@ class TestLogQuery:
         assert logger_disabled._recent_queries[0]["query"] == "second"
 
     def test_log_written_to_file_when_enabled(self, logger_enabled, caplog):
-        """Enabled logger writes to file logger."""
-        import logging
-        # The file logger is named "oci_logan_mcp.queries" — it may be shared
-        # across test runs due to Python's global logger registry. We verify
-        # the logger was called by checking the _file_logger directly.
-        _log_sample(logger_enabled)
-        assert logger_enabled._enabled is True
-        assert hasattr(logger_enabled, "_file_logger")
-        # Verify the file logger has at least one handler attached
-        assert len(logger_enabled._file_logger.handlers) >= 1
-        # Verify the log entry was recorded in memory
+        """Enabled history writes the query to its own file."""
+        _log_sample(logger_enabled, query="MARKER_FILE_QUERY")
+        assert "MARKER_FILE_QUERY" in (logger_enabled.config.log_path / "queries.log").read_text()
         assert len(logger_enabled._recent_queries) == 1
         assert logger_enabled._recent_queries[0]["success"] is True
 
@@ -136,6 +132,50 @@ class TestLogQuery:
 # ---------------------------------------------------------------
 # get_recent_queries
 # ---------------------------------------------------------------
+
+
+def test_history_is_private_per_user_and_never_reaches_root(tmp_path, caplog):
+    import logging
+
+    caplog.set_level(logging.DEBUG)
+    config = LoggingConfig(log_path=tmp_path / "shared-logs")
+    alice = QueryLogger(config, user_dir=tmp_path / "users" / "alice")
+    bob = QueryLogger(config, user_dir=tmp_path / "users" / "bob")
+    _log_sample(alice, query="MARKER_ALICE")
+    _log_sample(bob, query="MARKER_BOB")
+    for user, own, other in (("alice", "MARKER_ALICE", "MARKER_BOB"),
+                              ("bob", "MARKER_BOB", "MARKER_ALICE")):
+        path = tmp_path / "users" / user / "history" / "queries.log"
+        assert own in path.read_text() and other not in path.read_text()
+        assert path.stat().st_mode & 0o777 == 0o600
+    assert "MARKER_" not in caplog.text
+    assert not (tmp_path / "shared-logs").exists()
+
+
+def test_history_rotation_keeps_private_mode_and_recent_content(tmp_path, monkeypatch):
+    from oci_logan_mcp import query_logger as module
+
+    monkeypatch.setattr(module, "_HISTORY_MAX_BYTES", 200)
+    history = QueryLogger(LoggingConfig(), user_dir=tmp_path / "users" / "alice")
+    for index in range(20):
+        _log_sample(history, query=f"ROT{index:03d}")
+    directory = tmp_path / "users" / "alice" / "history"
+    assert "ROT019" in (directory / "queries.log").read_text()
+    assert "ROT" in (directory / "queries.log.1").read_text()
+    assert not (directory / "queries.log.6").exists()
+    for path in directory.iterdir():
+        assert path.stat().st_mode & 0o777 == 0o600
+
+
+def test_history_writes_when_descriptor_chmod_is_unavailable(tmp_path, monkeypatch):
+    from oci_logan_mcp import query_logger as module
+
+    monkeypatch.delattr(module.os, "fchmod", raising=False)
+    history = QueryLogger(LoggingConfig(), user_dir=tmp_path / "users" / "alice")
+    _log_sample(history, query="PORTABLE_HISTORY")
+    path = tmp_path / "users" / "alice" / "history" / "queries.log"
+    assert "PORTABLE_HISTORY" in path.read_text()
+    assert history.get_recent_queries()[0]["query"] == "PORTABLE_HISTORY"
 
 
 class TestGetRecentQueries:

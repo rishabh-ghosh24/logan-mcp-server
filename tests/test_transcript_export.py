@@ -8,6 +8,21 @@ import pytest
 from oci_logan_mcp.audit import AuditLogger
 
 
+def test_transcript_preserves_text_retention_flag_and_placeholders(tmp_path):
+    logger = AuditLogger(tmp_path / "audit", session_id="private", store_arguments=False)
+    logger.log(user="alice", tool="run_query", args={"query": "MARKER_QUERY"},
+               outcome="execution_failed", result_summary={"preview": "MARKER_RESULT"},
+               error="MARKER_ERROR", error_type="ValueError")
+    result = logger.export_transcript("private", tmp_path / "export")
+    assert result["event_count"] == 1
+    raw = Path(result["path"]).read_text()
+    [entry] = [json.loads(line) for line in raw.splitlines()]
+    assert entry["tool"] == "run_query" and entry["text_retained"] is False
+    assert entry["args_redacted"]["query"]["length"] == len("MARKER_QUERY")
+    assert entry["error"]["error_type"] == "ValueError"
+    assert "MARKER_" not in raw
+
+
 def test_export_filters_by_session(tmp_path):
     log_dir = tmp_path / "logs"
     out_dir = tmp_path / "transcripts"

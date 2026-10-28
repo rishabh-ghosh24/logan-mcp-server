@@ -52,12 +52,12 @@ NON_DESTRUCTIVE_MUTATION_EXEMPTIONS: dict[str, str] = {
 }
 
 _SUMMARY_KEYS: Dict[str, list] = {
-    "delete_alert": ["alert_id"],
-    "delete_saved_search": ["saved_search_id"],
+    "delete_alert": ["alert_id", "origin", "deletion"],
+    "delete_saved_search": ["saved_search_id", "dependencies"],
     "delete_dashboard": ["dashboard_id"],
     "delete_playbook": ["playbook_id"],
-    "update_alert": ["alert_id", "display_name", "severity", "query"],
-    "update_saved_search": ["saved_search_id", "display_name", "query"],
+    "update_alert": ["alert_id", "display_name", "severity", "query", "linked_alerts", "origin"],
+    "update_saved_search": ["saved_search_id", "display_name", "query", "linked_alerts"],
     "add_dashboard_tile": ["dashboard_id", "title", "query", "visualization_type"],
     "create_alert": [
         "display_name", "query", "destination_topic_id",
@@ -133,6 +133,7 @@ class ConfirmationManager:
         tool_name: str,
         arguments: Dict[str, Any],
         summary_extras: Dict[str, Any] = None,
+        *, scope: dict | None = None,
     ) -> Dict[str, Any]:
         """Generate a confirmation token bound to this exact request.
 
@@ -146,12 +147,12 @@ class ConfirmationManager:
 
         token = secrets.token_hex(24)
         self._pending[token] = {
-            "fingerprint": self._fingerprint(tool_name, arguments),
+            "fingerprint": self._fingerprint(tool_name, arguments, scope),
             "created_at": time.time(),
         }
 
         summary_args = {**arguments, **(summary_extras or {})}
-        summary = self._build_summary(tool_name, summary_args)
+        summary = self._build_summary(tool_name, summary_args, scope)
 
         logger.info(
             "Confirmation requested for %s (token=%s...)", tool_name, token[:8]
@@ -179,6 +180,7 @@ class ConfirmationManager:
         secret: str,
         tool_name: str,
         arguments: Dict[str, Any],
+        *, scope: dict | None = None,
     ) -> bool:
         """Validate a confirmation token+secret+tool+args. Consumes the token."""
         self._cleanup_expired()
@@ -198,7 +200,7 @@ class ConfirmationManager:
             return False
 
         expected_fp = pending["fingerprint"]
-        actual_fp = self._fingerprint(tool_name, arguments)
+        actual_fp = self._fingerprint(tool_name, arguments, scope)
         if actual_fp != expected_fp:
             logger.warning(
                 "Confirmation rejected: tool/args mismatch (expected=%s, got=%s)",
@@ -212,20 +214,22 @@ class ConfirmationManager:
         )
         return True
 
-    def _fingerprint(self, tool_name: str, arguments: Dict[str, Any]) -> str:
+    def _fingerprint(self, tool_name: str, arguments: Dict[str, Any], scope: dict | None = None) -> str:
         """SHA-256 fingerprint of canonicalized (tool_name, arguments)."""
         clean = {
             k: v
             for k, v in sorted(arguments.items())
             if k not in ("confirmation_token", "confirmation_secret", "confirmation_secret_confirm")
         }
-        canonical = json.dumps({"tool": tool_name, "args": clean}, sort_keys=True)
+        canonical = json.dumps({"tool": tool_name, "args": clean, "scope": scope or {}}, sort_keys=True)
         return hashlib.sha256(canonical.encode()).hexdigest()
 
-    def _build_summary(self, tool_name: str, arguments: Dict[str, Any]) -> str:
+    def _build_summary(self, tool_name: str, arguments: Dict[str, Any], scope: dict | None = None) -> str:
         """Build a human-readable summary of the pending operation."""
         action = tool_name.replace("_", " ").upper()
         parts = [f"Action: {action}"]
+        if scope is not None:
+            parts.append(f"Scope: compartment={scope.get('compartment_id')}, namespace={scope.get('namespace')}")
         summary_keys = dict.fromkeys([
             *_SUMMARY_KEYS.get(tool_name, []),
             *_COMMON_SCOPE_SUMMARY_KEYS,
@@ -233,7 +237,7 @@ class ConfirmationManager:
         for key in summary_keys:
             if key in arguments:
                 val = str(arguments[key])
-                if key != "data_warning" and len(val) > 120:
+                if key not in ("data_warning", "linked_alerts", "origin", "deletion") and len(val) > 120:
                     val = val[:120] + "..."
                 parts.append(f"  {key}: {val}")
         return "\n".join(parts)

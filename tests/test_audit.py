@@ -11,6 +11,15 @@ import pytest
 from oci_logan_mcp.audit import AuditLogger
 
 
+def test_retained_audit_omits_empty_error_but_writes_the_event(tmp_path):
+    audit = AuditLogger(tmp_path, session_id="empty-error", store_arguments=True)
+    audit.log(user="alice", tool="run_query", args={}, outcome="error",
+              error="", error_type="ValueError")
+    [entry] = [json.loads(line) for line in audit._log_path.read_text().splitlines()]
+    assert entry["outcome"] == "error" and entry["tool"] == "run_query"
+    assert "error" not in entry
+
+
 @pytest.fixture()
 def log_dir(tmp_path: Path) -> Path:
     return tmp_path / "audit"
@@ -22,6 +31,38 @@ def logger(log_dir: Path) -> AuditLogger:
 
 
 class TestAuditLogger:
+    def test_store_arguments_false_omits_nested_text_results_and_errors(self, log_dir):
+        import hashlib
+
+        logger = AuditLogger(log_dir, session_id="s", store_arguments=False)
+        query = "* | stats count | MARKER_QUERY"
+        long_text = "MARKER_LONG_" + "x" * 70
+        error = "MARKER_ERROR in request"
+        logger.log(user="u", tool="run_query", args={
+            "query": query, "max_results": 5, "queries": [query],
+            "nested": {"notes": ["MARKER_NOTES"], "description": "MARKER_DESCRIPTION",
+                       "label": long_text},
+        }, outcome="execution_failed", result_summary={
+            "success": False, "execution_ms": 12, "row_count": 2, "column_count": 1,
+            "preview": "MARKER_RESULT", "status": "MARKER_STATUS", "unknown_count": 99,
+        }, error=error, error_type="ValueError")
+        raw = (log_dir / "audit.log").read_text()
+        entry = json.loads(raw)
+        assert entry["tool"] == "run_query" and entry["outcome"] == "execution_failed"
+        assert "MARKER_" not in raw
+        fingerprint = {"sha256": hashlib.sha256(query.encode()).hexdigest(), "length": len(query)}
+        assert entry["args_redacted"]["query"] == fingerprint
+        assert entry["args_redacted"]["queries"] == [fingerprint]
+        assert entry["args_redacted"]["max_results"] == 5
+        assert entry["args_redacted"]["nested"]["notes"][0]["length"] == 12
+        assert entry["args_redacted"]["nested"]["label"]["length"] == len(long_text)
+        assert entry["result_summary"] == {
+            "success": False, "execution_ms": 12, "row_count": 2, "column_count": 1,
+        }
+        assert entry["error"] == {"error_type": "ValueError", "length": len(error),
+                                   "sha256": hashlib.sha256(error.encode()).hexdigest()}
+        assert entry["text_retained"] is False
+
     def test_creates_log_dir(self, log_dir: Path) -> None:
         AuditLogger(log_dir)
         assert log_dir.is_dir()
@@ -37,7 +78,7 @@ class TestAuditLogger:
         assert len(lines) == 2
         for line in lines:
             entry = json.loads(line)
-            for key in ("timestamp", "user", "pid", "tool", "args", "outcome"):
+            for key in ("timestamp", "user", "pid", "tool", "args_redacted", "outcome"):
                 assert key in entry, f"Missing key: {key}"
 
     def test_log_includes_enriched_mcp_audit_fields(
@@ -116,10 +157,33 @@ class TestAuditLogger:
             outcome="success",
         )
         entry = json.loads((log_dir / "audit.log").read_text().strip())
-        assert "confirmation_token" not in entry["args"]
-        assert "confirmation_secret" not in entry["args"]
-        assert "confirmation_secret_confirm" not in entry["args"]
-        assert entry["args"]["id"] == "1"
+        assert "confirmation_token" not in entry["args_redacted"]
+        assert "confirmation_secret" not in entry["args_redacted"]
+        assert "confirmation_secret_confirm" not in entry["args_redacted"]
+        assert entry["args_redacted"]["id"] == "1"
+
+    def test_entry_has_no_raw_args(self, logger, log_dir):
+        logger.log(user="alice", tool="run_query",
+                   args={"query": "user = 'alice@example.com'", "id": "1"}, outcome="ok")
+        raw = (log_dir / "audit.log").read_text()
+        entry = json.loads(raw)
+        assert "args" not in entry
+        assert entry["args_redacted"]["id"] == "1"
+        assert "<email>" in entry["args_redacted"]["query"]
+        assert "alice@example.com" not in raw
+
+    def test_sample_digest_survives_argument_redaction(self, logger, log_dir):
+        import hashlib
+
+        digest = hashlib.sha256(b"canonical sample").hexdigest()
+        logger.log(user="alice", tool="create_log_source_from_sample", args={
+            "sample_sha256": digest, "sample_logs": "<redacted>",
+            "compartment_id": "ocid1.compartment.oc1..abc123",
+        }, outcome="invoked")
+        entry = json.loads((log_dir / "audit.log").read_text())
+        assert entry["args_redacted"]["sample_sha256"] == digest
+        assert entry["args_redacted"]["sample_logs"] == "<redacted>"
+        assert entry["args_redacted"]["compartment_id"] == "<resource_ocid>"
 
     def test_timestamp_is_utc(self, logger: AuditLogger, log_dir: Path) -> None:
         logger.log(user="alice", tool="t", args={}, outcome="ok")

@@ -1,0 +1,560 @@
+version: '2026-10-24'
+query_language: mql
+provenance:
+  argus:
+    repository: rishabh-ghosh24/argus-oci-observability
+    commit: 970329dd79bbc134b0e4b77418f458c00fe3fca3
+    catalog_version: '2026-08-09'
+  oci_mon:
+    repository: rishabh-ghosh24/oci-mon-mcp-server
+    registry_commit: aa650179ad0e6bb12191cdb90be0644c1df6e8dc
+    note: Separate committed registry snapshot, not the public-main snapshot.
+  license: MIT; data adapted from the named user-owned source snapshots. Official
+    service facts were checked separately.
+definitions:
+- metric_key: cpu
+  namespace: oci_computeagent
+  label: CPU utilization
+  metric_names:
+  - CpuUtilization
+  aliases:
+  - cpu
+  - cpu usage
+  - cpu utilization
+  - processor
+  unit: percent
+  resource_name_dimension: resourceDisplayName
+  group_by_dimensions:
+  - resourceId
+  - resourceDisplayName
+  allowed_filter_dimensions:
+  - resourceId
+  - resourceDisplayName
+  allowed_aggregations:
+  - mean
+  - max
+  - min
+  default_aggregation: mean
+  default_interval: 5m
+  resource_group: null
+- metric_key: memory
+  namespace: oci_computeagent
+  label: Memory utilization
+  metric_names:
+  - MemoryUtilization
+  aliases:
+  - memory
+  - memory usage
+  - memory utilization
+  - ram
+  - ram usage
+  unit: percent
+  resource_name_dimension: resourceDisplayName
+  group_by_dimensions:
+  - resourceId
+  - resourceDisplayName
+  allowed_filter_dimensions:
+  - resourceId
+  - resourceDisplayName
+  allowed_aggregations:
+  - mean
+  - max
+  - min
+  default_aggregation: mean
+  default_interval: 5m
+  resource_group: null
+- metric_key: cpu_memory
+  namespace: oci_computeagent
+  label: CPU and memory utilization
+  metric_names:
+  - CpuUtilization
+  - MemoryUtilization
+  aliases:
+  - cpu and memory
+  - cpu memory
+  - compute utilization
+  unit: percent
+  resource_name_dimension: resourceDisplayName
+  group_by_dimensions:
+  - resourceId
+  - resourceDisplayName
+  allowed_filter_dimensions:
+  - resourceId
+  - resourceDisplayName
+  allowed_aggregations:
+  - mean
+  - max
+  - min
+  default_aggregation: mean
+  default_interval: 5m
+  resource_group: null
+- metric_key: disk_io_throughput
+  namespace: oci_computeagent
+  label: Disk bytes read and written per reporting interval
+  metric_names:
+  - DiskBytesRead
+  - DiskBytesWritten
+  aliases:
+  - disk throughput
+  - disk io throughput
+  - disk bytes
+  unit: bytes
+  resource_name_dimension: resourceDisplayName
+  group_by_dimensions:
+  - resourceId
+  - resourceDisplayName
+  allowed_filter_dimensions:
+  - resourceId
+  - resourceDisplayName
+  allowed_aggregations:
+  - mean
+  - max
+  - min
+  - sum
+  default_aggregation: sum
+  default_interval: 5m
+  resource_group: null
+- metric_key: disk_io_iops
+  namespace: oci_computeagent
+  label: Disk read and write operations per reporting interval
+  metric_names:
+  - DiskIopsRead
+  - DiskIopsWritten
+  aliases:
+  - disk iops
+  - disk operations
+  - disk io ops
+  unit: operations
+  resource_name_dimension: resourceDisplayName
+  group_by_dimensions:
+  - resourceId
+  - resourceDisplayName
+  allowed_filter_dimensions:
+  - resourceId
+  - resourceDisplayName
+  allowed_aggregations:
+  - mean
+  - max
+  - min
+  - sum
+  default_aggregation: sum
+  default_interval: 5m
+  resource_group: null
+- metric_key: vcn_bytes_in
+  namespace: oci_vcn
+  label: Network bytes received
+  metric_names:
+  - VnicFromNetworkBytes
+  aliases:
+  - network ingress bytes
+  - network bytes in
+  - vcn bytes in
+  - incoming bytes
+  - inbound bytes
+  unit: bytes
+  resource_name_dimension: null
+  group_by_dimensions: &id001
+  - resourceId
+  allowed_filter_dimensions: *id001
+  allowed_aggregations:
+  - mean
+  - max
+  - min
+  - sum
+  default_aggregation: sum
+  default_interval: 5m
+  resource_group: null
+- metric_key: vcn_bytes_out
+  namespace: oci_vcn
+  label: Network bytes sent
+  metric_names:
+  - VnicToNetworkBytes
+  aliases:
+  - network egress bytes
+  - network bytes out
+  - vcn bytes out
+  - outgoing bytes
+  - outbound bytes
+  unit: bytes
+  resource_name_dimension: null
+  group_by_dimensions: &id002
+  - resourceId
+  allowed_filter_dimensions: *id002
+  allowed_aggregations:
+  - mean
+  - max
+  - min
+  - sum
+  default_aggregation: sum
+  default_interval: 5m
+  resource_group: null
+- metric_key: vcn_packets_in
+  namespace: oci_vcn
+  label: Network packets received
+  metric_names:
+  - VnicFromNetworkPackets
+  aliases:
+  - network ingress packets
+  - network packets in
+  - vcn packets in
+  - incoming packets
+  unit: packets
+  resource_name_dimension: null
+  group_by_dimensions: &id003
+  - resourceId
+  allowed_filter_dimensions: *id003
+  allowed_aggregations:
+  - mean
+  - max
+  - min
+  - sum
+  default_aggregation: sum
+  default_interval: 5m
+  resource_group: null
+- metric_key: vcn_packets_out
+  namespace: oci_vcn
+  label: Network packets sent
+  metric_names:
+  - VnicToNetworkPackets
+  aliases:
+  - network egress packets
+  - network packets out
+  - vcn packets out
+  - outgoing packets
+  unit: packets
+  resource_name_dimension: null
+  group_by_dimensions: &id004
+  - resourceId
+  allowed_filter_dimensions: *id004
+  allowed_aggregations:
+  - mean
+  - max
+  - min
+  - sum
+  default_aggregation: sum
+  default_interval: 5m
+  resource_group: null
+- metric_key: volume_read_throughput
+  namespace: oci_blockstore
+  label: Volume bytes read per reporting interval
+  metric_names:
+  - VolumeReadThroughput
+  aliases:
+  - volume read throughput
+  - block read throughput
+  - volume read bytes
+  unit: bytes
+  resource_name_dimension: null
+  group_by_dimensions: &id005
+  - resourceId
+  - attachmentId
+  allowed_filter_dimensions: *id005
+  allowed_aggregations:
+  - mean
+  - max
+  - min
+  - sum
+  default_aggregation: sum
+  default_interval: 5m
+  resource_group: null
+- metric_key: volume_write_throughput
+  namespace: oci_blockstore
+  label: Volume bytes written per reporting interval
+  metric_names:
+  - VolumeWriteThroughput
+  aliases:
+  - volume write throughput
+  - block write throughput
+  - volume write bytes
+  unit: bytes
+  resource_name_dimension: null
+  group_by_dimensions: &id006
+  - resourceId
+  - attachmentId
+  allowed_filter_dimensions: *id006
+  allowed_aggregations:
+  - mean
+  - max
+  - min
+  - sum
+  default_aggregation: sum
+  default_interval: 5m
+  resource_group: null
+- metric_key: volume_read_ops
+  namespace: oci_blockstore
+  label: Volume reads per reporting interval
+  metric_names:
+  - VolumeReadOps
+  aliases:
+  - volume read ops
+  - volume read iops
+  - block read ops
+  unit: reads
+  resource_name_dimension: null
+  group_by_dimensions: &id007
+  - resourceId
+  - attachmentId
+  allowed_filter_dimensions: *id007
+  allowed_aggregations:
+  - mean
+  - max
+  - min
+  - sum
+  default_aggregation: sum
+  default_interval: 5m
+  resource_group: null
+- metric_key: volume_write_ops
+  namespace: oci_blockstore
+  label: Volume writes per reporting interval
+  metric_names:
+  - VolumeWriteOps
+  aliases:
+  - volume write ops
+  - volume write iops
+  - block write ops
+  unit: writes
+  resource_name_dimension: null
+  group_by_dimensions: &id008
+  - resourceId
+  - attachmentId
+  allowed_filter_dimensions: *id008
+  allowed_aggregations:
+  - mean
+  - max
+  - min
+  - sum
+  default_aggregation: sum
+  default_interval: 5m
+  resource_group: null
+- metric_key: lb_http_requests
+  namespace: oci_lbaas
+  label: HTTP request count
+  metric_names:
+  - httpRequests
+  aliases:
+  - load balancer requests
+  - lb requests
+  - http requests
+  - lb http
+  unit: count
+  resource_name_dimension: lbName
+  group_by_dimensions: &id009
+  - resourceId
+  - lbName
+  - lbComponent
+  allowed_filter_dimensions: *id009
+  allowed_aggregations:
+  - mean
+  - max
+  - min
+  - sum
+  default_aggregation: sum
+  default_interval: 5m
+  resource_group: null
+- metric_key: lb_active_connections
+  namespace: oci_lbaas
+  label: Active connections
+  metric_names:
+  - activeConnections
+  aliases:
+  - load balancer connections
+  - lb connections
+  - active connections
+  - lb active
+  unit: count
+  resource_name_dimension: lbName
+  group_by_dimensions: &id010
+  - resourceId
+  - lbName
+  - lbComponent
+  allowed_filter_dimensions: *id010
+  allowed_aggregations:
+  - mean
+  - min
+  - max
+  default_aggregation: mean
+  default_interval: 5m
+  resource_group: null
+- metric_key: lb_bandwidth
+  namespace: oci_lbaas
+  label: Load balancer bandwidth
+  metric_names:
+  - bytesReceived
+  - bytesSent
+  aliases:
+  - load balancer bandwidth
+  - lb bandwidth
+  - lb bytes
+  - lb throughput
+  unit: bytes
+  resource_name_dimension: lbName
+  group_by_dimensions: &id011
+  - resourceId
+  - lbName
+  - lbComponent
+  allowed_filter_dimensions: *id011
+  allowed_aggregations:
+  - mean
+  - max
+  - min
+  - sum
+  default_aggregation: sum
+  default_interval: 5m
+  resource_group: null
+- metric_key: adb_cpu
+  namespace: oci_autonomous_database
+  label: Autonomous DB CPU utilization
+  metric_names:
+  - CpuUtilization
+  aliases:
+  - autonomous database cpu
+  - autonomous db cpu
+  - adb cpu
+  - adb cpu utilization
+  unit: percent
+  resource_name_dimension: null
+  group_by_dimensions: &id012 []
+  allowed_filter_dimensions: *id012
+  allowed_aggregations:
+  - mean
+  - min
+  - max
+  default_aggregation: mean
+  default_interval: 5m
+  resource_group: null
+- metric_key: adb_storage
+  namespace: oci_autonomous_database
+  label: Autonomous DB storage utilization
+  metric_names:
+  - StorageUtilization
+  aliases:
+  - autonomous database storage
+  - autonomous db storage
+  - adb storage
+  unit: percent
+  resource_name_dimension: null
+  group_by_dimensions: &id013 []
+  allowed_filter_dimensions: *id013
+  allowed_aggregations:
+  - mean
+  - min
+  - max
+  default_aggregation: mean
+  default_interval: 1h
+  resource_group: null
+- metric_key: adb_sessions
+  namespace: oci_autonomous_database
+  label: Autonomous DB sessions
+  metric_names:
+  - Sessions
+  aliases:
+  - autonomous database sessions
+  - autonomous db sessions
+  - adb sessions
+  unit: count
+  resource_name_dimension: null
+  group_by_dimensions: &id014 []
+  allowed_filter_dimensions: *id014
+  allowed_aggregations:
+  - mean
+  - max
+  - min
+  - sum
+  default_aggregation: sum
+  default_interval: 5m
+  resource_group: null
+- metric_key: bucket_size
+  namespace: oci_objectstorage
+  label: Bucket size
+  metric_names:
+  - StoredBytes
+  aliases:
+  - bucket size
+  - object storage size
+  - bucket bytes
+  - object storage bytes
+  unit: bytes
+  resource_name_dimension: resourceDisplayName
+  group_by_dimensions: &id015
+  - resourceDisplayName
+  allowed_filter_dimensions: *id015
+  allowed_aggregations:
+  - mean
+  - min
+  - max
+  default_aggregation: mean
+  default_interval: 1h
+  resource_group: null
+- metric_key: bucket_requests
+  namespace: oci_objectstorage
+  label: Bucket request count
+  metric_names:
+  - AllRequests
+  aliases:
+  - bucket requests
+  - object storage requests
+  - bucket api calls
+  unit: count
+  resource_name_dimension: resourceDisplayName
+  group_by_dimensions: &id016
+  - resourceDisplayName
+  allowed_filter_dimensions: *id016
+  allowed_aggregations:
+  - mean
+  - max
+  - min
+  - sum
+  default_aggregation: sum
+  default_interval: 5m
+  resource_group: null
+- metric_key: fn_invocations
+  namespace: oci_faas
+  label: Function invocations
+  metric_names:
+  - FunctionInvocationCount
+  aliases:
+  - function invocations
+  - fn invocations
+  - function calls
+  - lambda invocations
+  unit: count
+  resource_name_dimension: resourceDisplayName
+  group_by_dimensions:
+  - resourceId
+  - resourceDisplayName
+  allowed_filter_dimensions:
+  - resourceId
+  - resourceDisplayName
+  allowed_aggregations:
+  - mean
+  - max
+  - min
+  - sum
+  default_aggregation: sum
+  default_interval: 5m
+  resource_group: null
+- metric_key: fn_duration
+  namespace: oci_faas
+  label: Function total execution duration
+  metric_names:
+  - FunctionExecutionDuration
+  aliases:
+  - function duration
+  - fn duration
+  - function execution time
+  unit: ms
+  resource_name_dimension: resourceDisplayName
+  group_by_dimensions:
+  - resourceId
+  - resourceDisplayName
+  allowed_filter_dimensions:
+  - resourceId
+  - resourceDisplayName
+  allowed_aggregations:
+  - mean
+  - max
+  - min
+  - sum
+  default_aggregation: sum
+  default_interval: 5m
+  resource_group: null

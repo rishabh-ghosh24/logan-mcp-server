@@ -2,7 +2,7 @@ name: tests
 
 on:
   push:
-    branches: [main]
+    branches: ["**"]
   pull_request:
     branches: [main]
 
@@ -13,17 +13,22 @@ concurrency:
 
 jobs:
   pytest:
-    runs-on: ubuntu-latest
-    timeout-minutes: 10
+    runs-on: ${{ matrix.os }}
+    timeout-minutes: 20
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [ubuntu-latest, macos-latest]
+        python-version: ["3.11", "3.12", "3.13", "3.14"]
 
     steps:
       - name: Checkout
         uses: actions/checkout@v4
 
-      - name: Set up Python 3.11
+      - name: Set up Python
         uses: actions/setup-python@v5
         with:
-          python-version: "3.11"
+          python-version: ${{ matrix.python-version }}
           cache: pip
 
       - name: Install project + dev dependencies
@@ -32,4 +37,71 @@ jobs:
           pip install -e ".[dev]"
 
       - name: Run tests
-        run: pytest --tb=short -q
+        run: |
+          python - <<'PY'
+          import os
+          import subprocess
+          import sys
+          import tempfile
+          from pathlib import Path
+
+          with tempfile.TemporaryDirectory(prefix="logan-tests-") as scratch:
+              environment = os.environ.copy()
+              environment["HOME"] = scratch
+              environment["MPLCONFIGDIR"] = str(Path(scratch) / "matplotlib")
+              subprocess.run(
+                  [sys.executable, "-m", "pytest", "--tb=short", "-q", "-p", "no:cacheprovider"],
+                  env=environment, check=True,
+              )
+          PY
+
+      - name: Build and inspect wheel
+        run: |
+          pip wheel --no-deps -w dist .
+          python - <<'PY'
+          from pathlib import Path
+          import zipfile
+
+          [wheel] = list(Path("dist").glob("oci_logan_mcp-*.whl"))
+          with zipfile.ZipFile(wheel) as archive:
+              names = archive.namelist()
+              assert len(names) == len(set(names))
+              for name in ("starter_queries.yaml", "builtin_queries.yaml", "metric_catalog.yaml",
+                           "metric_catalog_manifest.json", "monitoring_templates.yaml", "monitoring_syntax.md"):
+                  assert archive.read(f"oci_logan_mcp/data/{name}").strip()
+              assert archive.read("oci_logan_mcp/__main__.py").strip()
+              print(f"Verified {wheel.name}: {len(names)} unique files, log and Monitoring data included")
+          PY
+
+      - name: Verify installed wheel outside checkout
+        run: |
+          python - <<'PY'
+          import os
+          from pathlib import Path
+          import shlex
+          import shutil
+          import subprocess
+          import sys
+          import tempfile
+
+          root = Path.cwd()
+          [wheel] = list((root / "dist").glob("oci_logan_mcp-*.whl"))
+          scratch = Path(tempfile.mkdtemp(prefix="logan-installed-"))
+          environment_dir = scratch / "venv"
+          subprocess.run([sys.executable, "-m", "venv", str(environment_dir)], check=True)
+          python = environment_dir / "bin" / "python"
+          subprocess.run([str(python), "-m", "pip", "install", str(wheel),
+                          "pytest", "pytest-asyncio"], check=True)
+          shutil.copytree(root / "tests", scratch / "tests")
+          shutil.copytree(root / "scripts", scratch / "scripts")
+          environment = os.environ.copy()
+          environment.update(
+              HOME=str(scratch / "home"), MPLCONFIGDIR=str(scratch / "matplotlib"),
+              LOGAN_SMOKE_COMMAND=shlex.join([str(python), "-m", "oci_logan_mcp"]),
+              LOGAN_METRICS_TEST_WHEEL=str(wheel),
+          )
+          subprocess.run([str(python), "-m", "pytest", "tests/test_protocol_smoke.py",
+                          "tests/test_metrics_protocol.py", "tests/test_metrics_packaging.py",
+                          "tests/test_metrics_live_validator.py", "-q", "--tb=short",
+                          "-p", "no:cacheprovider"], cwd=scratch, env=environment, check=True)
+          PY

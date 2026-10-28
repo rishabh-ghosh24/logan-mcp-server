@@ -234,6 +234,22 @@ class QueryValidator:
             if typo in query_lower:
                 errors.append(f"Possible typo: '{typo}' should be '{correct}'")
 
+        quoted = re.compile(r"'(?:''|\\.|[^'\\])*'|\"(?:\"\"|\\.|[^\"\\])*\"")
+        syntax = quoted.sub(lambda m: "''" if m.group(0).startswith("'") else '\"\"', query)
+        if re.search(r"\|\s*where\b[^|]*?\S\s+(contains|regex)\s+(?!\()", syntax, re.IGNORECASE):
+            errors.append(
+                "OCI `where` has no `contains`/`regex` operator; filter before the pipe with "
+                "'Original Log Content' like '%text%', use | search anyof(...), "
+                "or the function form contains(field, 'text')"
+            )
+        if re.search(r"\btimestats\s+(count|sum|avg|min|max|distinctcount)\b[^|]*\bspan\s*=", syntax, re.IGNORECASE):
+            errors.append("Write options before the function: timestats span = 1hour count")
+        raw_field_syntax = quoted.sub(
+            lambda m: m.group(0) if m.group(0).lower() == "'original log content'" else "''", query,
+        )
+        if re.search(r"\|\s*regex\s+'Original Log Content'\s*=", raw_field_syntax, re.IGNORECASE):
+            errors.append("regex works on parsed fields only; use like or search on raw content")
+
         return errors
 
     def _validate_time_range(
@@ -299,9 +315,11 @@ class QueryValidator:
                 [
                     "* | stats count by 'Log Source'",
                     "'Error' | stats count",
-                    "* | timestats count span=1hour",
+                    "* | timestats span = 1hour count",
                     "* | head 100",
                 ]
             )
 
+        if query_lower.endswith("timestats"):
+            suggestions.append("* | timestats span = 1hour count")
         return suggestions

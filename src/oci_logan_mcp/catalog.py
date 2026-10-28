@@ -12,6 +12,7 @@ from typing import Dict, List, Optional
 import yaml
 
 from .file_lock import atomic_yaml_read
+from .user_store import query_origin
 
 logger = logging.getLogger(__name__)
 
@@ -47,6 +48,8 @@ class CatalogEntry:
     promotion_reason: Optional[str] = None
     intent_key: Optional[str] = None
     query_shape: Optional[str] = None
+    origin: str = "manual"
+    user_count: int = 0
 
 
 class UnifiedCatalog:
@@ -147,6 +150,8 @@ class UnifiedCatalog:
                     promotion_reason=q.get("promotion_reason"),
                     intent_key=q.get("intent_key"),
                     query_shape=q.get("query_shape"),
+                    origin=query_origin(q),
+                    user_count=q.get("user_count", 0),
                 )
             )
 
@@ -218,10 +223,11 @@ class UnifiedCatalog:
         if category:
             entries = [e for e in entries if e.category == category]
 
-        def key(e: CatalogEntry) -> tuple[int, int, int, int, str]:
+        def key(e: CatalogEntry) -> tuple[int, int, int, int, int, str]:
             category_match = 1 if category and e.category == category else 0
             return (
                 category_match,
+                int(e.origin == "manual"),
                 int(e.success_count or 0),
                 int(e.use_count or 0),
                 int(e.interest_score or 0),

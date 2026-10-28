@@ -241,7 +241,7 @@ async def test_budget_records_on_successful_live():
 
 
 @pytest.mark.asyncio
-async def test_batch_queries_do_not_consume_budget_in_p0():
+async def test_batch_queries_consume_budget_per_item():
     from unittest.mock import AsyncMock, MagicMock
     from oci_logan_mcp.query_engine import QueryEngine
     from oci_logan_mcp.query_estimator import QueryEstimator
@@ -259,14 +259,14 @@ async def test_batch_queries_do_not_consume_budget_in_p0():
     engine = QueryEngine(oci_client, cache, MagicMock(),
                          estimator=estimator, budget_tracker=tracker)
 
-    await engine.execute_batch([
+    results = await engine.execute_batch([
         {"query": "a", "time_range": "last_1_hour"},
         {"query": "b", "time_range": "last_1_hour"},
     ])
     snap = tracker.snapshot()
-    assert snap.queries == 0, (
-        "P0 spec: run_batch_queries is unbudgeted."
-    )
+    assert [result["success"] for result in results] == [True, True]
+    assert oci_client.query.await_count == 2
+    assert snap.queries == 2, "Each live batch item must reserve query budget"
 
 
 @pytest.mark.asyncio
@@ -337,3 +337,35 @@ async def test_failed_live_query_releases_reservation():
     assert snap.queries == 0
     assert snap.bytes == 0
     assert snap.cost_usd == 0.0
+
+
+@pytest.mark.asyncio
+async def test_timeout_keeps_nonzero_budget_reservation():
+    from unittest.mock import AsyncMock, MagicMock
+    from oci_logan_mcp.client import QueryTimeoutError
+    from oci_logan_mcp.query_engine import QueryEngine
+    from oci_logan_mcp.query_estimator import QueryEstimate
+
+    tracker = BudgetTracker("timeout", BudgetLimits())
+    estimator = MagicMock()
+    estimator.estimate = AsyncMock(return_value=QueryEstimate(
+        estimated_bytes=1024, estimated_rows=1, estimated_cost_usd=0.01,
+        estimated_eta_seconds=1.0, confidence="high", rationale="fixture"
+    ))
+    entered = []
+
+    async def fail_after_reservation(**kwargs):
+        snapshot = tracker.snapshot()
+        assert (snapshot.queries, snapshot.bytes, snapshot.cost_usd) == (1, 1024, 0.01)
+        entered.append(True)
+        raise QueryTimeoutError("deadline")
+
+    client = MagicMock(compartment_id="c")
+    client.query = fail_after_reservation
+    engine = QueryEngine(client, MagicMock(get=MagicMock(return_value=None)), MagicMock(),
+                         estimator=estimator, budget_tracker=tracker)
+    with pytest.raises(QueryTimeoutError, match="deadline"):
+        await engine.execute(query="* | stats count", time_range="last_1_hour")
+    assert entered == [True]
+    snapshot = tracker.snapshot()
+    assert (snapshot.queries, snapshot.bytes, snapshot.cost_usd) == (1, 1024, 0.01)

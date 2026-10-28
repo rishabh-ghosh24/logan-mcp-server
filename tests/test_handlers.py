@@ -1,6 +1,7 @@
 """Tests for MCP request handlers — routing, visualization, scope resolution."""
 
 import hashlib
+import asyncio
 import json
 import pytest
 from pathlib import Path
@@ -133,6 +134,414 @@ def handlers(settings, mock_oci_client, mock_cache, mock_query_logger, mock_cont
 # ---------------------------------------------------------------------------
 # Catalog Wiring Tests
 # ---------------------------------------------------------------------------
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("failure", ["unknown", "read_only", "unavailable", "audit", "execution", "budget"])
+async def test_failed_tool_calls_are_flagged_as_errors(handlers, failure):
+    name, args = "delete_alert", {"alert_id": "ocid1.alarm.oc1..a"}
+    if failure == "unknown":
+        name, args = "no_such_tool", {}
+    elif failure == "read_only":
+        handlers.settings.read_only = True
+    elif failure == "audit":
+        handlers.audit_logger = None
+    elif failure == "execution":
+        name, args = "list_fields", {}
+        handlers.schema_manager.get_fields = AsyncMock(side_effect=ValueError("broken"))
+    elif failure == "budget":
+        name, args = "run_query", {"query": "* | stats count"}
+        handlers._budget_tracker.limits.max_queries_per_session = 0
+    result = await handlers.handle_tool_call(name, args)
+    assert result[0]["is_error"] is True
+    assert result[0]["text"]
+    if failure == "budget":
+        assert "limit" in result[0]["text"]
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("tool,args", [
+    ("get_current_context", {}), ("no_such_tool", {}), ("delete_alert", {"alert_id": "alarm"}),
+])
+async def test_client_metadata_lands_on_all_dispatch_audit_events(handlers, mock_audit_logger, tool, args):
+    claimed = {"claimed_client": "review-client", "claimed_version": "2.1.0", "source_ip_truncated": None}
+    result = await handlers.handle_tool_call(tool, args, client_metadata=claimed)
+    assert result and result[0]["text"]
+    events = list(mock_audit_logger.iter_entries())
+    assert len(events) == 2 and events[0]["outcome"] == "invoked"
+    assert all(event["client_metadata"] == claimed for event in events)
+
+
+@pytest.mark.asyncio
+async def test_client_metadata_is_not_shared_across_overlapping_calls(handlers, mock_audit_logger):
+    started, release = asyncio.Event(), asyncio.Event()
+
+    async def fields(**kwargs):
+        started.set()
+        await release.wait()
+        return []
+
+    handlers.schema_manager.get_fields = fields
+    a = {"claimed_client": "first", "claimed_version": "1", "source_ip_truncated": None}
+    b = {"claimed_client": "second", "claimed_version": "2", "source_ip_truncated": None}
+    async with asyncio.timeout(2):
+        first = asyncio.create_task(handlers.handle_tool_call("list_fields", {}, client_metadata=a))
+        await asyncio.sleep(0)
+        if first.done():
+            await first
+            pytest.fail("The first call must reach the gated field lookup")
+        await started.wait()
+        try:
+            await handlers.handle_tool_call("get_current_context", {}, client_metadata=b)
+        finally:
+            release.set()
+        await first
+    events = list(mock_audit_logger.iter_entries())
+    assert len(events) == 4
+    assert all(event["client_metadata"] == (a if event["tool"] == "list_fields" else b) for event in events)
+
+
+@pytest.mark.asyncio
+async def test_client_metadata_covers_nested_audit_events_and_is_reset(handlers, mock_audit_logger):
+    claimed = {"claimed_client": "review-client", "claimed_version": "2.1.0", "source_ip_truncated": None}
+    [response] = await handlers.handle_tool_call("setup_confirmation_secret", {
+        "confirmation_secret": "temporary-test-secret", "confirmation_secret_confirm": "temporary-test-secret",
+    }, client_metadata=claimed)
+    assert json.loads(response["text"])["status"] == "configured"
+    events = list(mock_audit_logger.iter_entries())
+    assert len(events) == 3 and events[1]["tool"] == "__secret_management"
+    assert all(event["client_metadata"] == claimed for event in events)
+    mock_audit_logger.log(user="system", tool="background", args={}, outcome="executed")
+    assert list(mock_audit_logger.iter_entries())[-1]["client_metadata"]["claimed_client"] == "unknown"
+
+
+@pytest.mark.asyncio
+async def test_confirmation_required_is_not_an_error_but_bad_secret_is(handlers):
+    handlers.secret_store.set_secret("correct-secret")
+    args = {"alert_id": "ocid1.alarm.oc1..a"}
+    first = await handlers.handle_tool_call("delete_alert", args)
+    payload = json.loads(first[0]["text"])
+    assert payload["status"] == "confirmation_required"
+    assert not first[0].get("is_error")
+    bad = await handlers.handle_tool_call("delete_alert", {
+        **args, "confirmation_token": payload["confirmation_token"], "confirmation_secret": "wrong",
+    })
+    assert json.loads(bad[0]["text"])["status"] == "confirmation_failed"
+    assert bad[0]["is_error"] is True
+
+
+def test_structured_error_response_is_flagged_as_error(handlers):
+    [result] = handlers._error_response("bad_input", "bad value")
+    assert result["is_error"] is True
+    assert json.loads(result["text"])["error_code"] == "bad_input"
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("name,args", [
+    ("run_saved_search", {}), ("trace_request_id", {}), ("find_rare_events", {}),
+    ("parser_failure_triage", {"top_n": "invalid"}),
+])
+async def test_inline_validation_errors_are_mcp_errors(handlers, name, args):
+    [result] = await handlers.handle_tool_call(name, args)
+    assert json.loads(result["text"])["status"] == "error"
+    assert result["is_error"] is True
+
+
+@pytest.mark.asyncio
+async def test_failed_query_validation_is_a_successful_diagnostic_call(handlers):
+    [result] = await handlers.handle_tool_call("validate_query", {"query": "* | timestats count span=1h"})
+    assert json.loads(result["text"])["valid"] is False
+    assert not result.get("is_error")
+
+
+@pytest.mark.asyncio
+async def test_audit_summary_marks_inline_tool_failure_unsuccessful(handlers, mock_audit_logger):
+    [result] = await handlers.handle_tool_call("run_saved_search", {})
+    assert json.loads(result["text"])["error_code"] == "MISSING_ARGUMENT"
+    terminal = list(mock_audit_logger.iter_entries())[-1]
+    assert terminal["outcome"] == "executed"
+    assert terminal["result_summary"]["success"] is False
+
+
+@pytest.mark.asyncio
+async def test_empty_saved_search_is_flagged_as_error(handlers):
+    handlers.saved_search.get_search_by_id = AsyncMock(return_value={"id": "saved", "query": ""})
+    [result] = await handlers.handle_tool_call("run_saved_search", {"id": "saved"})
+    assert result["text"] == "Saved search has no query defined"
+    assert result["is_error"] is True
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("setter,args", [
+    ("set_compartment", {"compartment_id": "other"}),
+    ("set_namespace", {"namespace": "other"}),
+])
+async def test_confirmation_scope_rejects_token_after_setter(handlers, setter, args):
+    handlers.secret_store.set_secret("correct-secret")
+    handlers.alarm_service.delete_alert = AsyncMock(return_value={"deleted": True})
+    original = {"alert_id": "alarm"}
+    first = await handlers.handle_tool_call("delete_alert", original)
+    token = json.loads(first[0]["text"])["confirmation_token"]
+    await handlers.handle_tool_call(setter, args)
+    second = await handlers.handle_tool_call("delete_alert", {
+        **original, "confirmation_token": token, "confirmation_secret": "correct-secret",
+    })
+    assert json.loads(second[0]["text"])["status"] == "confirmation_failed"
+    assert handlers.alarm_service.delete_alert.await_count == 0
+
+
+@pytest.mark.asyncio
+async def test_confirmation_tenancy_scope_is_shown_and_used(handlers):
+    handlers.secret_store.set_secret("correct-secret")
+    seen = []
+
+    async def create(**kwargs):
+        seen.append(kwargs)
+        return {"id": "new-search", "compartment_id": kwargs["compartment_id"]}
+
+    handlers.saved_search.create_search = create
+    args = {"display_name": "search", "query": "* | stats count", "scope": "tenancy"}
+    [first] = await handlers.handle_tool_call("create_saved_search", args)
+    payload = json.loads(first["text"])
+    assert "Scope: compartment=ocid1.tenancy.test, namespace=testns" in payload["summary"]
+    [second] = await handlers.handle_tool_call("create_saved_search", {
+        **args, "confirmation_token": payload["confirmation_token"], "confirmation_secret": "correct-secret",
+    })
+    assert json.loads(second["text"]) == {"id": "new-search", "compartment_id": "ocid1.tenancy.test"}
+    assert seen[0]["compartment_id"] == "ocid1.tenancy.test"
+    assert "compartment_id" not in args
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("resource", [False, True])
+async def test_scope_setter_waits_for_running_tool_or_resource(handlers, mock_oci_client, resource):
+    started, release = asyncio.Event(), asyncio.Event()
+    seen = []
+
+    async def slow(**kwargs):
+        started.set()
+        await release.wait()
+        seen.append(mock_oci_client.namespace)
+        return {"fields": []} if resource else []
+
+    handlers.schema_manager.get_schema_digest = slow
+    handlers.schema_manager.get_log_sources = slow
+    async with asyncio.timeout(2):
+        op = asyncio.create_task(handlers.handle_resource_read("loganalytics://schema") if resource
+                                 else handlers.handle_tool_call("list_log_sources", {}))
+        await started.wait()
+        change = asyncio.create_task(handlers.handle_tool_call("set_namespace", {"namespace": "other"}))
+        try:
+            await asyncio.sleep(0.05)
+            blocked = not change.done() and mock_oci_client.namespace == "testns"
+        finally:
+            release.set()
+            await asyncio.gather(op, change)
+        assert blocked and seen == ["testns"]
+        assert mock_oci_client.namespace == "other"
+
+
+@pytest.mark.asyncio
+async def test_scope_cancelled_waiting_writer_leaves_guard_usable(handlers, mock_oci_client):
+    started, release = asyncio.Event(), asyncio.Event()
+
+    async def slow(**kwargs):
+        started.set()
+        await release.wait()
+        return []
+
+    handlers.schema_manager.get_log_sources = slow
+    async with asyncio.timeout(2):
+        op = asyncio.create_task(handlers.handle_tool_call("list_log_sources", {}))
+        await started.wait()
+        change = asyncio.create_task(handlers.handle_tool_call("set_namespace", {"namespace": "other"}))
+        try:
+            await asyncio.sleep(0.02)
+            change.cancel()
+            with pytest.raises(asyncio.CancelledError):
+                await change
+        finally:
+            release.set()
+            await asyncio.gather(op, change, return_exceptions=True)
+        assert mock_oci_client.namespace == "testns"
+        await handlers.handle_tool_call("set_namespace", {"namespace": "third"})
+        assert mock_oci_client.namespace == "third"
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("cancel_reader", [False, True])
+async def test_scope_guard_prefers_waiting_writer_and_cleans_cancelled_reader(cancel_reader):
+    from oci_logan_mcp.handlers import ScopeGuard
+
+    guard = ScopeGuard()
+    writer_entered, writer_release = asyncio.Event(), asyncio.Event()
+    order = []
+
+    async def writer():
+        async with guard.exclusive():
+            order.append("writer")
+            writer_entered.set()
+            await writer_release.wait()
+
+    async def reader():
+        async with guard.shared():
+            order.append("reader")
+
+    async with asyncio.timeout(2):
+        async with guard.shared():
+            waiting_writer = asyncio.create_task(writer())
+            await asyncio.sleep(0)
+            waiting_reader = asyncio.create_task(reader())
+            await asyncio.sleep(0.01)
+            assert order == []
+            if cancel_reader:
+                waiting_reader.cancel()
+                with pytest.raises(asyncio.CancelledError):
+                    await waiting_reader
+        await writer_entered.wait()
+        try:
+            assert order == ["writer"]
+            assert cancel_reader or not waiting_reader.done()
+        finally:
+            writer_release.set()
+        await asyncio.gather(waiting_writer, waiting_reader, return_exceptions=True)
+        assert order == (["writer"] if cancel_reader else ["writer", "reader"])
+        async with guard.exclusive():
+            order.append("later")
+        assert order[-1] == "later"
+
+
+@pytest.mark.asyncio
+async def test_structured_budget_refusal_is_flagged_as_error(handlers):
+    from oci_logan_mcp.budget_tracker import BudgetExceededError
+
+    handlers.diff_tool.run = AsyncMock(side_effect=BudgetExceededError("query limit"))
+    [result] = await handlers.handle_tool_call("diff_time_windows", {
+        "query": "* | stats count", "current_window": "last_1_hour", "comparison_window": "last_24_hours",
+    })
+    assert json.loads(result["text"])["status"] == "budget_exceeded"
+    assert result["is_error"] is True
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("query", [
+    "* | stats count",
+    "'Log Source' = 'OKE Control Plane Logs' | stats count by Severity | sort -count | head 10",
+])
+async def test_save_learned_query_scores_manual_saves(handlers, mock_user_store, query):
+    response = await handlers._save_learned_query({
+        "name": "my_saved_query", "query": query, "description": "my description",
+    })
+    assert json.loads(response[0]["text"])["status"] == "saved"
+    [entry] = mock_user_store.list_queries()
+    assert entry["interest_score"] >= 4
+    assert entry["origin"] == "manual"
+
+
+@pytest.mark.asyncio
+async def test_shared_query_examples_expose_user_and_success_counts(handlers, mock_user_store):
+    from oci_logan_mcp.file_lock import atomic_yaml_write
+
+    atomic_yaml_write(mock_user_store.base_dir / "shared" / "promoted_queries.yaml", {"queries": [{
+        "name": "shared_error_count", "query": "'Log Source' = 'Linux' | stats count",
+        "description": "community example", "category": "errors",
+        "user_count": 3, "success_count": 7, "interest_score": 4,
+    }]})
+    response = await handlers._get_query_examples({"category": "errors", "include_personal": False,
+                                                  "include_shared": True, "limit_per_source": 1})
+    examples = json.loads(response[0]["text"])["examples"]
+    [shared] = [entry for entry in examples if entry["source"] == "shared"]
+    assert shared["name"] == "shared_error_count"
+    assert shared["user_count"] == 3
+    assert shared["success_count"] == 7
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("read_only", [False, True])
+async def test_batch_outcomes_update_real_learning_counters(handlers, mock_user_store, read_only):
+    query = "'Log Source' = 'S' | stats count by Severity | sort -count | head 10"
+    if read_only:
+        mock_user_store.save_query("saved", query, "mine")
+    handlers.settings.read_only = read_only
+    outcomes = [
+        {"success": True, "result": {"data": {"rows": [["ERROR", 1]], "columns": [{"name": "Severity"}, {"name": "count"}]}}},
+        {"success": False, "error": "boom", "error_type": "ValueError"},
+    ]
+    handlers.query_engine.execute_batch = AsyncMock(return_value=outcomes)
+    [response] = await handlers._run_batch_queries({"queries": [{"query": query}, {"query": query}]})
+    assert json.loads(response["text"]) == outcomes
+    [entry] = mock_user_store.list_queries()
+    assert (entry["success_count"], entry["failure_count"]) == ((0, 0) if read_only else (1, 1))
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("tool", ["visualize", "export_results"])
+@pytest.mark.parametrize("failed", [False, True])
+@pytest.mark.parametrize("read_only", [False, True])
+async def test_visualize_and_export_record_query_outcomes(handlers, mock_user_store, tool, failed, read_only):
+    query = "'Log Source' = 'S' | stats count by Severity"
+    mock_user_store.save_query("saved", query, "mine")
+    handlers.settings.read_only = read_only
+    handlers.query_engine.execute = AsyncMock(
+        side_effect=ValueError("OCI unavailable") if failed else None,
+        return_value={"data": {"rows": [["ERROR", 2]], "columns": [{"name": "Severity"}, {"name": "count"}]}},
+    )
+    args = {"query": query, "chart_type": "bar", "format": "csv"}
+    if failed:
+        with pytest.raises(ValueError, match="OCI unavailable"):
+            await getattr(handlers, "_" + tool)(args)
+    else:
+        result = await getattr(handlers, "_" + tool)(args)
+        if tool == "visualize":
+            assert result[0]["type"] == "image" and len(result[0]["data"]) > 100
+        else:
+            assert "ERROR" in result[0]["text"] and "Severity" in result[0]["text"]
+    [entry] = mock_user_store.list_queries()
+    expected = (0, 0) if read_only else ((0, 1) if failed else (1, 0))
+    assert (entry["success_count"], entry["failure_count"]) == expected
+
+
+@pytest.mark.asyncio
+async def test_explicit_save_of_auto_query_preserves_identity_under_variant_pressure(handlers, mock_user_store):
+    query = "'Log Source' = 'OKE Control Plane Logs' | stats count by Severity | sort -count | head 10"
+    result = {"data": {"rows": [[1]], "columns": []}}
+    initial = handlers.auto_saver.process_successful_query(query, result)
+    assert initial is not None
+    await handlers._save_learned_query({"name": "oke_by_severity", "description": "mine", "query": query})
+    [entry] = mock_user_store.list_queries()
+    assert entry["entry_id"] == initial["entry_id"]
+    assert entry["origin"] == "manual" and "auto-saved" not in entry["tags"]
+    assert entry["interest_score"] >= 4
+    handlers.auto_saver.process_successful_query(query, result)
+    for index in range(6):
+        handlers.auto_saver.process_successful_query(query + f" | eval v = {index}", result)
+    entries = mock_user_store.list_queries()
+    [manual] = [item for item in entries if item["name"] == "oke_by_severity"]
+    assert manual["entry_id"] == initial["entry_id"]
+    assert manual["origin"] == "manual" and manual["description"] == "mine"
+    assert manual["query"] == query and manual["use_count"] >= 3
+    assert any(item["name"] != "oke_by_severity" for item in entries)
+
+
+@pytest.mark.asyncio
+async def test_private_audit_records_query_dimensions_and_explicit_exception_type(handlers, tmp_path):
+    handlers.settings.read_only = True
+    audit = AuditLogger(tmp_path / "private-audit", store_arguments=False)
+    handlers.audit_logger = audit
+    result = await handlers.handle_tool_call("run_query", {
+        "query": "'Log Source' = 'Linux' | stats count", "time_range": "last_1_hour",
+    })
+    assert json.loads(result[0]["text"])["data"]["rows"] == [[42]]
+    [executed] = [entry for entry in audit.iter_entries() if entry["outcome"] == "executed"]
+    assert executed["result_summary"]["row_count"] == 1
+    assert executed["result_summary"]["column_count"] == 1
+    assert executed["text_retained"] is False
+
+    handlers.oci_client.list_fields = AsyncMock(side_effect=ValueError("MARKER_FAILURE"))
+    result = await handlers.handle_tool_call("list_fields", {})
+    assert "Error executing list_fields" in result[0]["text"]
+    [failed] = [entry for entry in audit.iter_entries() if entry["outcome"] == "execution_failed"]
+    assert failed["error"]["error_type"] == "ValueError"
+    assert failed["error"]["length"] == len("MARKER_FAILURE")
+    assert "MARKER_FAILURE" not in (tmp_path / "private-audit" / "audit.log").read_text()
 
 def test_mcp_handlers_exposes_unified_catalog(handlers):
     """Handler should have a UnifiedCatalog when user_store is provided."""
@@ -393,6 +802,26 @@ class TestConfigurationHandlers:
     """Test set_compartment, set_namespace, get_current_context."""
 
     @pytest.mark.asyncio
+    async def test_set_compartment_remembers_per_user_and_leaves_config_alone(
+        self, handlers, mock_preference_store, tmp_path, monkeypatch
+    ):
+        cfg = tmp_path / "config.yaml"
+        original = "log_analytics:\n  default_compartment_id: shared-default\n"
+        cfg.write_text(original)
+        monkeypatch.setattr("oci_logan_mcp.config.CONFIG_PATH", cfg)
+        other_user = PreferenceStore(tmp_path / "users" / "other")
+        other_user.remember("default_compartment_id", "other-compartment", 1.0)
+
+        response = await handlers._set_compartment({"compartment_id": "ocid1.comp.new"})
+
+        assert handlers.oci_client.compartment_id == "ocid1.comp.new"
+        assert cfg.read_text() == original
+        reopened = PreferenceStore(tmp_path / "users" / "testuser")
+        assert reopened.get("default_compartment_id")["resolved_value"] == "ocid1.comp.new"
+        assert other_user.get("default_compartment_id")["resolved_value"] == "other-compartment"
+        assert "remembered" in response[0]["text"]
+
+    @pytest.mark.asyncio
     async def test_set_compartment(self, handlers, mock_oci_client, mock_cache):
         """Should update client compartment and clear cache."""
         result = await handlers._set_compartment({"compartment_id": "ocid1.comp.new"})
@@ -552,6 +981,27 @@ class TestResourceRead:
         """Should return tenancy context."""
         result = await handlers.handle_resource_read("loganalytics://tenancy-context")
         assert result == {"namespace": "testns"}
+
+    @pytest.mark.asyncio
+    async def test_schema_read_is_audited_with_actor_scope_and_trace(self, handlers, mock_audit_logger):
+        handlers.schema_manager.get_schema_digest = AsyncMock(return_value={"counts": {}, "errors": {"volume_by_source": "x"}})
+        await handlers.handle_resource_read("loganalytics://schema")
+        events = list(mock_audit_logger.iter_entries())
+        assert [e["outcome"] for e in events] == ["invoked", "executed"]
+        assert {e["tool"] for e in events} == {"resource:loganalytics://schema"}
+        assert {e["user"] for e in events} == {handlers.user_store.user_id}
+        assert len({e["trace_id"] for e in events}) == 1
+        assert {"compartment_id", "include_subcompartments", "namespace"} <= set(events[0]["args_redacted"])
+        assert events[1]["result_summary"]["errors"] == ["volume_by_source"]
+
+    @pytest.mark.asyncio
+    async def test_a_failed_schema_read_is_audited(self, handlers, mock_audit_logger):
+        handlers.schema_manager.get_schema_digest = AsyncMock(side_effect=RuntimeError("boom"))
+        with pytest.raises(RuntimeError):
+            await handlers.handle_resource_read("loganalytics://schema")
+        events = list(mock_audit_logger.iter_entries())
+        assert [e["outcome"] for e in events] == ["invoked", "execution_failed"]
+        assert events[1]["result_summary"]["error_type"] == "RuntimeError"
 
     @pytest.mark.asyncio
     async def test_unknown_resource_raises(self, handlers):
@@ -1034,6 +1484,7 @@ class TestConfirmationIntegration:
         h.alarm_service.delete_alert = AsyncMock(return_value={"deleted": True})
         h.alarm_service.update_alert = AsyncMock(return_value={"alarm_id": "a", "updated": []})
         h.saved_search.delete_search = AsyncMock(return_value=None)
+        h.saved_search.deletion_dependencies = AsyncMock(return_value={"rules": []})
         h.saved_search.update_search = AsyncMock(return_value={"id": "s"})
         h.dashboard_service.delete_dashboard = AsyncMock(return_value={"deleted": True})
         h.dashboard_service.add_tile = AsyncMock(return_value={"dashboard_id": "d"})
@@ -1133,7 +1584,7 @@ class TestConfirmationIntegration:
             if entry["tool"] == "create_log_source_from_sample"
             and entry["outcome"] == "invoked"
         ][0]
-        args = invoked["args"]
+        args = invoked["args_redacted"]
         assert args["sample_logs"] == "<redacted>"
         assert args["sample_log_count"] == 1
         assert "sample_sha256" in args
@@ -1157,7 +1608,7 @@ class TestConfirmationIntegration:
             if entry["tool"] == "create_log_source_from_sample"
             and entry["outcome"] == "invoked"
         ][0]
-        audit_args = invoked["args"]
+        audit_args = invoked["args_redacted"]
         expected_payload = (
             'Source IP,User-Agent\n'
             '192.0.2.10,"Mozilla, Test"\n'
@@ -1826,7 +2277,7 @@ async def test_invoked_event_strips_confirmation_secret(handlers, tmp_path):
     lines = log_file.read_text().strip().splitlines()
     invoked_entries = [json.loads(ln) for ln in lines if json.loads(ln)["outcome"] == "invoked"]
     assert invoked_entries, "No invoked entry found"
-    args = invoked_entries[0]["args"]
+    args = invoked_entries[0]["args_redacted"]
     assert "confirmation_secret" not in args
     assert args.get("some_arg") == "ok"
 

@@ -1,6 +1,7 @@
 """Tests for N1 investigation recording from audit entries."""
 
 from datetime import datetime
+import json
 
 from oci_logan_mcp.audit import AuditLogger
 from oci_logan_mcp.playbook_recorder import PlaybookRecorder
@@ -15,6 +16,51 @@ def _recorder(tmp_path):
         store=store,
         owner="testuser",
     )
+
+
+def test_legacy_audit_lines_with_only_args_still_replay(tmp_path):
+    audit, store, recorder = _recorder(tmp_path)
+    (tmp_path / "audit" / "audit.log").write_text(json.dumps({
+        "timestamp": "2026-10-22T00:00:00Z", "session_id": "session-a",
+        "user": "testuser", "tool": "run_query", "outcome": "executed",
+        "args": {"query": "*"},
+    }) + "\n")
+    playbook = recorder.record(name="legacy", since="2026-01-01T00:00:00Z",
+                               until="2099-01-01T00:00:00Z")
+    assert len(playbook["steps"]) == 1
+    assert playbook["steps"][0]["args"] == {"query": "*"}
+    assert store.get(playbook["id"]) == playbook
+
+
+def test_recorder_prefers_redacted_arguments_when_both_fields_exist(tmp_path):
+    audit, store, recorder = _recorder(tmp_path)
+    (tmp_path / "audit" / "audit.log").write_text(json.dumps({
+        "timestamp": "2026-10-22T00:00:00Z", "session_id": "session-a",
+        "user": "testuser", "tool": "run_query", "outcome": "executed",
+        "args": {"query": "private raw text"}, "args_redacted": {"query": "safe text"},
+    }) + "\n")
+    playbook = recorder.record(name="redacted", since="2026-01-01T00:00:00Z",
+                               until="2099-01-01T00:00:00Z")
+    assert len(playbook["steps"]) == 1
+    assert playbook["steps"][0]["args"] == {"query": "safe text"}
+    assert store.get(playbook["id"]) == playbook
+
+
+def test_playbook_discloses_omitted_text_and_persists_placeholders(tmp_path):
+    audit = AuditLogger(tmp_path / "audit", session_id="private", store_arguments=False)
+    store = PlaybookStore(tmp_path / "playbooks.sqlite3")
+    recorder = PlaybookRecorder(audit, store, owner="alice")
+    audit.log(user="alice", tool="run_query", args={"query": "MARKER_QUERY"},
+              outcome="executed", result_summary={"preview": "MARKER_RESULT"})
+    playbook = recorder.record(name="private investigation", since="2026-01-01T00:00:00Z",
+                               until="2099-01-01T00:00:00Z")
+    assert len(playbook["steps"]) == 1
+    assert playbook["steps"][0]["args"]["query"]["length"] == len("MARKER_QUERY")
+    assert playbook["text_omitted"] is True
+    assert "not retained" in playbook["warning"]
+    assert "MARKER_" not in json.dumps(playbook)
+    assert store.get(playbook["id"]) == playbook
+    assert store.list()[0]["text_omitted"] is True
 
 
 def test_record_filters_current_session_events_by_window(tmp_path):

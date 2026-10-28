@@ -9,10 +9,132 @@ Verifies that:
 """
 
 import asyncio
+import json
 import pytest
+
+
+def test_build_call_tool_result_sets_is_error_and_preserves_content():
+    from oci_logan_mcp.server import build_call_tool_result
+
+    ok = build_call_tool_result([{"type": "text", "text": "ok"}])
+    bad = build_call_tool_result([
+        {"type": "text", "text": "before"},
+        {"type": "image", "data": "cG5n", "mimeType": "image/png", "is_error": True},
+    ])
+    assert ok.isError is False and ok.content[0].text == "ok"
+    assert bad.isError is True and bad.content[0].text == "before"
+    assert bad.content[1].data == "cG5n" and bad.content[1].mimeType == "image/png"
+
+
+def test_client_metadata_from_context_handles_missing_context_and_client_params():
+    from types import SimpleNamespace
+    from mcp.server.lowlevel.server import request_ctx
+    from mcp.types import InitializeRequestParams, Implementation, ClientCapabilities
+    from oci_logan_mcp.server import client_metadata_from_context
+
+    server = OCILogAnalyticsMCPServer().server
+    expected = {"claimed_client": "unknown", "claimed_version": "unknown", "source_ip_truncated": None}
+    assert client_metadata_from_context(server) == expected
+    params = InitializeRequestParams(protocolVersion="2025-06-18", capabilities=ClientCapabilities(),
+                                     clientInfo=Implementation(name="review-client", version="2.1.0"))
+    for value in (None, params):
+        token = request_ctx.set(SimpleNamespace(session=SimpleNamespace(client_params=value)))
+        try:
+            metadata = client_metadata_from_context(server)
+            assert metadata == (expected if value is None else {
+                "claimed_client": "review-client", "claimed_version": "2.1.0", "source_ip_truncated": None,
+            })
+        finally:
+            request_ctx.reset(token)
 from unittest.mock import MagicMock, AsyncMock, patch
 
 from oci_logan_mcp.server import OCILogAnalyticsMCPServer
+
+
+@pytest.mark.asyncio
+async def test_init_failure_is_explained_to_the_client():
+    from mcp import types
+    from oci_logan_mcp.config import Settings
+
+    srv = OCILogAnalyticsMCPServer()
+    secret = MagicMock()
+    secret.has_secret.return_value = True
+    secret.is_valid.return_value = True
+    with patch('oci_logan_mcp.server.config_exists', return_value=True), \
+         patch('oci_logan_mcp.server.load_config', return_value=Settings()), \
+         patch('oci_logan_mcp.server.CacheManager'), \
+         patch('oci_logan_mcp.server.QueryLogger'), \
+         patch('oci_logan_mcp.server.OCILogAnalyticsClient', side_effect=RuntimeError("no profile DEFAULT")), \
+         patch('oci_logan_mcp.server.ContextManager'), \
+         patch('oci_logan_mcp.server.SecretStore', return_value=secret), \
+         patch('oci_logan_mcp.server.AuditLogger'):
+        await srv.initialize_core()
+
+    response = await srv.server.request_handlers[types.CallToolRequest](
+        types.CallToolRequest(method="tools/call", params=types.CallToolRequestParams(
+            name="test_connection", arguments={}
+        ))
+    )
+    payload = json.loads(response.root.content[0].text)
+    assert payload["error"] == "server_not_initialized"
+    assert payload["detail"] == "RuntimeError: no profile DEFAULT"
+    assert len(payload["how_to_fix"]) == 4
+    assert any("--setup" in step for step in payload["how_to_fix"])
+    resource = await srv.server.request_handlers[types.ReadResourceRequest](
+        types.ReadResourceRequest(method="resources/read", params=types.ReadResourceRequestParams(
+            uri="loganalytics://syntax-guide"
+        ))
+    )
+    assert json.loads(resource.root.contents[0].text) == payload
+
+
+@pytest.mark.asyncio
+async def test_read_resource_handler_receives_a_plain_string_uri():
+    from mcp import types
+
+    srv = OCILogAnalyticsMCPServer()
+
+    async def read(uri):
+        return {"loganalytics://syntax-guide": "guide text"}[uri]
+
+    srv.handlers = MagicMock()
+    srv.handlers.handle_resource_read = read
+    response = await srv.server.request_handlers[types.ReadResourceRequest](
+        types.ReadResourceRequest(method="resources/read", params=types.ReadResourceRequestParams(
+            uri="loganalytics://syntax-guide"
+        ))
+    )
+    assert response.root.contents[0].text == "guide text"
+
+
+@pytest.mark.asyncio
+async def test_registered_tool_list_has_titles_and_accurate_annotations():
+    from mcp import types
+    from oci_logan_mcp.read_only_guard import MUTATING_TOOLS
+    from oci_logan_mcp.tools import get_tools
+
+    srv = OCILogAnalyticsMCPServer()
+    response = await srv.server.request_handlers[types.ListToolsRequest](
+        types.ListToolsRequest(method="tools/list")
+    )
+    tools = response.root.tools
+    assert len(tools) == 69
+    expected = {tool["name"]: tool for tool in get_tools()}
+    assert {tool.name for tool in tools} == set(expected)
+    titles = {tool.name: tool.title for tool in tools}
+    assert titles["trace_request_id"] == "Trace Request ID"
+    assert titles["list_log_sources"] == "List Log Sources"
+    for tool in tools:
+        annotations = tool.annotations
+        assert tool.title and annotations is not None, tool.name
+        assert annotations.title == tool.title
+        assert annotations.readOnlyHint is (tool.name not in MUTATING_TOOLS)
+        assert annotations.idempotentHint is (tool.name not in MUTATING_TOOLS)
+        assert annotations.destructiveHint is bool(expected[tool.name].get("destructive"))
+        assert annotations.openWorldHint is (
+            tool.name in {"send_to_slack", "send_to_telegram", "deliver_report"}
+        )
+        assert tool.inputSchema == expected[tool.name]["inputSchema"]
 
 
 @pytest.fixture
@@ -21,6 +143,78 @@ def server():
     with patch.object(OCILogAnalyticsMCPServer, '_setup_handlers'):
         srv = OCILogAnalyticsMCPServer()
     return srv
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("remembered", [None, "", "ocid1.comp.remembered"])
+async def test_initialize_core_uses_personal_compartment_or_config_default(server, tmp_path, remembered):
+    from oci_logan_mcp.config import Settings
+    from oci_logan_mcp.preferences import PreferenceStore
+    from oci_logan_mcp.user_store import UserStore
+
+    settings = Settings()
+    settings.log_analytics.default_compartment_id = "configured-default"
+    user_store = UserStore(tmp_path, user_id="startup-user")
+    preferences = PreferenceStore(tmp_path / "users" / "startup-user")
+    if remembered is not None:
+        preferences.remember("default_compartment_id", remembered, 1.0)
+    client = MagicMock(compartment_id="configured-default")
+    secret = MagicMock()
+    secret.has_secret.return_value = True
+    secret.is_valid.return_value = True
+    with patch('oci_logan_mcp.server.config_exists', return_value=True), \
+         patch('oci_logan_mcp.server.load_config', return_value=settings), \
+         patch('oci_logan_mcp.server.CONFIG_PATH', tmp_path / "config.yaml"), \
+         patch('oci_logan_mcp.server.CacheManager'), \
+         patch('oci_logan_mcp.server.QueryLogger'), \
+         patch('oci_logan_mcp.server.OCILogAnalyticsClient', return_value=client), \
+         patch('oci_logan_mcp.server.ContextManager'), \
+         patch('oci_logan_mcp.server.UserStore', return_value=user_store), \
+         patch('oci_logan_mcp.server.PreferenceStore', return_value=preferences), \
+         patch('oci_logan_mcp.server.SecretStore', return_value=secret), \
+         patch('oci_logan_mcp.server.AuditLogger'), \
+         patch('oci_logan_mcp.server.MCPHandlers'):
+        await server.initialize_core()
+    expected = remembered or "configured-default"
+    assert server.oci_client.compartment_id == expected
+    assert server.settings.log_analytics.default_compartment_id == expected
+    assert server.handlers is not None
+
+
+@pytest.mark.asyncio
+async def test_initialize_core_wires_private_history_and_audit_retention(server, tmp_path):
+    from datetime import datetime
+    from oci_logan_mcp.config import Settings
+    from oci_logan_mcp.user_store import UserStore
+
+    settings = Settings()
+    settings.audit.store_arguments = False
+    settings.logging.log_path = tmp_path / "unused-shared-history"
+    user = UserStore(tmp_path, user_id="privacy-user")
+    secret = MagicMock()
+    secret.has_secret.return_value = True
+    secret.is_valid.return_value = True
+    with patch('oci_logan_mcp.server.config_exists', return_value=True), \
+         patch('oci_logan_mcp.server.load_config', return_value=settings), \
+         patch('oci_logan_mcp.server.CONFIG_PATH', tmp_path / "config.yaml"), \
+         patch('oci_logan_mcp.server.CacheManager'), \
+         patch('oci_logan_mcp.server.OCILogAnalyticsClient'), \
+         patch('oci_logan_mcp.server.ContextManager'), \
+         patch('oci_logan_mcp.server.UserStore', return_value=user), \
+         patch('oci_logan_mcp.server.SecretStore', return_value=secret), \
+         patch('oci_logan_mcp.server.MCPHandlers'):
+        await server.initialize_core()
+    now = datetime.now()
+    server.query_logger.log_query("MARKER_PRIVATE", now, now, 0.1, 1, True)
+    history = tmp_path / "users" / "privacy-user" / "history" / "queries.log"
+    assert "MARKER_PRIVATE" in history.read_text()
+    assert history.stat().st_mode & 0o777 == 0o600
+    assert not settings.logging.log_path.exists()
+    server.audit_logger.log(user="privacy-user", tool="run_query", args={"query": "MARKER_AUDIT"},
+                            outcome="invoked")
+    raw = (tmp_path / "logs" / "audit.log").read_text()
+    assert json.loads(raw)["text_retained"] is False
+    assert "MARKER_AUDIT" not in raw
 
 
 class TestInitializeCore:
@@ -154,6 +348,29 @@ class TestInitializeCore:
 
 class TestBackgroundSchemaRefresh:
     """Tests for _refresh_schema_background() — background task after transport is live."""
+
+    @pytest.mark.asyncio
+    async def test_background_refresh_uses_scope_guard(self, server):
+        from types import SimpleNamespace
+        from oci_logan_mcp.handlers import ScopeGuard
+
+        guard = ScopeGuard()
+        started = asyncio.Event()
+
+        async def refresh(*args):
+            started.set()
+            return {"sources": 1}
+
+        server.handlers = SimpleNamespace(scope_guard=guard)
+        server.context_manager = SimpleNamespace(refresh_schema=refresh)
+        server.oci_client, server.settings = object(), object()
+        async with asyncio.timeout(2):
+            async with guard.exclusive():
+                task = asyncio.create_task(server._refresh_schema_background())
+                await asyncio.sleep(0.02)
+                blocked = not started.is_set() and not task.done()
+            await task
+            assert blocked and started.is_set()
 
     @pytest.mark.asyncio
     async def test_background_refresh_calls_refresh_schema(self, server):

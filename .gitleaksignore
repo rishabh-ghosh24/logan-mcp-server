@@ -1,1 +1,3 @@
 e6d12cc6db4935bb032148cae94241aa11e85865:tests/test_handlers.py:jwt:1784
+# SHA-256 of the baseline setup_confirmation_secret tool schema, not a credential.
+0b6f9efed0d205b0a55a07a761485988cc668092:tests/fixtures/legacy_tool_contracts.json:generic-api-key:43

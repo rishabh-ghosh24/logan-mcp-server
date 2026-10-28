@@ -1,5 +1,54 @@
 # tests/test_user_store.py
 import pytest
+
+
+def test_replacing_query_text_resets_history_and_promotion_fields(tmp_path):
+    from oci_logan_mcp.user_store import UserStore
+    from oci_logan_mcp.file_lock import atomic_yaml_read, atomic_yaml_write
+
+    store = UserStore(base_dir=tmp_path, user_id="u")
+    old = "a | stats count"
+    initial = store.save_query(name="n", query=old, description="old", interest_score=5)
+    store.record_success(old)
+    store.record_failure(old)
+    data = atomic_yaml_read(store._queries_path)
+    data["queries"][0].update(promotion_status="promoted", promotion_reason="good", promoted_at="old")
+    atomic_yaml_write(store._queries_path, data)
+    store.save_query(name="n", query="b | stats count", description="new", interest_score=2)
+    [entry] = store.list_queries()
+    assert (entry["success_count"], entry["failure_count"], entry["use_count"], entry["interest_score"]) == (0, 0, 1, 2)
+    assert entry["entry_id"] == initial["entry_id"] and entry["query"] == "b | stats count"
+    assert not {"promotion_status", "promotion_reason", "promoted_at"} & entry.keys()
+
+
+@pytest.mark.parametrize("bad", ["..", "../x", ".hidden", "a/b", "a..b", "valid\n"])
+def test_rejects_unsafe_user_ids(tmp_path, bad):
+    from oci_logan_mcp.user_store import UserStore
+
+    with pytest.raises(ValueError, match="Invalid user_id"):
+        UserStore(base_dir=tmp_path, user_id=bad)
+
+
+def test_legacy_migration_goes_to_os_owner_only_and_once(tmp_path, monkeypatch):
+    from oci_logan_mcp.user_store import UserStore
+    import stat
+
+    monkeypatch.setattr("getpass.getuser", lambda: "opc")
+    legacy = tmp_path / "context" / "learned_queries.yaml"
+    legacy.parent.mkdir()
+    text = "version: 1\nqueries:\n- name: old\n  query: '* | stats count'\n  description: d\n"
+    legacy.write_text(text)
+    legacy.chmod(0o644)
+    assert UserStore(tmp_path, user_id="first.last").list_queries() == []
+    assert legacy.read_text() == text
+    owner = UserStore(tmp_path, user_id="opc")
+    assert owner.list_queries()[0]["name"] == "old"
+    assert stat.S_IMODE(owner._queries_path.stat().st_mode) == 0o600
+    archived = legacy.with_suffix(".yaml.migrated")
+    assert not legacy.exists() and archived.read_text() == text
+    assert stat.S_IMODE(archived.stat().st_mode) == 0o600
+    assert UserStore(tmp_path, user_id="another").list_queries() == []
+    assert UserStore(tmp_path, user_id="opc").list_queries()[0]["name"] == "old"
 from pathlib import Path
 from oci_logan_mcp.user_store import UserStore
 
@@ -10,6 +59,58 @@ def base_dir(tmp_path):
 @pytest.fixture
 def store(base_dir):
     return UserStore(base_dir=base_dir, user_id="alice")
+
+
+@pytest.mark.parametrize("match_by", ["name", "query"])
+def test_auto_save_preserves_manual_identity_and_metadata(store, match_by):
+    original = store.save_query(name="manual", query="original", description="my words",
+                                category="security", tags=["mine"], interest_score=4)
+    result = store.save_query(name="manual" if match_by == "name" else "automatic_name",
+                              query="replacement" if match_by == "name" else "original",
+                              description="automatic words", tags=["auto-saved"], origin="auto")
+    [entry] = store.list_queries()
+    for field in ("entry_id", "name", "query", "description", "category", "tags", "interest_score"):
+        assert entry[field] == original[field]
+    assert entry["origin"] == "manual"
+    assert entry["use_count"] == 2 and result["use_count"] == 2
+
+
+@pytest.mark.parametrize("match_by", ["name", "query"])
+def test_explicit_save_upgrades_an_auto_entry(store, match_by):
+    auto = store.save_query(name="automatic", query="original", description="auto",
+                            tags=["auto-saved", "useful"], origin="auto")
+    saved = store.save_query(name="automatic" if match_by == "name" else "manual_name",
+                             query="replacement" if match_by == "name" else "original",
+                             description="manual words")
+    [entry] = store.list_queries()
+    assert saved["entry_id"] == entry["entry_id"] == auto["entry_id"]
+    assert entry["origin"] == "manual" and "auto-saved" not in entry["tags"]
+    assert entry["description"] == "manual words"
+
+
+def test_auto_eviction_rechecks_origin_and_preserves_manual_rows(store):
+    manual = store.save_query(name="manual", query="manual query", description="mine")
+    store.save_query(name="old_auto", query="old automatic query", description="auto", origin="auto")
+    saved = store.save_query(name="new_auto", query="new automatic query", description="new",
+                              origin="auto", evict_auto_names=["manual", "old_auto"])
+    entries = store.list_queries()
+    assert {entry["name"] for entry in entries} == {"manual", "new_auto"}
+    assert next(entry for entry in entries if entry["name"] == "manual") == manual
+    assert saved["query"] == "new automatic query"
+
+
+@pytest.mark.parametrize("match_by", ["name", "query"])
+def test_manual_update_accepts_legacy_null_tags(store, match_by):
+    original = store.save_query(name="legacy", query="legacy query", description="old")
+    data = store._load()
+    data["queries"][0]["tags"] = None
+    store._save(data)
+    name = "legacy" if match_by == "name" else "renamed_legacy"
+    saved = store.save_query(name=name, query="legacy query", description="updated")
+    [entry] = store.list_queries()
+    assert saved["entry_id"] == entry["entry_id"] == original["entry_id"]
+    assert entry["name"] == name and entry["description"] == "updated"
+    assert entry["tags"] == [] and entry["origin"] == "manual"
 
 class TestUserStoreInit:
     def test_creates_user_directory(self, store, base_dir):
@@ -110,7 +211,8 @@ class TestMergedQueries:
         assert q1["query"] == "my version"
 
 class TestLegacyMigration:
-    def test_migrates_legacy_queries_on_first_init(self, base_dir):
+    def test_migrates_legacy_queries_on_first_init(self, base_dir, monkeypatch):
+        monkeypatch.setattr("getpass.getuser", lambda: "alice")
         # Create legacy file
         legacy_dir = base_dir / "context"
         legacy_dir.mkdir(parents=True)

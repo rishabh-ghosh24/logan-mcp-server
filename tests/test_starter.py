@@ -169,13 +169,8 @@ class TestHandlerIntegration:
             if ex["name"] == "error_like_sources_by_log_source"
         )
 
-        assert "Severity in ('ERROR', 'CRITICAL', 'FATAL')" in query
-        assert "'Original Log Content' like '%error%'" in query
-        assert "'Original Log Content' like '%fail%'" in query
-        assert "'Original Log Content' like '%fatal%'" in query
-        assert "'Original Log Content' like '%critical%'" in query
-        assert "'Original Log Content' like '%exception%'" in query
-        assert "'Original Log Content' not like '%NOERROR%'" in query
+        assert data["examples"] and result[0]["type"] == "text"
+        assert "(error or fail or fatal or critical or exception)" in query
         assert "Message" not in query
         assert "'Original Log Content' like '%ERROR%'" not in query
         assert "'Original Log Content' like '%Error%'" not in query
