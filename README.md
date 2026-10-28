@@ -29,11 +29,8 @@ resolves the package's SDK requirements: MCP `>=1.22.0,<2` and OCI `>=2.104.2`.
 
 ### 1. Install
 
-These commands select `mcp-publish`, the branch for the 1.3.0 candidate. Cloning
-without `--branch` selects the repository's default branch, which may be older.
-
 ```bash
-git clone --branch mcp-publish https://github.com/rishabh-ghosh24/logan-mcp-server.git
+git clone https://github.com/rishabh-ghosh24/logan-mcp-server.git
 cd logan-mcp-server
 python3 -m venv venv
 source venv/bin/activate

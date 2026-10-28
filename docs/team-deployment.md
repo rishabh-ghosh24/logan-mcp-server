@@ -88,7 +88,7 @@ bash oci-initial-setup.sh
 Follow its restart and login instructions. Then install the MCP package:
 
 ```bash
-git clone --branch mcp-publish https://github.com/rishabh-ghosh24/logan-mcp-server.git
+git clone https://github.com/rishabh-ghosh24/logan-mcp-server.git
 cd logan-mcp-server
 python3.11 -m venv venv
 source venv/bin/activate
@@ -103,7 +103,7 @@ development dependencies. If no supported interpreter is found, it attempts to
 install Python 3.11 using `sudo dnf`; review that system change before running it:
 
 ```bash
-git clone --branch mcp-publish https://github.com/rishabh-ghosh24/logan-mcp-server.git
+git clone https://github.com/rishabh-ghosh24/logan-mcp-server.git
 cd logan-mcp-server
 ./scripts/setup_oel9.sh
 ```
