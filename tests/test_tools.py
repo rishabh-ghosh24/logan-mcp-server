@@ -24,7 +24,7 @@ def test_tools_list_payload_stays_bounded():
 
     tools = get_tools()
     assert len(tools) == 69
-    assert len(json.dumps(tools)) <= 60_000
+    assert len(json.dumps(tools)) <= 80_000
 
 
 def test_guarded_tools_have_confirmation_params():

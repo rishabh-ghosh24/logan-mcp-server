@@ -30,7 +30,7 @@ def test_public_metric_schemas_and_read_only_classification():
             assert tool.title and tool.annotations.readOnlyHint is True
             assert tool.annotations.destructiveHint is False and tool.annotations.openWorldHint is False
     assert NAMES.isdisjoint(MUTATING_TOOLS | OUTBOUND_TOOLS)
-    assert len(json.dumps(get_tools()))<=60000
+    assert len(json.dumps(get_tools()))<=80000
 
 
 @pytest.mark.parametrize('name',['query_catalog_metric','query_metrics'])

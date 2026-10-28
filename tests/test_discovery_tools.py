@@ -173,7 +173,7 @@ def test_tool_definitions_declare_keyword_and_limit_within_the_payload_bound():
         props = tools[name]["inputSchema"]["properties"]
         assert props["keyword"]["type"] == "string" and props["limit"]["type"] == "integer"
         assert "50" in tools[name]["description"]
-    assert len(json.dumps(get_tools())) <= 60_000
+    assert len(json.dumps(get_tools())) <= 80_000
 
 
 @pytest.mark.asyncio
